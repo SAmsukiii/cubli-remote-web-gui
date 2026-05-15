@@ -1,0 +1,6 @@
+[Cubli Server] listening on 0.0.0.0:5058
+[Cubli Server] Server local: http://localhost:5058
+[Cubli Server] Server LAN:   http://172.21.73.48:5058
+[Cubli Server] data dir: C:\Cubli_Simulator\server\data
+[Cubli Server] static app: C:\Cubli_Simulator\build
+[Cubli Server] serial bridge: ready

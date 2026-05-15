@@ -1,0 +1,901 @@
+@keyframes blink {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.nav-tabs .nav-link {
+  color: #aaa;
+  border: none;
+  background-color: transparent;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.nav-tabs .nav-link:hover {
+  color: #eee;
+  border-color: transparent;
+}
+.nav-tabs .nav-link.active {
+  color: #eee;
+  background-color: transparent;
+  border-bottom: 2px solid #eee;
+}
+.tabs-container.nav-tabs {
+  border-bottom: 1px solid #333;
+}
+.custom-range::-webkit-slider-thumb {
+  background: #aaa;
+  border: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  cursor: pointer;
+  margin-top: -0.35rem; /* centers thumb */
+  appearance: none;
+}
+.custom-range::-moz-range-thumb {
+  background: #aaa;
+  border: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  cursor: pointer;
+  appearance: none;
+}
+.custom-range::-webkit-slider-thumb:active {
+  background: #eee;
+}
+.custom-range::-moz-range-thumb:active {
+  background: #eee;
+}
+.custom-range::-webkit-slider-runnable-track {
+  background: #333;
+  height: 0.3rem;
+  border-radius: 0.15rem;
+}
+.custom-range::-moz-range-track {
+  background: #333;
+  height: 0.3rem;
+  border-radius: 0.15rem;
+}
+.custom-range.is-invalid::-webkit-slider-thumb {
+  background: #dc3545;
+}
+.custom-range.is-invalid::-moz-range-thumb {
+  background: #dc3545;
+}
+.custom-range.range-red::-webkit-slider-thumb {
+  background: #ff0000;
+}
+.custom-range.range-red::-webkit-slider-thumb:active {
+  background: #ff4444;
+}
+.custom-range.range-red::-moz-range-thumb {
+  background: #ff0000;
+}
+.custom-range.range-red::-moz-range-thumb:active {
+  background: #ff4444;
+}
+.custom-range.range-green::-webkit-slider-thumb {
+  background: #00ff00;
+}
+.custom-range.range-green::-webkit-slider-thumb:active {
+  background: #44ff44;
+}
+.custom-range.range-green::-moz-range-thumb {
+  background: #00ff00;
+}
+.custom-range.range-green::-moz-range-thumb:active {
+  background: #44ff44;
+}
+.custom-range.range-blue::-webkit-slider-thumb {
+  background: #0000ff;
+}
+.custom-range.range-blue::-webkit-slider-thumb:active {
+  background: #4444ff;
+}
+.custom-range.range-blue::-moz-range-thumb {
+  background: #0000ff;
+}
+.custom-range.range-blue::-moz-range-thumb:active {
+  background: #4444ff;
+}
+.custom-range.range-quaternion::-webkit-slider-thumb {
+  background: #aaa;
+}
+.custom-range.range-quaternion::-moz-range-thumb {
+  background: #aaa;
+}
+.fs-7 {
+  font-size: 0.8rem;
+}
+.fs-8 {
+  font-size: 0.75rem;
+}
+
+/* =========================
+   Resizable desktop layout
+========================= */
+.cubli-root {
+  font-size: 0.96rem;
+}
+
+.cubli-layout-desktop {
+  display: grid;
+  gap: 0;
+  min-height: calc(100dvh - 0.7rem);
+  align-items: stretch;
+}
+
+.cubli-layout-mobile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.cubli-canvas-pane {
+  min-width: 0;
+  position: relative;
+  border: 1px solid #333;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.25);
+}
+
+.cubli-control-pane {
+  min-width: 0;
+  padding-left: 0.35rem;
+}
+
+.cubli-control-card {
+  height: 100%;
+  min-width: 0;
+}
+
+.cubli-control-body {
+  min-width: 0;
+  scrollbar-width: thin;
+}
+
+.cubli-panel-resizer {
+  width: 10px;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.cubli-panel-resizer span {
+  width: 3px;
+  height: 56px;
+  border-radius: 999px;
+  background: #343a40;
+  transition: background 0.15s ease, height 0.15s ease;
+}
+
+.cubli-panel-resizer:hover span,
+.cubli-panel-resizer.active span {
+  background: #6ee7ff;
+  height: 90px;
+}
+
+.panel-width-control,
+.panel-box,
+.panel-sub-box {
+  background-color: #1b1f24;
+  border: 1px solid #2a3138;
+}
+
+.panel-width-title,
+.panel-main-title,
+.panel-section-heading {
+  color: #dbe4ea;
+  letter-spacing: 0.04em;
+}
+
+.panel-width-title {
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.panel-width-subtitle,
+.panel-width-value {
+  color: #9ca3af;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.panel-width-reset {
+  white-space: nowrap;
+}
+
+.panel-status-text {
+  font-size: 0.88rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.panel-sub-box {
+  font-size: 0.94rem;
+  line-height: 1.65;
+}
+
+.panel-error-box {
+  background-color: #2b1215;
+  border: 1px solid #5c1f26;
+  color: #ff8787;
+  font-size: 0.92rem;
+}
+
+.serial-timer-main {
+  background-color: #1b1f24;
+  border: 1px solid #2a3138;
+  color: #6ee7ff;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-size: 1.05rem;
+}
+
+/* =========================
+   Larger readable controls
+========================= */
+.nav-tabs .nav-link {
+  font-size: 0.9rem;
+  padding: 0.65rem 0.9rem;
+  white-space: nowrap;
+}
+
+.fs-7 {
+  font-size: 0.95rem !important;
+}
+
+.fs-8 {
+  font-size: 0.86rem !important;
+}
+
+.form-check-label,
+.form-label,
+.form-select,
+.form-control,
+.btn {
+  font-size: 0.95rem;
+}
+
+.serial-panel {
+  font-size: 0.96rem;
+  min-width: 0;
+}
+
+.serial-box {
+  background-color: #1b1f24;
+  border: 1px solid #2a3138;
+  min-width: 0;
+}
+
+.serial-alert {
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.serial-section-title {
+  color: #dbe4ea;
+  font-size: 0.98rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.serial-value-card {
+  background-color: #111418;
+  border: 1px solid #2a3138;
+  min-width: 0;
+}
+
+.serial-value-row {
+  font-size: 0.93rem;
+  line-height: 1.65;
+}
+
+.serial-value-row strong {
+  color: #f8fafc;
+  white-space: nowrap;
+}
+
+.serial-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.serial-command-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.serial-command-button {
+  min-height: 78px;
+  display: flex !important;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.18rem;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.serial-command-label {
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.serial-command-help {
+  color: #adb5bd;
+  font-size: 0.82rem;
+}
+
+.serial-command-button code {
+  color: #6ee7ff;
+  font-size: 0.82rem;
+  background: rgba(110, 231, 255, 0.08);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.25rem;
+  width: fit-content;
+}
+
+.serial-note {
+  color: #adb5bd;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.serial-timer {
+  color: #6ee7ff;
+  font-weight: 800;
+  white-space: nowrap;
+  font-size: 0.95rem;
+}
+
+.serial-chart-box {
+  width: 100%;
+  height: 260px;
+  min-width: 0;
+}
+
+.serial-table-wrapper {
+  width: 100%;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #2a3138;
+  border-radius: 0.4rem;
+}
+
+.serial-table {
+  min-width: 780px;
+  font-size: 0.88rem;
+}
+
+@media (max-width: 767.98px) {
+  .cubli-control-pane {
+    padding-left: 0;
+  }
+
+  .nav-tabs .nav-link {
+    font-size: 0.82rem;
+    padding: 0.55rem 0.55rem;
+  }
+
+  .serial-command-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .serial-chart-box {
+    height: 230px;
+  }
+}
+
+/* Performance patch: keep small switches compact in the Serial panel */
+.serial-small-switch {
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.serial-small-switch .form-check-input {
+  cursor: pointer;
+}
+
+/* Receiver ESP32 serial debug */
+.serial-raw-line {
+  background: #0b0f14;
+  border: 1px solid #2a3138;
+  border-radius: 0.4rem;
+  color: #dbe4ea;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  max-height: 140px;
+  overflow: auto;
+  padding: 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Serial + BLE source status */
+.source-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #2a3138;
+  background: #111418;
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.86rem;
+  color: #dbe4ea;
+}
+
+.ble-command-warning {
+  color: #ffd43b;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+
+.serial-command-input {
+  flex: 1 1 260px;
+  min-width: 220px;
+  background: #0f1318 !important;
+  color: #f1f3f5 !important;
+  border: 1px solid #38424c !important;
+  font-size: 0.95rem !important;
+}
+
+.serial-command-grid {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.serial-command-button code {
+  white-space: nowrap;
+}
+
+/* Mobile Web Bluetooth helper */
+.mobile-ble-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.mobile-ble-status-row span {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .mobile-ble-status-row {
+    font-size: 0.95rem;
+    gap: 0.45rem 0.75rem;
+  }
+
+  .serial-panel .btn {
+    min-height: 42px;
+  }
+}
+@keyframes blink {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.nav-tabs .nav-link {
+  color: #aaa;
+  border: none;
+  background-color: transparent;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.nav-tabs .nav-link:hover {
+  color: #eee;
+  border-color: transparent;
+}
+.nav-tabs .nav-link.active {
+  color: #eee;
+  background-color: transparent;
+  border-bottom: 2px solid #eee;
+}
+.tabs-container.nav-tabs {
+  border-bottom: 1px solid #333;
+}
+.custom-range::-webkit-slider-thumb {
+  background: #aaa;
+  border: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  cursor: pointer;
+  margin-top: -0.35rem; /* centers thumb */
+  appearance: none;
+}
+.custom-range::-moz-range-thumb {
+  background: #aaa;
+  border: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  cursor: pointer;
+  appearance: none;
+}
+.custom-range::-webkit-slider-thumb:active {
+  background: #eee;
+}
+.custom-range::-moz-range-thumb:active {
+  background: #eee;
+}
+.custom-range::-webkit-slider-runnable-track {
+  background: #333;
+  height: 0.3rem;
+  border-radius: 0.15rem;
+}
+.custom-range::-moz-range-track {
+  background: #333;
+  height: 0.3rem;
+  border-radius: 0.15rem;
+}
+.custom-range.is-invalid::-webkit-slider-thumb {
+  background: #dc3545;
+}
+.custom-range.is-invalid::-moz-range-thumb {
+  background: #dc3545;
+}
+.custom-range.range-red::-webkit-slider-thumb {
+  background: #ff0000;
+}
+.custom-range.range-red::-webkit-slider-thumb:active {
+  background: #ff4444;
+}
+.custom-range.range-red::-moz-range-thumb {
+  background: #ff0000;
+}
+.custom-range.range-red::-moz-range-thumb:active {
+  background: #ff4444;
+}
+.custom-range.range-green::-webkit-slider-thumb {
+  background: #00ff00;
+}
+.custom-range.range-green::-webkit-slider-thumb:active {
+  background: #44ff44;
+}
+.custom-range.range-green::-moz-range-thumb {
+  background: #00ff00;
+}
+.custom-range.range-green::-moz-range-thumb:active {
+  background: #44ff44;
+}
+.custom-range.range-blue::-webkit-slider-thumb {
+  background: #0000ff;
+}
+.custom-range.range-blue::-webkit-slider-thumb:active {
+  background: #4444ff;
+}
+.custom-range.range-blue::-moz-range-thumb {
+  background: #0000ff;
+}
+.custom-range.range-blue::-moz-range-thumb:active {
+  background: #4444ff;
+}
+.custom-range.range-quaternion::-webkit-slider-thumb {
+  background: #aaa;
+}
+.custom-range.range-quaternion::-moz-range-thumb {
+  background: #aaa;
+}
+.fs-7 {
+  font-size: 0.8rem;
+}
+.fs-8 {
+  font-size: 0.75rem;
+}
+/* =========================
+   Web Serial / CubeController UI
+========================= */
+.serial-panel {
+  font-size: 0.92rem;
+}
+
+.serial-help-text {
+  color: #d6d9de;
+  border: 1px solid #2a3138;
+  background: #15191f;
+}
+
+.serial-control-card,
+.serial-value-card,
+.serial-debug-box {
+  background: #111418;
+  border: 1px solid #2a3138;
+}
+
+.serial-section-title {
+  color: #aab2bf;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.serial-value-row {
+  color: #d9dee7;
+  font-size: 0.88rem;
+  line-height: 1.75;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.serial-value-row:last-child {
+  border-bottom: none;
+}
+
+.serial-value-row strong {
+  color: #f1f3f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86rem;
+  text-align: right;
+}
+
+.serial-mini-label {
+  color: #aab2bf;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.serial-timer {
+  border: 1px solid #2a3138;
+  background: #0b0e12;
+  color: #6ee7ff;
+  border-radius: 0.6rem;
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 0.5rem;
+  text-align: center;
+}
+
+.serial-chart-box {
+  height: 210px;
+  background: #0b0e12;
+  border: 1px solid #2a3138;
+  border-radius: 0.6rem;
+  padding: 0.4rem;
+}
+
+.serial-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 0.6rem;
+}
+
+.serial-table {
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.serial-debug-box code {
+  display: block;
+  color: #d0ebff;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (min-width: 768px) {
+  .serial-panel {
+    font-size: 0.95rem;
+  }
+}
+
+/* =========================
+   Quick top controls
+========================= */
+.quick-control-bar {
+  background: linear-gradient(135deg, #1b1f24 0%, #111418 100%);
+  border: 1px solid #343a40;
+  box-shadow: 0 0.25rem 0.7rem rgba(0, 0, 0, 0.18);
+}
+
+.quick-control-row {
+  min-width: 0;
+}
+
+.quick-control-title-block {
+  min-width: 0;
+}
+
+.quick-control-title {
+  color: #f1f3f5;
+  font-size: 1.02rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.quick-control-subtitle {
+  color: #9ca3af;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-reset-button {
+  min-width: 108px;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.98rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 575.98px) {
+  .quick-control-row {
+    align-items: stretch !important;
+    flex-direction: column;
+  }
+
+  .quick-reset-button {
+    width: 100%;
+  }
+
+  .quick-control-subtitle {
+    white-space: normal;
+  }
+}
+
+
+/* Clean command UI patch */
+.serial-subsection-title {
+  color: #c8d0da;
+  font-size: 0.9rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+}
+
+.simple-command-button {
+  min-height: 60px !important;
+  align-items: flex-start !important;
+  text-align: left !important;
+  padding: 0.65rem 0.75rem !important;
+  border-color: #3a444f !important;
+  background: #15191f !important;
+}
+
+.simple-command-button:hover,
+.simple-command-button:focus {
+  background: #20262e !important;
+  border-color: #6c757d !important;
+}
+
+.simple-command-button .serial-command-label {
+  font-size: 0.96rem;
+  font-weight: 800;
+  color: #f1f3f5;
+}
+
+.simple-command-button .serial-command-help {
+  font-size: 0.82rem;
+  color: #aeb7c2;
+}
+
+.serial-command-button code {
+  display: none !important;
+}
+
+.serial-note {
+  display: none;
+}
+
+/* Categorized command UI patch */
+.command-accordion {
+  --bs-accordion-bg: transparent;
+  --bs-accordion-border-color: #2a3138;
+  --bs-accordion-btn-bg: #111418;
+  --bs-accordion-active-bg: #171d24;
+  --bs-accordion-active-color: #f1f3f5;
+  --bs-accordion-btn-color: #dbe4ea;
+  --bs-accordion-color: #dbe4ea;
+  --bs-accordion-btn-focus-box-shadow: none;
+  border-radius: 0.65rem;
+  overflow: hidden;
+}
+
+.command-accordion-item {
+  background: #111418 !important;
+  border-color: #2a3138 !important;
+}
+
+.command-accordion .accordion-button {
+  color: #dbe4ea !important;
+  background: #111418 !important;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  padding: 0.72rem 0.85rem;
+  box-shadow: none !important;
+}
+
+.command-accordion .accordion-button:not(.collapsed) {
+  background: #171d24 !important;
+  color: #f8fafc !important;
+}
+
+.command-accordion .accordion-button::after {
+  filter: invert(1) grayscale(1);
+  opacity: 0.8;
+}
+
+.command-accordion .accordion-body {
+  padding: 0.85rem;
+  background: #0f1318;
+}
+
+.compact-command-grid {
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+}
+
+.compact-command-grid .simple-command-button,
+.command-accordion .simple-command-button {
+  min-height: 46px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  padding: 0.55rem 0.65rem !important;
+  border-color: #3a444f !important;
+  background: #15191f !important;
+}
+
+.compact-command-grid .simple-command-button:hover,
+.command-accordion .simple-command-button:hover,
+.compact-command-grid .simple-command-button:focus,
+.command-accordion .simple-command-button:focus {
+  background: #20262e !important;
+  border-color: #6c757d !important;
+}
+
+.command-accordion .serial-command-label {
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: #f1f3f5;
+}
+
+.serial-note-visible {
+  color: #adb5bd;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+
+
+/* =========================
+   Server sync panel
+========================= */
+.server-panel .form-control,
+.server-panel .form-range {
+  min-width: 0;
+}
+
+.server-small-note,
+.server-note {
+  color: #adb5bd;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.server-panel .serial-value-row strong {
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

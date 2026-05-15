@@ -1,0 +1,1 @@
+{"serverReceivedAt":"2026-05-12T08:49:53.292Z","pcTimeMs":1778575793292,"source":"server-access","eventType":"ACCESS_RESET","label":"Reset Server Access State","detail":{"time":"2026-05-12T08:49:53.290Z","type":"ACCESS_RESET","adminClientId":"client-72a17cc9-0a18-4e5d-b752-a5a5cefb0fbb","previousControllerClientId":null}}

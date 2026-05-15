@@ -1,0 +1,4 @@
+Required binary assets are not included in this text bundle:
+public/models/body.glb
+public/models/wheel.glb
+Keep these files in the same locations in the real project.

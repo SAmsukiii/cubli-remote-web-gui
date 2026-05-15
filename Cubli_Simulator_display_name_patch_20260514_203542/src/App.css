@@ -1,0 +1,38 @@
+/* src/App.css */
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #212529;
+  overflow-x: hidden;
+}
+
+canvas {
+  display: block;
+  outline: none;
+}
+
+.canvas-box {
+  height: 55vh;
+}
+.control-box {
+  height: auto;
+  padding-bottom: 2rem;
+}
+
+@media (min-width: 768px) {
+  body {
+    overflow: hidden;
+  }
+  .canvas-box {
+    height: calc(100vh - 2rem);
+  }
+  .control-box {
+    height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+}
+
+
