@@ -5,6 +5,7 @@ const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
 const SERVER_URL_KEY = 'cubliServerUrl';
 const FALLBACK_SERVER_URL = 'http://localhost:5050';
+const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 const MAX_SAMPLE_QUEUE = 1200;
 const MAX_EVENT_QUEUE = 300;
 const DEFAULT_UPLOAD_RATE_HZ = 1;
@@ -79,6 +80,90 @@ function cleanServerUrl(url) {
   return String(url || FALLBACK_SERVER_URL).trim().replace(/\/+$/, '');
 }
 
+function isLocalHostName(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  return value === 'localhost' || value === '127.0.0.1' || value === '[::1]' || value === '::1';
+}
+
+function isHostedOrigin(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  return value === 'onrender.com' || value.endsWith('.onrender.com')
+    || value === 'trycloudflare.com' || value.endsWith('.trycloudflare.com')
+    || value === 'netlify.app' || value.endsWith('.netlify.app');
+}
+
+function hasBadHostedPort(url) {
+  return /onrender\.com:\d+|trycloudflare\.com:\d+|netlify\.app:\d+/i.test(String(url || ''));
+}
+
+function isKnownServerPort(port) {
+  return SERVER_PORT_CANDIDATES.includes(String(port || ''));
+}
+
+function parseServerUrl(url) {
+  if (typeof window === 'undefined') return null;
+  try {
+    return new URL(cleanServerUrl(url), window.location.href);
+  } catch (_) {
+    return null;
+  }
+}
+
+function urlTargetsLocalHost(url) {
+  const raw = String(url || '').trim().toLowerCase();
+  if (/^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/.test(raw)) return true;
+  const parsed = parseServerUrl(url);
+  return parsed ? isLocalHostName(parsed.hostname) : false;
+}
+
+function getLocationDefaultServerUrl() {
+  if (typeof window === 'undefined') return FALLBACK_SERVER_URL;
+
+  const { protocol, hostname, origin } = window.location;
+
+  if (isHostedOrigin(hostname)) return origin;
+  if (isLocalHostName(hostname)) return FALLBACK_SERVER_URL;
+  if (protocol === 'https:') return origin;
+  return `http://${hostname || 'localhost'}:5050`;
+}
+
+function shouldIgnoreServerUrlForCurrentLocation(url) {
+  if (typeof window === 'undefined') return false;
+
+  const cleaned = cleanServerUrl(url);
+  const { protocol, hostname, origin } = window.location;
+  const pageIsLocal = isLocalHostName(hostname);
+  const parsed = parseServerUrl(cleaned);
+
+  if (isHostedOrigin(hostname)) {
+    return cleaned !== origin;
+  }
+
+  if (isLikelyFrontendDevUrl(cleaned)) return true;
+
+  if (protocol === 'https:' && !pageIsLocal) {
+    if (urlTargetsLocalHost(cleaned) || hasBadHostedPort(cleaned)) return true;
+    if (!parsed) return false;
+    if (parsed.hostname === hostname && parsed.port) return true;
+    return isKnownServerPort(parsed.port);
+  }
+
+  return false;
+}
+
+function normalizeServerUrlForCurrentLocation(url) {
+  const cleaned = cleanServerUrl(url);
+  if (typeof window === 'undefined') return cleaned;
+  return shouldIgnoreServerUrlForCurrentLocation(cleaned)
+    ? getLocationDefaultServerUrl()
+    : cleaned;
+}
+
+function persistServerUrl(url) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(SERVER_URL_KEY, cleanServerUrl(url));
+}
+
 function isFrontendDevPort(port) {
   const number = Number(port);
   if (!Number.isFinite(number)) return false;
@@ -100,23 +185,17 @@ function isLikelyFrontendDevUrl(url) {
 function getDefaultServerUrl() {
   if (typeof window === 'undefined') return FALLBACK_SERVER_URL;
 
-  const host = window.location.hostname || 'localhost';
-  const port = window.location.port || '';
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-
+  const defaultUrl = getLocationDefaultServerUrl();
   const stored = window.localStorage.getItem(SERVER_URL_KEY);
-  if (stored && !isLikelyFrontendDevUrl(stored)) return cleanServerUrl(stored);
+  if (!stored) return defaultUrl;
 
-  // Built app served by Node/Express: use the same origin, including custom
-  // ports such as 5050/5058. React dev server can move from 3000 to 3001,
-  // 3002, ... when the port is busy, so never treat 3xxx as the API server.
-  if (port && !isFrontendDevPort(port)) return window.location.origin;
-
-  if (host === 'localhost' || host === '127.0.0.1') return FALLBACK_SERVER_URL;
-  return `${protocol}//${host}:5050`;
+  const cleaned = cleanServerUrl(stored);
+  if (shouldIgnoreServerUrlForCurrentLocation(cleaned)) {
+    persistServerUrl(defaultUrl);
+    return defaultUrl;
+  }
+  return cleaned;
 }
-
-const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 
 function uniqueCleanUrls(urls) {
   const seen = new Set();
@@ -133,24 +212,22 @@ function makeServerUrlCandidates(preferredUrl) {
   if (typeof window === 'undefined') return uniqueCleanUrls([preferredUrl, FALLBACK_SERVER_URL]);
 
   const host = window.location.hostname || 'localhost';
-  const pagePort = window.location.port || '';
   const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-  const candidates = [preferredUrl, DEFAULT_SERVER_URL];
+  const origin = window.location.origin;
+  const candidates = [origin, preferredUrl, DEFAULT_SERVER_URL];
 
-  // If the React app is served by Express, this is the exact API origin.
-  // Do not add React dev server origins such as localhost:3000/3001.
-  if (window.location.origin && pagePort && !isFrontendDevPort(pagePort)) {
-    candidates.push(window.location.origin);
+  if (isHostedOrigin(host)) return uniqueCleanUrls([origin]);
+
+  if (window.location.protocol === 'https:' && !isLocalHostName(host)) {
+    return uniqueCleanUrls(candidates.filter((candidate) => !shouldIgnoreServerUrlForCurrentLocation(candidate)));
   }
 
   SERVER_PORT_CANDIDATES.forEach((port) => {
-    candidates.push(`${protocol}//${host}:${port}`);
-    if (host === 'localhost' || host === '127.0.0.1') {
+    if (isLocalHostName(host)) {
+      candidates.push(`http://localhost:${port}`);
       candidates.push(`http://127.0.0.1:${port}`);
     } else {
-      // Admin PC usually runs the Node server on localhost while the React app
-      // may be opened through a LAN or deployed URL during testing.
-      candidates.push(`http://localhost:${port}`);
+      candidates.push(`${protocol}//${host}:${port}`);
     }
   });
 
@@ -479,7 +556,12 @@ export default function useServerSync() {
   }, [autoUpload]);
 
   useEffect(() => {
-    serverUrlRef.current = cleanServerUrl(serverUrl);
+    const normalized = normalizeServerUrlForCurrentLocation(serverUrl);
+    serverUrlRef.current = normalized;
+    if (normalized !== serverUrl) {
+      setServerUrlState(normalized);
+      persistServerUrl(normalized);
+    }
   }, [serverUrl]);
 
   const refreshQueueLengths = useCallback(() => {
@@ -488,11 +570,9 @@ export default function useServerSync() {
   }, []);
 
   const setServerUrl = useCallback((value) => {
-    const cleaned = cleanServerUrl(value);
+    const cleaned = normalizeServerUrlForCurrentLocation(value);
     setServerUrlState(cleaned);
-    if (typeof window !== 'undefined' && !isLikelyFrontendDevUrl(cleaned)) {
-      window.localStorage.setItem(SERVER_URL_KEY, cleaned);
-    }
+    persistServerUrl(cleaned);
   }, []);
 
   const setDisplayName = useCallback((value) => {
@@ -510,7 +590,7 @@ export default function useServerSync() {
     makeSuggestedDisplayName(role, clientId)
   ), [clientId]);
 
-  const publishEndpointUrl = useMemo(() => `${cleanServerUrl(serverUrl)}${LIVE_PUBLISH_FAST_PATH}`, [serverUrl]);
+  const publishEndpointUrl = useMemo(() => `${normalizeServerUrlForCurrentLocation(serverUrl)}${LIVE_PUBLISH_FAST_PATH}`, [serverUrl]);
 
   const requestJson = useCallback((url, options = {}) => {
     return fetchJson(url, {
@@ -548,9 +628,7 @@ export default function useServerSync() {
       apiServerVerifiedUrlRef.current = serverUrlRef.current;
       apiServerVerifiedAtRef.current = Date.now();
       setServerUrlState(serverUrlRef.current);
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(SERVER_URL_KEY, serverUrlRef.current);
-      }
+      persistServerUrl(serverUrlRef.current);
       applyHealthData(data);
       setConnectionStatus('connected');
       setLastError('');
@@ -564,8 +642,13 @@ export default function useServerSync() {
   }, [applyHealthData, clientId, safeDisplayName, hasDisplayName]);
 
   const ensureApiServerUrl = useCallback(async (preferredUrl = serverUrlRef.current, options = {}) => {
-    if (!hasDisplayName) return cleanServerUrl(preferredUrl);
-    const current = cleanServerUrl(preferredUrl);
+    const current = normalizeServerUrlForCurrentLocation(preferredUrl);
+    if (current !== cleanServerUrl(preferredUrl)) {
+      serverUrlRef.current = current;
+      setServerUrlState(current);
+      persistServerUrl(current);
+    }
+    if (!hasDisplayName) return current;
     const now = Date.now();
 
     // Critical for 100 Hz live publishing: do not probe /api/health and
@@ -612,12 +695,13 @@ export default function useServerSync() {
   }, [refreshQueueLengths]);
 
   const testConnection = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     setConnectionStatus('testing');
     setLastError('');
 
     try {
-      const data = await requestJson(`${baseUrl}/api/health`, { method: 'GET' });
+      const data = await probeCubliServer(baseUrl, clientId, safeDisplayName);
+      if (!data) throw new Error(`Cubli Node server was not found at ${baseUrl}`);
       applyHealthData(data);
       setConnectionStatus('connected');
       return true;
@@ -631,10 +715,10 @@ export default function useServerSync() {
       setLastError(err?.message || 'Server connection failed');
       return false;
     }
-  }, [applyHealthData, discoverServerUrl, requestJson]);
+  }, [applyHealthData, clientId, discoverServerUrl, safeDisplayName]);
 
   const startSession = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     setLastError('');
 
     try {
@@ -703,7 +787,7 @@ export default function useServerSync() {
     if (!autoUploadRef.current || !activeSessionId || uploadBusyRef.current) return false;
     if (sampleQueueRef.current.length === 0 && eventQueueRef.current.length === 0) return true;
 
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     const samples = sampleQueueRef.current.splice(0, MAX_BATCH_SAMPLES);
     const events = eventQueueRef.current.splice(0, MAX_BATCH_EVENTS);
     refreshQueueLengths();
@@ -830,7 +914,7 @@ export default function useServerSync() {
       }
       consecutivePublish404Ref.current = 0;
       publishBackoffUntilRef.current = 0;
-      apiServerVerifiedUrlRef.current = cleanServerUrl(serverUrlRef.current);
+      apiServerVerifiedUrlRef.current = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
       apiServerVerifiedAtRef.current = Date.now();
       setPublishBackoffUntil(null);
       setLastPublishAt(data.publishedAt || latestSharedPacket?.publishedAt || Date.now());
@@ -894,26 +978,27 @@ export default function useServerSync() {
       const data = await postPublish(baseUrl);
       return handlePublishSuccess(data);
     } catch (err) {
+      let publishError = err;
       // If /api/live/publish is 404, do not keep hammering the wrong port.
       // Search the actual Cubli server (/api/health), switch serverUrl, and
       // retry once immediately. This directly fixes 5050 vs 5058 mismatch.
-      if (Number(err?.status) === 404 && !options.skipDiscoveryRetry) {
+      if (Number(publishError?.status) === 404 && !options.skipDiscoveryRetry) {
         const detectedUrl = await discoverServerUrl(baseUrl);
         if (detectedUrl && detectedUrl !== baseUrl) {
           try {
             const retryData = await postPublish(detectedUrl);
             return handlePublishSuccess(retryData);
           } catch (retryErr) {
-            err = retryErr;
+            publishError = retryErr;
           }
         }
       }
 
-      const is404 = Number(err?.status) === 404;
-      const endpointText = `${cleanServerUrl(serverUrlRef.current)}${LIVE_PUBLISH_PATH}`;
+      const is404 = Number(publishError?.status) === 404;
+      const endpointText = `${normalizeServerUrlForCurrentLocation(serverUrlRef.current)}${LIVE_PUBLISH_PATH}`;
       const errorMessage = is404
         ? `${LIVE_PUBLISH_404_MESSAGE} Current endpoint: ${endpointText}`
-        : (err?.message || 'Live publish failed');
+        : (publishError?.message || 'Live publish failed');
       if (is404) {
         consecutivePublish404Ref.current += 1;
         if (consecutivePublish404Ref.current >= 2) {
@@ -924,19 +1009,19 @@ export default function useServerSync() {
       } else {
         consecutivePublish404Ref.current = 0;
       }
-      setLastPublishHttpStatus(err?.status || null);
+      setLastPublishHttpStatus(publishError?.status || null);
       setLastPublishError(errorMessage);
       setPublishFailedCount((prev) => prev + 1);
       setConnectionStatus('error');
       setLastError(errorMessage);
       return false;
     }
-  }, [clientId, discoverServerUrl, safeDisplayName, ensureApiServerUrl, requestJson, serverSerialStatus.latestDesiredAttitude]);
+  }, [clientId, discoverServerUrl, safeDisplayName, ensureApiServerUrl, serverSerialStatus.latestDesiredAttitude]);
 
   const publishCommandState = useCallback(async (commandKey, params = {}, label = '') => {
     const key = String(commandKey || '').trim();
     if (!key) return false;
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/live/command`, {
         method: 'POST',
@@ -963,7 +1048,7 @@ export default function useServerSync() {
   const requestBridgeCommand = useCallback(async (commandKey, params = {}, eventMeta = {}) => {
     const key = String(commandKey || '').trim();
     if (!key) return false;
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/command-request`, {
         method: 'POST',
@@ -998,7 +1083,7 @@ export default function useServerSync() {
   }, [clientId, recordEvent, requestJson]);
 
   const pollBridgeCommands = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/commands/poll?clientId=${encodeURIComponent(clientId)}&clientName=${encodeURIComponent(safeDisplayName)}`, { method: 'GET' });
       setServerSerialStatus((prev) => ({
@@ -1018,7 +1103,7 @@ export default function useServerSync() {
   const ackBridgeCommand = useCallback(async (commandId, ok, sentLine = '', error = '') => {
     const id = String(commandId || '').trim();
     if (!id) return false;
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/commands/${encodeURIComponent(id)}/ack`, {
         method: 'POST',
@@ -1065,7 +1150,7 @@ export default function useServerSync() {
   }, []);
 
   const refreshServerSerialStatus = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/serial/status`, { method: 'GET' });
       updateServerSerialStatusState(data);
@@ -1077,7 +1162,7 @@ export default function useServerSync() {
   }, [requestJson, updateServerSerialStatusState]);
 
   const listServerSerialPorts = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/serial/ports`, { method: 'GET' });
       const ports = Array.isArray(data.ports) ? data.ports : [];
@@ -1105,7 +1190,7 @@ export default function useServerSync() {
   }, [requestJson, serverSerialPath]);
 
   const connectServerSerial = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/serial/connect`, {
         method: 'POST',
@@ -1120,7 +1205,7 @@ export default function useServerSync() {
   }, [requestJson, serverSerialBaudRate, serverSerialPath, updateServerSerialStatusState]);
 
   const disconnectServerSerial = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/serial/disconnect`, { method: 'POST' });
       updateServerSerialStatusState(data);
@@ -1225,7 +1310,7 @@ export default function useServerSync() {
   ), [sendServerSerialCommand]);
 
   const clearServerSerialStats = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/serial/clear-stats`, { method: 'POST' });
       latestServerSerialPacketRef.current = null;
@@ -1263,7 +1348,7 @@ export default function useServerSync() {
     } catch (err) {
       setConnectionStatus('error');
       const message = err?.status === 404
-        ? `Admin login API was not found at ${cleanServerUrl(serverUrlRef.current)}/api/admin/login. Server URL must point to the Node/Express server, not the React dev server on 3000/3001.`
+        ? `Admin login API was not found at ${normalizeServerUrlForCurrentLocation(serverUrlRef.current)}/api/admin/login. Server URL must point to the Node/Express server, not the React dev server on 3000/3001.`
         : (err?.message || 'Admin login failed');
       setLastError(message);
       setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
@@ -1272,7 +1357,7 @@ export default function useServerSync() {
   }, [clientId, discoverServerUrl, ensureApiServerUrl, requestJson]);
 
   const logoutAdmin = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/admin/logout`, {
         method: 'POST',
@@ -1287,7 +1372,7 @@ export default function useServerSync() {
   }, [clientId, requestJson]);
 
   const refreshAccessState = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/state`, { method: 'GET' });
       setServerSerialStatus((prev) => ({
@@ -1378,7 +1463,7 @@ export default function useServerSync() {
     if (liveLatestPollBusyRef.current) return null;
     liveLatestPollBusyRef.current = true;
 
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/live/latest`, { method: 'GET' });
       applyLivePayload(data, { updateState: true });
@@ -1396,7 +1481,7 @@ export default function useServerSync() {
   const grantControl = useCallback(async (targetClientId) => {
     const target = String(targetClientId || '').trim();
     if (!target) return false;
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/clients/${encodeURIComponent(target)}/grant-control`, {
         method: 'POST',
@@ -1411,7 +1496,7 @@ export default function useServerSync() {
   }, [requestJson]);
 
   const revokeControl = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const currentController = serverSerialStatus.access?.controllerClientId || '';
       const url = currentController
@@ -1427,7 +1512,7 @@ export default function useServerSync() {
   }, [requestJson, serverSerialStatus.access?.controllerClientId]);
 
   const resetAccessState = useCallback(async () => {
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/access/reset`, { method: 'POST' });
       setServerSerialStatus((prev) => ({ ...prev, access: data.access || prev.access, lastError: '' }));
@@ -1461,7 +1546,7 @@ export default function useServerSync() {
       await flushNow();
     }
 
-    const baseUrl = cleanServerUrl(serverUrlRef.current);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       await requestJson(`${baseUrl}/api/sessions/${encodeURIComponent(activeSessionId)}/stop`, {
         method: 'POST',
@@ -1510,7 +1595,7 @@ export default function useServerSync() {
     if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') return undefined;
     if (!hasDisplayName) return undefined;
 
-    const baseUrl = cleanServerUrl(serverUrl);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrl);
     if (isLikelyFrontendDevUrl(baseUrl)) return undefined;
 
     let closed = false;
@@ -1604,7 +1689,7 @@ export default function useServerSync() {
 
   const downloadUrl = useMemo(() => {
     if (!sessionId) return '';
-    return `${cleanServerUrl(serverUrl)}/api/sessions/${encodeURIComponent(sessionId)}/download`;
+    return `${normalizeServerUrlForCurrentLocation(serverUrl)}/api/sessions/${encodeURIComponent(sessionId)}/download`;
   }, [serverUrl, sessionId]);
 
   return {
