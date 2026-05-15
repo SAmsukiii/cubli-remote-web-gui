@@ -442,7 +442,7 @@ function getEffectiveRole(clientId) {
 
 function sanitizeClientName(value) {
   return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 30);
@@ -459,17 +459,29 @@ function getStoredClientName(clientId = '') {
 }
 
 function getClientLabel(clientId = '') {
-  return getStoredClientName(clientId) || shortClientId(clientId);
+  return getStoredClientName(clientId) || shortClientId(clientId) || 'Unknown';
+}
+
+function decodeClientNameHeader(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    return decodeURIComponent(text);
+  } catch (_) {
+    return '';
+  }
 }
 
 function readClientName(req, clientId = '') {
   return sanitizeClientName(
-    req.get('x-cubli-client-name')
-      || req.body?.clientName
+    decodeClientNameHeader(req.get('x-cubli-client-name-encoded'))
+      || req.get('x-cubli-client-name')
       || req.body?.displayName
-      || req.query?.clientName
+      || req.body?.clientName
       || req.query?.displayName
+      || req.query?.clientName
       || getStoredClientName(clientId)
+      || shortClientId(clientId)
       || ''
   );
 }
@@ -484,7 +496,7 @@ function rememberClient(identity) {
   const clientId = String(safeIdentity.clientId || '').trim();
   if (!clientId) return;
   const previous = accessState.clients.get(clientId) || {};
-  const displayName = sanitizeClientName(safeIdentity.displayName || safeIdentity.clientName || previous.displayName || previous.clientName || '');
+  const displayName = sanitizeClientName(safeIdentity.displayName || safeIdentity.clientName || previous?.displayName || previous?.clientName || shortClientId(clientId) || '');
   accessState.clients.set(clientId, {
     clientId,
     displayName,
@@ -549,10 +561,10 @@ function publicAccessState(forClientId = '') {
   cleanupStaleController();
   const now = Date.now();
   const safeForClientId = String(forClientId || '').trim();
-  const clients = Array.from(accessState.clients.values()).filter((client) => client && client.clientId).map((client) => {
+  const clients = Array.from(accessState.clients.values()).filter((client) => client?.clientId).map((client) => {
     const connected = isClientConnected(client, now);
-    const displayName = sanitizeClientName(client.displayName || client.clientName || '');
-    const clientId = String(client.clientId || '').trim();
+    const displayName = sanitizeClientName(client?.displayName || client?.clientName || shortClientId(client?.clientId) || '');
+    const clientId = String(client?.clientId || '').trim();
     return {
       ...client,
       clientId,

@@ -31,24 +31,56 @@ function makeClientId() {
 
 function getStoredClientId() {
   if (typeof window === 'undefined') return makeClientId();
-  const existing = window.localStorage.getItem(CLIENT_ID_KEY);
+  const existing = getLocalStorageValue(CLIENT_ID_KEY);
   if (existing) return existing;
   const next = makeClientId();
-  window.localStorage.setItem(CLIENT_ID_KEY, next);
+  setLocalStorageValue(CLIENT_ID_KEY, next);
   return next;
 }
 
+function replaceDisplayNameControlChars(value) {
+  return Array.from(String(value || '')).map((char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : char;
+  }).join('');
+}
+
 function sanitizeDisplayName(value) {
-  return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
+  return replaceDisplayNameControlChars(value)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 30);
 }
 
+function encodeClientName(value) {
+  return encodeURIComponent(sanitizeDisplayName(value));
+}
+
+function asciiClientNameFallback(value) {
+  return sanitizeDisplayName(value)
+    .replace(/[^\x20-\x7E]/g, '')
+    .slice(0, 30);
+}
+
+function getCurrentPageHeaderValue() {
+  if (typeof window === 'undefined') return '/';
+  const path = window.location.pathname || '/';
+  return encodeURI(path).replace(/[^\x20-\x7E]/g, '');
+}
+
+function makeClientHeaders(clientId, displayName, extraHeaders = {}) {
+  return {
+    ...extraHeaders,
+    'X-Cubli-Client-Id': String(clientId || ''),
+    'X-Cubli-Client-Name-Encoded': encodeClientName(displayName),
+    'X-Cubli-Client-Name': asciiClientNameFallback(displayName),
+    'X-Cubli-Page': getCurrentPageHeaderValue(),
+  };
+}
+
 function getStoredDisplayName() {
   if (typeof window === 'undefined') return '';
-  return sanitizeDisplayName(window.localStorage.getItem(DISPLAY_NAME_KEY) || '');
+  return sanitizeDisplayName(getLocalStorageValue(DISPLAY_NAME_KEY));
 }
 
 function makeSuggestedDisplayName(role = 'Viewer', clientId = '') {
@@ -78,6 +110,24 @@ function addClientIdentityToJsonBody(body, clientId, displayName) {
 
 function cleanServerUrl(url) {
   return String(url || FALLBACK_SERVER_URL).trim().replace(/\/+$/, '');
+}
+
+function getLocalStorageValue(key, fallback = '') {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    return window.localStorage.getItem(key) || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function setLocalStorageValue(key, value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, String(value || ''));
+  } catch (_) {
+    // Ignore blocked storage; the app can continue with in-memory state.
+  }
 }
 
 function isLocalHostName(hostname) {
@@ -160,8 +210,7 @@ function normalizeServerUrlForCurrentLocation(url) {
 }
 
 function persistServerUrl(url) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(SERVER_URL_KEY, cleanServerUrl(url));
+  setLocalStorageValue(SERVER_URL_KEY, cleanServerUrl(url));
 }
 
 function isFrontendDevPort(port) {
@@ -186,7 +235,7 @@ function getDefaultServerUrl() {
   if (typeof window === 'undefined') return FALLBACK_SERVER_URL;
 
   const defaultUrl = getLocationDefaultServerUrl();
-  const stored = window.localStorage.getItem(SERVER_URL_KEY);
+  const stored = getLocalStorageValue(SERVER_URL_KEY);
   if (!stored) return defaultUrl;
 
   const cleaned = cleanServerUrl(stored);
@@ -239,10 +288,8 @@ async function probeCubliServer(baseUrl, clientId = '', displayName = '') {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timeoutId = controller ? window.setTimeout(() => controller.abort(), 1200) : null;
   const headers = {
+    ...makeClientHeaders(clientId, displayName),
     'Accept': 'application/json',
-    'X-Cubli-Client-Id': clientId,
-    'X-Cubli-Client-Name': displayName,
-    'X-Cubli-Page': typeof window !== 'undefined' ? window.location.pathname || '/' : '/',
   };
 
   try {
@@ -579,9 +626,7 @@ export default function useServerSync() {
     const next = sanitizeDisplayName(value);
     if (!next) return '';
     setDisplayNameState(next);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(DISPLAY_NAME_KEY, next);
-    }
+    setLocalStorageValue(DISPLAY_NAME_KEY, next);
     setLastError('');
     return next;
   }, []);
@@ -596,12 +641,7 @@ export default function useServerSync() {
     return fetchJson(url, {
       ...options,
       body: addClientIdentityToJsonBody(options.body, clientId, safeDisplayName),
-      headers: {
-        'X-Cubli-Client-Id': clientId,
-        'X-Cubli-Client-Name': safeDisplayName,
-        'X-Cubli-Page': typeof window !== 'undefined' ? window.location.pathname || '/' : '/',
-        ...(options.headers || {}),
-      },
+      headers: makeClientHeaders(clientId, safeDisplayName, options.headers || {}),
     });
   }, [clientId, safeDisplayName]);
 
@@ -938,12 +978,9 @@ export default function useServerSync() {
       const endpointPath = options.fast ? LIVE_PUBLISH_FAST_PATH : LIVE_PUBLISH_PATH;
       const response = await fetch(`${cleanServerUrl(baseUrl)}${endpointPath}`, {
         method: 'POST',
-        headers: {
+        headers: makeClientHeaders(clientId, safeDisplayName, {
           'Content-Type': 'application/json',
-          'X-Cubli-Client-Id': clientId,
-          'X-Cubli-Client-Name': safeDisplayName,
-          'X-Cubli-Page': typeof window !== 'undefined' ? window.location.pathname || '/' : '/',
-        },
+        }),
         body: makePublishPayload(),
       });
 

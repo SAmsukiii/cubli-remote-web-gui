@@ -143,9 +143,15 @@ const SENSOR_TO_CUBLI_FRAME_QUAT = new THREE.Quaternion().setFromEuler(
 );
 const SENSOR_TO_CUBLI_FRAME_QUAT_INV = SENSOR_TO_CUBLI_FRAME_QUAT.clone().invert();
 
+function replaceDisplayNameControlChars(value) {
+  return Array.from(String(value || '')).map((char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : char;
+  }).join('');
+}
+
 function sanitizeDisplayNameInput(value) {
-  return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
+  return replaceDisplayNameControlChars(value)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 30);

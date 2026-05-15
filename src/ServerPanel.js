@@ -482,8 +482,8 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
   const controllerValue = controllerClientId
     ? `${controllerName || shortClientId(controllerClientId)} (${shortClientId(controllerClientId)})`
     : '-';
-  const myName = String(safeServerSync.displayName || safeServerSync.clientName || safeAccess.displayName || safeAccess.clientName || '').trim()
-    || shortClientId(safeServerSync.clientId)
+  const myName = String(safeServerSync?.displayName || safeServerSync?.clientName || safeAccess?.displayName || safeAccess?.clientName || '').trim()
+    || shortClientId(safeServerSync?.clientId)
     || 'Unnamed';
 
   return (
