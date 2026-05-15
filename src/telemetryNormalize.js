@@ -196,11 +196,83 @@ export function hasDebugTelemetry(packet) {
   ].some((key) => finiteNumber(packet?.[key], null) !== null);
 }
 
+function telemetryNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function firstTelemetryNumber(values, fallback = null) {
+  for (const value of values) {
+    const number = telemetryNumber(value);
+    if (number !== null) return number;
+  }
+  return fallback;
+}
+
+function normalizeEncoderTelemetry(packet = {}) {
+  const nested = packet?.encoder || {};
+  const encX = firstTelemetryNumber([packet.enc_x_deg, packet.encoderXDeg, nested.x], null);
+  const encY = firstTelemetryNumber([packet.enc_y_deg, packet.encoderYDeg, nested.y], null);
+  const encZ = firstTelemetryNumber([packet.enc_z_deg, packet.encoderZDeg, nested.z], null);
+  const encQ0 = firstTelemetryNumber([packet.enc_q0, packet.encoderQ0, nested.q0], null);
+  const encQ1 = firstTelemetryNumber([packet.enc_q1, packet.encoderQ1, nested.q1], null);
+  const encQ2 = firstTelemetryNumber([packet.enc_q2, packet.encoderQ2, nested.q2], null);
+  const encQ3 = firstTelemetryNumber([packet.enc_q3, packet.encoderQ3, nested.q3], null);
+  const timerX = firstTelemetryNumber([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
+  const timerY = firstTelemetryNumber([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
+  const timerZ = firstTelemetryNumber([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
+  const encoderUpdatedAt = firstTelemetryNumber([packet.encoderUpdatedAt, nested.updatedAt], null);
+  const hasEncoderData = [encX, encY, encZ, encQ0, encQ1, encQ2, encQ3, timerX, timerY, timerZ]
+    .some((value) => value !== null);
+  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'encoder packet' : '');
+
+  return {
+    enc_x_deg: encX,
+    enc_y_deg: encY,
+    enc_z_deg: encZ,
+    encoderXDeg: encX,
+    encoderYDeg: encY,
+    encoderZDeg: encZ,
+    enc_q0: encQ0,
+    enc_q1: encQ1,
+    enc_q2: encQ2,
+    enc_q3: encQ3,
+    encoderQ0: encQ0,
+    encoderQ1: encQ1,
+    encoderQ2: encQ2,
+    encoderQ3: encQ3,
+    enc_timer_x: timerX,
+    enc_timer_y: timerY,
+    enc_timer_z: timerZ,
+    encoderTimerX: timerX,
+    encoderTimerY: timerY,
+    encoderTimerZ: timerZ,
+    encoderUpdatedAt,
+    encoderSource,
+    encoder: {
+      x: encX,
+      y: encY,
+      z: encZ,
+      q0: encQ0,
+      q1: encQ1,
+      q2: encQ2,
+      q3: encQ3,
+      timerX,
+      timerY,
+      timerZ,
+      updatedAt: encoderUpdatedAt,
+      source: encoderSource,
+    },
+  };
+}
+
 export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   if (!packet || typeof packet !== 'object') return null;
 
   const resolvedSource = sourceKey(source || packet.source);
   const sourceLabel = packet.sourceLabel || SOURCE_LABELS[resolvedSource] || String(resolvedSource);
+  const encoderTelemetry = normalizeEncoderTelemetry(packet);
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4
     ? packet.q
     : [packet.q0, packet.q1, packet.q2, packet.q3];
@@ -334,6 +406,8 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
 
     publisherClientId: packet.publisherClientId || options.publisherClientId || '',
     publisherRole: packet.publisherRole || options.publisherRole || '',
+
+    ...encoderTelemetry,
   };
 
   common.hasWheelTelemetry = hasWheelTelemetry(common);

@@ -124,6 +124,77 @@ function firstFinite(values, fallback = null) {
   return fallback;
 }
 
+function strictFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function firstStrictFinite(values, fallback = null) {
+  for (const value of values) {
+    const number = strictFiniteNumber(value, null);
+    if (number !== null) return number;
+  }
+  return fallback;
+}
+
+function normalizeEncoderTelemetry(packet = {}) {
+  const nested = packet?.encoder || {};
+  const encX = firstStrictFinite([packet.enc_x_deg, packet.encoderXDeg, nested.x], null);
+  const encY = firstStrictFinite([packet.enc_y_deg, packet.encoderYDeg, nested.y], null);
+  const encZ = firstStrictFinite([packet.enc_z_deg, packet.encoderZDeg, nested.z], null);
+  const encQ0 = firstStrictFinite([packet.enc_q0, packet.encoderQ0, nested.q0], null);
+  const encQ1 = firstStrictFinite([packet.enc_q1, packet.encoderQ1, nested.q1], null);
+  const encQ2 = firstStrictFinite([packet.enc_q2, packet.encoderQ2, nested.q2], null);
+  const encQ3 = firstStrictFinite([packet.enc_q3, packet.encoderQ3, nested.q3], null);
+  const timerX = firstStrictFinite([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
+  const timerY = firstStrictFinite([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
+  const timerZ = firstStrictFinite([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
+  const encoderUpdatedAt = firstStrictFinite([packet.encoderUpdatedAt, nested.updatedAt], null);
+  const hasEncoderData = [encX, encY, encZ, encQ0, encQ1, encQ2, encQ3, timerX, timerY, timerZ]
+    .some((value) => value !== null);
+  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'encoder packet' : '');
+
+  return {
+    enc_x_deg: encX,
+    enc_y_deg: encY,
+    enc_z_deg: encZ,
+    encoderXDeg: encX,
+    encoderYDeg: encY,
+    encoderZDeg: encZ,
+    enc_q0: encQ0,
+    enc_q1: encQ1,
+    enc_q2: encQ2,
+    enc_q3: encQ3,
+    encoderQ0: encQ0,
+    encoderQ1: encQ1,
+    encoderQ2: encQ2,
+    encoderQ3: encQ3,
+    enc_timer_x: timerX,
+    enc_timer_y: timerY,
+    enc_timer_z: timerZ,
+    encoderTimerX: timerX,
+    encoderTimerY: timerY,
+    encoderTimerZ: timerZ,
+    encoderUpdatedAt,
+    encoderSource,
+    encoder: {
+      x: encX,
+      y: encY,
+      z: encZ,
+      q0: encQ0,
+      q1: encQ1,
+      q2: encQ2,
+      q3: encQ3,
+      timerX,
+      timerY,
+      timerZ,
+      updatedAt: encoderUpdatedAt,
+      source: encoderSource,
+    },
+  };
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -306,6 +377,7 @@ function normalizePublishedPacket(packet, source, identity) {
   const wy = hasTelemetryRate ? wyTelemetry : (rateFresh ? omega.wy : null);
   const wz = hasTelemetryRate ? wzTelemetry : (rateFresh ? omega.wz : null);
   const angularRateSource = hasTelemetryRate ? (packet.angularRateSource || 'satellite body rate') : (rateFresh ? 'computed from quaternion' : '');
+  const encoderTelemetry = normalizeEncoderTelemetry(packet);
 
   const publishedAt = now;
   const normalized = {
@@ -381,6 +453,7 @@ function normalizePublishedPacket(packet, source, identity) {
     lastCommandByClientId: packet.lastCommandByClientId || sharedState.lastCommandInfo?.clientId || '',
     lastCommandAllowed: typeof packet.lastCommandAllowed === 'boolean' ? packet.lastCommandAllowed : sharedState.lastCommandInfo?.allowed ?? null,
     lastCommandDenied: Boolean(packet.lastCommandDenied || sharedState.lastCommandInfo?.denied),
+    ...encoderTelemetry,
   };
 
   return { ok: true, packet: normalized };
@@ -679,8 +752,10 @@ function setLatestSharedPacket(packet, meta = {}) {
   const source = normalizeSourceKey(meta.source || packet.source || 'admin-web-serial');
   const publishedAt = meta.publishedAt || Date.now();
   const sourceLabel = meta.sourceLabel || SOURCE_LABELS[source] || packet.sourceLabel || source;
+  const encoderTelemetry = normalizeEncoderTelemetry(packet);
   const sharedPacket = {
     ...packet,
+    ...encoderTelemetry,
     source,
     sourceLabel,
     publishedAt,
@@ -714,6 +789,9 @@ function setLatestSharedPacket(packet, meta = {}) {
     RPMcmd1: sharedPacket.RPMcmd1,
     RPMcmd2: sharedPacket.RPMcmd2,
     RPMcmd3: sharedPacket.RPMcmd3,
+    encX: sharedPacket.enc_x_deg ?? sharedPacket.encoderXDeg,
+    encY: sharedPacket.enc_y_deg ?? sharedPacket.encoderYDeg,
+    encZ: sharedPacket.enc_z_deg ?? sharedPacket.encoderZDeg,
   }, MAX_CHART_POINTS);
   if (sharedPacket.raw) pushLimited(sharedState.rawLines, { time: publishedAt, raw: sharedPacket.raw, source, sourceLabel }, MAX_RAW_LINES);
   appendActiveSessionSample(sharedPacket);

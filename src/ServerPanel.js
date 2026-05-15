@@ -42,6 +42,10 @@ const LOG_COLUMNS = [
   'Tmotor1_Nm', 'Tmotor2_Nm', 'Tmotor3_Nm',
   'control_mode', 'EBIMU_status', 'logging_status',
   'timestamp', 'seq',
+  'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
+  'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
+  'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
+  'encoder_source', 'encoder_updated_at',
   'lastCommandKey', 'lastCommandLabel',
   'raw',
 ];
@@ -94,6 +98,77 @@ function formatSourceLabel(source) {
 function formatStatusToken(value) {
   if (value === null || value === undefined || value === '') return '-';
   return String(value);
+}
+
+function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
+  const value = packet?.[snakeKey] ?? packet?.[camelKey] ?? packet?.encoder?.[nestedKey];
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function getEncoderSnapshot(packet = {}, now = Date.now()) {
+  const x = encoderNumber(packet, 'enc_x_deg', 'encoderXDeg', 'x');
+  const y = encoderNumber(packet, 'enc_y_deg', 'encoderYDeg', 'y');
+  const z = encoderNumber(packet, 'enc_z_deg', 'encoderZDeg', 'z');
+  const q0 = encoderNumber(packet, 'enc_q0', 'encoderQ0', 'q0');
+  const q1 = encoderNumber(packet, 'enc_q1', 'encoderQ1', 'q1');
+  const q2 = encoderNumber(packet, 'enc_q2', 'encoderQ2', 'q2');
+  const q3 = encoderNumber(packet, 'enc_q3', 'encoderQ3', 'q3');
+  const timerX = encoderNumber(packet, 'enc_timer_x', 'encoderTimerX', 'timerX');
+  const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
+  const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
+  const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
+  const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
+  const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
+  const status = !hasValues ? 'NONE' : (ageMs !== null && ageMs <= 1000 ? 'LIVE' : 'STALE');
+  return {
+    x,
+    y,
+    z,
+    q0,
+    q1,
+    q2,
+    q3,
+    timerX,
+    timerY,
+    timerZ,
+    updatedAt,
+    ageMs,
+    source: packet?.encoderSource || packet?.encoder?.source || '',
+    status,
+  };
+}
+
+function buildEncoderRows(packet = {}) {
+  const encoder = getEncoderSnapshot(packet);
+  const rows = [
+    { label: 'Encoder status', value: encoder.status },
+    { label: 'Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
+    { label: 'Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
+    { label: 'Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+  ];
+  if ([encoder.q0, encoder.q1, encoder.q2, encoder.q3].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
+      { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
+      { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
+      { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
+    );
+  }
+  if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
+      { label: 'Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
+      { label: 'Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
+    );
+  }
+  rows.push(
+    { label: 'Encoder source', value: encoder.source || '-' },
+    { label: 'Encoder updated', value: formatDateTime(encoder.updatedAt) },
+    { label: 'Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
+  );
+  return rows;
 }
 
 function parseGainValue(value) {
@@ -209,6 +284,18 @@ function normalizePacketForLog(packet) {
     logging_status: source.logging_status,
     timestamp: source.timestamp ?? source.ebimu_timestamp_ms,
     seq: source.seq,
+    enc_x_deg: source.enc_x_deg ?? source.encoderXDeg ?? source.encoder?.x,
+    enc_y_deg: source.enc_y_deg ?? source.encoderYDeg ?? source.encoder?.y,
+    enc_z_deg: source.enc_z_deg ?? source.encoderZDeg ?? source.encoder?.z,
+    enc_q0: source.enc_q0 ?? source.encoderQ0 ?? source.encoder?.q0,
+    enc_q1: source.enc_q1 ?? source.encoderQ1 ?? source.encoder?.q1,
+    enc_q2: source.enc_q2 ?? source.encoderQ2 ?? source.encoder?.q2,
+    enc_q3: source.enc_q3 ?? source.encoderQ3 ?? source.encoder?.q3,
+    enc_timer_x: source.enc_timer_x ?? source.encoderTimerX ?? source.encoder?.timerX ?? source.encoder?.timer_x,
+    enc_timer_y: source.enc_timer_y ?? source.encoderTimerY ?? source.encoder?.timerY ?? source.encoder?.timer_y,
+    enc_timer_z: source.enc_timer_z ?? source.encoderTimerZ ?? source.encoder?.timerZ ?? source.encoder?.timer_z,
+    encoder_source: source.encoderSource || source.encoder?.source,
+    encoder_updated_at: source.encoderUpdatedAt ?? source.encoder?.updatedAt,
     lastCommandKey: source.lastCommandKey,
     lastCommandLabel: source.lastCommandLabel,
     raw: source.raw || '',
@@ -889,6 +976,8 @@ function MonitoringSection({ status }) {
     { label: 'logging_status', value: formatStatusToken(latest.logging_status) },
   ], [latest]);
 
+  const encoderRows = useMemo(() => buildEncoderRows(latest), [latest]);
+
   const debugRows = useMemo(() => [
     { label: 'PWM1', value: formatNumber(latest.PWM1, 1) },
     { label: 'PWM2', value: formatNumber(latest.PWM2, 1) },
@@ -936,6 +1025,9 @@ function MonitoringSection({ status }) {
         RPMcmd1: n(row.RPMcmd1),
         RPMcmd2: n(row.RPMcmd2),
         RPMcmd3: n(row.RPMcmd3),
+        encX: n(row.encX ?? row.enc_x_deg ?? row.encoderXDeg),
+        encY: n(row.encY ?? row.enc_y_deg ?? row.encoderYDeg),
+        encZ: n(row.encZ ?? row.enc_z_deg ?? row.encoderZDeg),
       };
     });
   }, [safeStatus.chartData]);
@@ -1001,6 +1093,7 @@ function MonitoringSection({ status }) {
           )}
         </Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title="Encoder Reference" rows={encoderRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Time / Command" rows={timeCommandRows} /></Col>
@@ -1054,6 +1147,18 @@ function MonitoringSection({ status }) {
                   { key: 'roll', name: 'Roll', stroke: '#4dabf7' },
                   { key: 'pitch', name: 'Pitch', stroke: '#ffd43b' },
                   { key: 'yaw', name: 'Yaw', stroke: '#ff8787' },
+                ]}
+              />
+            </Col>
+            <Col xs={12} xl={6}>
+              <LiveTelemetryChart
+                title="Encoder Reference Angle"
+                data={livePlotData}
+                yLabel="deg"
+                lines={[
+                  { key: 'encX', name: 'Enc X [deg]', stroke: '#20c997' },
+                  { key: 'encY', name: 'Enc Y [deg]', stroke: '#ffa94d' },
+                  { key: 'encZ', name: 'Enc Z [deg]', stroke: '#f06595' },
                 ]}
               />
             </Col>

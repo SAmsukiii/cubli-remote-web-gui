@@ -361,6 +361,7 @@ function legacyCommandToKey(command) {
 }
 
 function finiteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
@@ -416,13 +417,28 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     rollDeg: firstFinite([src.rollDeg, src.roll_deg, src.roll], 0),
     pitchDeg: firstFinite([src.pitchDeg, src.pitch_deg, src.pitch], 0),
     yawDeg: firstFinite([src.yawDeg, src.yaw_deg, src.yaw], 0),
+    enc_x_deg: firstFinite([src.enc_x_deg, src.encoderXDeg, src.encoder?.x], null),
+    enc_y_deg: firstFinite([src.enc_y_deg, src.encoderYDeg, src.encoder?.y], null),
+    enc_z_deg: firstFinite([src.enc_z_deg, src.encoderZDeg, src.encoder?.z], null),
     encoderXDeg: firstFinite([src.encoderXDeg, src.enc_x_deg, src.encoder?.x], null),
     encoderYDeg: firstFinite([src.encoderYDeg, src.enc_y_deg, src.encoder?.y], null),
     encoderZDeg: firstFinite([src.encoderZDeg, src.enc_z_deg, src.encoder?.z], null),
+    enc_q0: firstFinite([src.enc_q0, src.encoderQ0, src.encoder?.q0], null),
+    enc_q1: firstFinite([src.enc_q1, src.encoderQ1, src.encoder?.q1], null),
+    enc_q2: firstFinite([src.enc_q2, src.encoderQ2, src.encoder?.q2], null),
+    enc_q3: firstFinite([src.enc_q3, src.encoderQ3, src.encoder?.q3], null),
     encoderQ0: firstFinite([src.encoderQ0, src.enc_q0, src.encoder?.q0], null),
     encoderQ1: firstFinite([src.encoderQ1, src.enc_q1, src.encoder?.q1], null),
     encoderQ2: firstFinite([src.encoderQ2, src.enc_q2, src.encoder?.q2], null),
     encoderQ3: firstFinite([src.encoderQ3, src.enc_q3, src.encoder?.q3], null),
+    enc_timer_x: firstFinite([src.enc_timer_x, src.encoderTimerX, src.encoder?.timerX, src.encoder?.timer_x], null),
+    enc_timer_y: firstFinite([src.enc_timer_y, src.encoderTimerY, src.encoder?.timerY, src.encoder?.timer_y], null),
+    enc_timer_z: firstFinite([src.enc_timer_z, src.encoderTimerZ, src.encoder?.timerZ, src.encoder?.timer_z], null),
+    encoderTimerX: firstFinite([src.encoderTimerX, src.enc_timer_x, src.encoder?.timerX, src.encoder?.timer_x], null),
+    encoderTimerY: firstFinite([src.encoderTimerY, src.enc_timer_y, src.encoder?.timerY, src.encoder?.timer_y], null),
+    encoderTimerZ: firstFinite([src.encoderTimerZ, src.enc_timer_z, src.encoder?.timerZ, src.encoder?.timer_z], null),
+    encoderSource: src.encoderSource || src.encoder?.source || '',
+    encoderUpdatedAt: firstFinite([src.encoderUpdatedAt, src.encoder?.updatedAt], null),
     qerr_deg: firstFinite([src.qerr_deg, src.qerrDeg, src.qerrTelemetryDeg], null),
     qerrDeg: firstFinite([src.qerrDeg, src.qerr_deg, src.qerrTelemetryDeg], null),
     qerrSource: src.qerrSource || '',

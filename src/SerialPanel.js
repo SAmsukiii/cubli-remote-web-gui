@@ -42,6 +42,18 @@ const CSV_COLUMNS = [
   'logging_status',
   'timestamp',
   'seq',
+  'enc_x_deg',
+  'enc_y_deg',
+  'enc_z_deg',
+  'enc_q0',
+  'enc_q1',
+  'enc_q2',
+  'enc_q3',
+  'enc_timer_x',
+  'enc_timer_y',
+  'enc_timer_z',
+  'encoder_source',
+  'encoder_updated_at',
   'lastCommandKey',
   'lastCommandLabel',
   'raw',
@@ -106,6 +118,77 @@ function formatStatusToken(value) {
   return String(value);
 }
 
+function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
+  const value = packet?.[snakeKey] ?? packet?.[camelKey] ?? packet?.encoder?.[nestedKey];
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function getEncoderSnapshot(packet = {}, now = Date.now()) {
+  const x = encoderNumber(packet, 'enc_x_deg', 'encoderXDeg', 'x');
+  const y = encoderNumber(packet, 'enc_y_deg', 'encoderYDeg', 'y');
+  const z = encoderNumber(packet, 'enc_z_deg', 'encoderZDeg', 'z');
+  const q0 = encoderNumber(packet, 'enc_q0', 'encoderQ0', 'q0');
+  const q1 = encoderNumber(packet, 'enc_q1', 'encoderQ1', 'q1');
+  const q2 = encoderNumber(packet, 'enc_q2', 'encoderQ2', 'q2');
+  const q3 = encoderNumber(packet, 'enc_q3', 'encoderQ3', 'q3');
+  const timerX = encoderNumber(packet, 'enc_timer_x', 'encoderTimerX', 'timerX');
+  const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
+  const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
+  const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
+  const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
+  const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
+  const status = !hasValues ? 'NONE' : (ageMs !== null && ageMs <= 1000 ? 'LIVE' : 'STALE');
+  return {
+    x,
+    y,
+    z,
+    q0,
+    q1,
+    q2,
+    q3,
+    timerX,
+    timerY,
+    timerZ,
+    updatedAt,
+    ageMs,
+    source: packet?.encoderSource || packet?.encoder?.source || '',
+    status,
+  };
+}
+
+function buildEncoderRows(packet = {}) {
+  const encoder = getEncoderSnapshot(packet);
+  const rows = [
+    { label: 'Encoder status', value: encoder.status },
+    { label: 'Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
+    { label: 'Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
+    { label: 'Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+  ];
+  if ([encoder.q0, encoder.q1, encoder.q2, encoder.q3].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
+      { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
+      { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
+      { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
+    );
+  }
+  if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
+      { label: 'Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
+      { label: 'Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
+    );
+  }
+  rows.push(
+    { label: 'Encoder source', value: encoder.source || '-' },
+    { label: 'Encoder updated', value: formatDateTime(encoder.updatedAt) },
+    { label: 'Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
+  );
+  return rows;
+}
+
 function parseGainValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < ATTITUDE_GAIN_MIN || number > ATTITUDE_GAIN_MAX) return null;
@@ -155,6 +238,18 @@ function packetToCsvRow(packet) {
     qerr_source: packet.qerrSource,
     angular_rate_source: packet.angularRateSource,
     timestamp: packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs,
+    enc_x_deg: packet.enc_x_deg ?? packet.encoderXDeg ?? packet.encoder?.x,
+    enc_y_deg: packet.enc_y_deg ?? packet.encoderYDeg ?? packet.encoder?.y,
+    enc_z_deg: packet.enc_z_deg ?? packet.encoderZDeg ?? packet.encoder?.z,
+    enc_q0: packet.enc_q0 ?? packet.encoderQ0 ?? packet.encoder?.q0,
+    enc_q1: packet.enc_q1 ?? packet.encoderQ1 ?? packet.encoder?.q1,
+    enc_q2: packet.enc_q2 ?? packet.encoderQ2 ?? packet.encoder?.q2,
+    enc_q3: packet.enc_q3 ?? packet.encoderQ3 ?? packet.encoder?.q3,
+    enc_timer_x: packet.enc_timer_x ?? packet.encoderTimerX ?? packet.encoder?.timerX ?? packet.encoder?.timer_x,
+    enc_timer_y: packet.enc_timer_y ?? packet.encoderTimerY ?? packet.encoder?.timerY ?? packet.encoder?.timer_y,
+    enc_timer_z: packet.enc_timer_z ?? packet.encoderTimerZ ?? packet.encoder?.timerZ ?? packet.encoder?.timer_z,
+    encoder_source: packet.encoderSource || packet.encoder?.source,
+    encoder_updated_at: packet.encoderUpdatedAt ?? packet.encoder?.updatedAt,
   };
   return CSV_COLUMNS.map((column) => csvEscape(row[column])).join(',');
 }
@@ -426,15 +521,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'logging_status', value: formatStatusToken(latest.logging_status) },
   ], [latest]);
 
-  const encoderRows = useMemo(() => [
-    { label: 'Encoder X', value: `${formatNumber(latest.enc_x_deg, 2)}°` },
-    { label: 'Encoder Y', value: `${formatNumber(latest.enc_y_deg, 2)}°` },
-    { label: 'Encoder Z', value: `${formatNumber(latest.enc_z_deg, 2)}°` },
-    { label: 'enc q0', value: formatNumber(latest.enc_q0, 5) },
-    { label: 'enc q1', value: formatNumber(latest.enc_q1, 5) },
-    { label: 'enc q2', value: formatNumber(latest.enc_q2, 5) },
-    { label: 'enc q3', value: formatNumber(latest.enc_q3, 5) },
-  ], [latest]);
+  const encoderRows = useMemo(() => buildEncoderRows(latest), [latest]);
 
   const statusRows = useMemo(() => [
     { label: 'Source', value: latest.sourceLabel || 'Admin Web Serial Bridge' },
@@ -442,6 +529,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'Timestamp', value: `${formatNumber(latest.ebimu_timestamp_ms, 0)}` },
     { label: 'Seq / RX', value: `${formatNumber(latest.seq, 0)} / ${formatNumber(latest.rxCount, 0)}` },
     { label: 'Valid / Invalid', value: `${serial.validCount} / ${serial.invalidCount}` },
+    { label: 'Encoder packets', value: `${serial.encoderCount || 0}` },
     { label: 'Ignored', value: `${serial.ignoredCount ?? 0}` },
     { label: 'Warning', value: `${serial.warningCount || 0}` },
     { label: 'Last RX', value: formatDateTime(serial.lastReceivedAt) },
@@ -658,7 +746,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
         <Col xs={12} xl={6}><ValueGrid title="Angular Rate" rows={rateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Telemetry Status" rows={telemetryStatusRows} /></Col>
-        <Col xs={12}><ValueGrid title="Encoder" rows={encoderRows} /></Col>
+        <Col xs={12}><ValueGrid title="Encoder Reference" rows={encoderRows} /></Col>
         <Col xs={12}><ValueGrid title="Receiver" rows={statusRows} /></Col>
       </Row>
 

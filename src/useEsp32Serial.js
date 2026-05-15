@@ -23,13 +23,42 @@ const DEFAULT_PACKET = {
   ebimu_timestamp_ms: 0,
   seq: 0,
   rxCount: 0,
-  enc_x_deg: 0,
-  enc_y_deg: 0,
-  enc_z_deg: 0,
-  enc_q0: 1,
-  enc_q1: 0,
-  enc_q2: 0,
-  enc_q3: 0,
+  enc_x_deg: null,
+  enc_y_deg: null,
+  enc_z_deg: null,
+  encoderXDeg: null,
+  encoderYDeg: null,
+  encoderZDeg: null,
+  enc_q0: null,
+  enc_q1: null,
+  enc_q2: null,
+  enc_q3: null,
+  encoderQ0: null,
+  encoderQ1: null,
+  encoderQ2: null,
+  encoderQ3: null,
+  enc_timer_x: null,
+  enc_timer_y: null,
+  enc_timer_z: null,
+  encoderTimerX: null,
+  encoderTimerY: null,
+  encoderTimerZ: null,
+  encoderUpdatedAt: null,
+  encoderSource: '',
+  encoder: {
+    x: null,
+    y: null,
+    z: null,
+    q0: null,
+    q1: null,
+    q2: null,
+    q3: null,
+    timerX: null,
+    timerY: null,
+    timerZ: null,
+    updatedAt: null,
+    source: '',
+  },
   raw: '',
   updatedAt: 0,
 };
@@ -38,6 +67,91 @@ function cleanLine(line) {
   return String(line || '')
     .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '')
     .trim();
+}
+
+function finiteOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function firstFiniteValue(values, fallback = null) {
+  for (const value of values) {
+    const number = finiteOrNull(value);
+    if (number !== null) return number;
+  }
+  return fallback;
+}
+
+function hasEncoderAngles(encoder = {}) {
+  return ['enc_x_deg', 'enc_y_deg', 'enc_z_deg']
+    .some((key) => finiteOrNull(encoder?.[key]) !== null);
+}
+
+function makeEncoderFields(input = {}, fallback = {}) {
+  const encX = firstFiniteValue([input.enc_x_deg, input.encoderXDeg, input.encoder?.x], fallback.enc_x_deg ?? fallback.encoderXDeg ?? fallback.encoder?.x ?? null);
+  const encY = firstFiniteValue([input.enc_y_deg, input.encoderYDeg, input.encoder?.y], fallback.enc_y_deg ?? fallback.encoderYDeg ?? fallback.encoder?.y ?? null);
+  const encZ = firstFiniteValue([input.enc_z_deg, input.encoderZDeg, input.encoder?.z], fallback.enc_z_deg ?? fallback.encoderZDeg ?? fallback.encoder?.z ?? null);
+  const encQ0 = firstFiniteValue([input.enc_q0, input.encoderQ0, input.encoder?.q0], fallback.enc_q0 ?? fallback.encoderQ0 ?? fallback.encoder?.q0 ?? null);
+  const encQ1 = firstFiniteValue([input.enc_q1, input.encoderQ1, input.encoder?.q1], fallback.enc_q1 ?? fallback.encoderQ1 ?? fallback.encoder?.q1 ?? null);
+  const encQ2 = firstFiniteValue([input.enc_q2, input.encoderQ2, input.encoder?.q2], fallback.enc_q2 ?? fallback.encoderQ2 ?? fallback.encoder?.q2 ?? null);
+  const encQ3 = firstFiniteValue([input.enc_q3, input.encoderQ3, input.encoder?.q3], fallback.enc_q3 ?? fallback.encoderQ3 ?? fallback.encoder?.q3 ?? null);
+  const timerX = firstFiniteValue([input.enc_timer_x, input.encoderTimerX, input.encoder?.timerX, input.encoder?.timer_x], fallback.enc_timer_x ?? fallback.encoderTimerX ?? fallback.encoder?.timerX ?? fallback.encoder?.timer_x ?? null);
+  const timerY = firstFiniteValue([input.enc_timer_y, input.encoderTimerY, input.encoder?.timerY, input.encoder?.timer_y], fallback.enc_timer_y ?? fallback.encoderTimerY ?? fallback.encoder?.timerY ?? fallback.encoder?.timer_y ?? null);
+  const timerZ = firstFiniteValue([input.enc_timer_z, input.encoderTimerZ, input.encoder?.timerZ, input.encoder?.timer_z], fallback.enc_timer_z ?? fallback.encoderTimerZ ?? fallback.encoder?.timerZ ?? fallback.encoder?.timer_z ?? null);
+  const updatedAt = firstFiniteValue([input.encoderUpdatedAt, input.encoder?.updatedAt], fallback.encoderUpdatedAt ?? fallback.encoder?.updatedAt ?? null);
+  const source = input.encoderSource || input.encoder?.source || fallback.encoderSource || fallback.encoder?.source || '';
+
+  return {
+    enc_x_deg: encX,
+    enc_y_deg: encY,
+    enc_z_deg: encZ,
+    encoderXDeg: encX,
+    encoderYDeg: encY,
+    encoderZDeg: encZ,
+    enc_q0: encQ0,
+    enc_q1: encQ1,
+    enc_q2: encQ2,
+    enc_q3: encQ3,
+    encoderQ0: encQ0,
+    encoderQ1: encQ1,
+    encoderQ2: encQ2,
+    encoderQ3: encQ3,
+    enc_timer_x: timerX,
+    enc_timer_y: timerY,
+    enc_timer_z: timerZ,
+    encoderTimerX: timerX,
+    encoderTimerY: timerY,
+    encoderTimerZ: timerZ,
+    encoderUpdatedAt: updatedAt,
+    encoderSource: source,
+    encoder: {
+      x: encX,
+      y: encY,
+      z: encZ,
+      q0: encQ0,
+      q1: encQ1,
+      q2: encQ2,
+      q3: encQ3,
+      timerX,
+      timerY,
+      timerZ,
+      updatedAt,
+      source,
+    },
+  };
+}
+
+function mergeEncoderIntoPacket(packet = {}, encoder = {}) {
+  const fields = makeEncoderFields(encoder, packet);
+  return {
+    ...packet,
+    ...fields,
+    encoder: {
+      ...(packet.encoder || {}),
+      ...fields.encoder,
+    },
+  };
 }
 
 function normalizeQuaternion(values) {
@@ -266,6 +380,30 @@ function parseTelCsvLine(line) {
       logging_status: parts[statusIndex + 2] ?? '',
     };
 
+    const encoderStart = statusIndex + 3;
+    if (parts.length > encoderStart && parts.length < encoderStart + 3) {
+      throw new Error('TEL encoder extension is incomplete');
+    }
+    if (parts.length >= encoderStart + 3) {
+      const encoderValues = {
+        enc_x_deg: numberAt(encoderStart, 'enc_x_deg'),
+        enc_y_deg: numberAt(encoderStart + 1, 'enc_y_deg'),
+        enc_z_deg: numberAt(encoderStart + 2, 'enc_z_deg'),
+        encoderUpdatedAt: Date.now(),
+        encoderSource: 'TEL packet',
+      };
+      if (parts.length > encoderStart + 3 && parts.length < encoderStart + 7) {
+        throw new Error('TEL encoder quaternion extension is incomplete');
+      }
+      if (parts.length >= encoderStart + 7) {
+        encoderValues.enc_q0 = numberAt(encoderStart + 3, 'enc_q0');
+        encoderValues.enc_q1 = numberAt(encoderStart + 4, 'enc_q1');
+        encoderValues.enc_q2 = numberAt(encoderStart + 5, 'enc_q2');
+        encoderValues.enc_q3 = numberAt(encoderStart + 6, 'enc_q3');
+      }
+      Object.assign(packet, makeEncoderFields(encoderValues));
+    }
+
     return packet;
   } catch (err) {
     return { ok: false, reason: err?.message || 'TEL CSV parse failed', cleanLine: clean };
@@ -355,36 +493,47 @@ function parseEncCsvLine(line) {
   if (!clean.startsWith('ENC,')) return null;
 
   const parts = clean.split(',').map((part) => part.trim());
-  if (parts.length < 8) {
-    return { ok: false, reason: `ENC field count ${parts.length} < 8`, cleanLine: clean };
+  if (![4, 8, 11].includes(parts.length)) {
+    return { ok: false, reason: `ENC field count ${parts.length} is not supported`, cleanLine: clean };
   }
 
-  const values = parts.slice(1, 8).map(Number);
-  if (values.some((value) => !Number.isFinite(value))) {
-    return { ok: false, reason: 'ENC CSV contains non-numeric field', cleanLine: clean };
-  }
-
-  const [encX, encY, encZ, encQ0, encQ1, encQ2, encQ3] = values;
-  return {
-    ok: true,
-    cleanLine: clean,
-    source: 'ENC_CSV',
-    q: [1, 0, 0, 0],
-    roll_deg: 0,
-    pitch_deg: 0,
-    yaw_deg: 0,
-    ebimu_timestamp_ms: 0,
-    seq: 0,
-    rxCount: 0,
-    enc_x_deg: encX,
-    enc_y_deg: encY,
-    enc_z_deg: encZ,
-    enc_q0: encQ0,
-    enc_q1: encQ1,
-    enc_q2: encQ2,
-    enc_q3: encQ3,
-    encoderOnly: true,
+  const numberAt = (index, label) => {
+    const value = Number(parts[index]);
+    if (!Number.isFinite(value)) throw new Error(`${label} is not numeric`);
+    return value;
   };
+
+  try {
+    const encoderValues = {
+      enc_x_deg: numberAt(1, 'enc_x_deg'),
+      enc_y_deg: numberAt(2, 'enc_y_deg'),
+      enc_z_deg: numberAt(3, 'enc_z_deg'),
+      encoderUpdatedAt: Date.now(),
+      encoderSource: 'encoder packet',
+    };
+    if (parts.length >= 8) {
+      encoderValues.enc_q0 = numberAt(4, 'enc_q0');
+      encoderValues.enc_q1 = numberAt(5, 'enc_q1');
+      encoderValues.enc_q2 = numberAt(6, 'enc_q2');
+      encoderValues.enc_q3 = numberAt(7, 'enc_q3');
+    }
+    if (parts.length >= 11) {
+      encoderValues.enc_timer_x = numberAt(8, 'enc_timer_x');
+      encoderValues.enc_timer_y = numberAt(9, 'enc_timer_y');
+      encoderValues.enc_timer_z = numberAt(10, 'enc_timer_z');
+    }
+
+    return {
+      ok: true,
+      encoderOnly: true,
+      cleanLine: clean,
+      raw: clean,
+      source: 'ENC_CSV',
+      ...makeEncoderFields(encoderValues),
+    };
+  } catch (err) {
+    return { ok: false, reason: err?.message || 'ENC CSV parse failed', cleanLine: clean };
+  }
 }
 
 function parseSerialLine(line) {
@@ -407,15 +556,7 @@ function parseSerialLine(line) {
 }
 
 function makeInitialEncoder() {
-  return {
-    enc_x_deg: 0,
-    enc_y_deg: 0,
-    enc_z_deg: 0,
-    enc_q0: 1,
-    enc_q1: 0,
-    enc_q2: 0,
-    enc_q3: 0,
-  };
+  return makeEncoderFields();
 }
 
 export default function useEsp32Serial() {
@@ -435,6 +576,7 @@ export default function useEsp32Serial() {
   const [invalidCount, setInvalidCount] = useState(0);
   const [ignoredCount, setIgnoredCount] = useState(0);
   const [warningCount, setWarningCount] = useState(0);
+  const [encoderCount, setEncoderCount] = useState(0);
   const [lastCommand, setLastCommand] = useState('');
 
   const portRef = useRef(null);
@@ -456,6 +598,7 @@ export default function useEsp32Serial() {
   const lastReceivedAtRef = useRef(null);
   const pendingUiFlushRef = useRef(false);
   const droppedBufferCountRef = useRef(0);
+  const encoderCountRef = useRef(0);
 
   const validRatio = useMemo(() => {
     const total = validCount + invalidCount;
@@ -478,6 +621,7 @@ export default function useEsp32Serial() {
       setInvalidCount(countersRef.current.invalid);
       setIgnoredCount(countersRef.current.ignored);
       setWarningCount(countersRef.current.warning);
+      setEncoderCount(encoderCountRef.current);
       setLastRawLine(lastRawLineRef.current);
       setLastInvalidReason(lastInvalidReasonRef.current);
       setLastReceivedAt(lastReceivedAtRef.current);
@@ -488,16 +632,37 @@ export default function useEsp32Serial() {
 
   const registerValidPacketRefOnly = useCallback((parsed) => {
     if (parsed.encoderOnly) {
-      latestEncoderRef.current = {
-        enc_x_deg: Number.isFinite(parsed.enc_x_deg) ? parsed.enc_x_deg : latestEncoderRef.current.enc_x_deg,
-        enc_y_deg: Number.isFinite(parsed.enc_y_deg) ? parsed.enc_y_deg : latestEncoderRef.current.enc_y_deg,
-        enc_z_deg: Number.isFinite(parsed.enc_z_deg) ? parsed.enc_z_deg : latestEncoderRef.current.enc_z_deg,
-        enc_q0: Number.isFinite(parsed.enc_q0) ? parsed.enc_q0 : latestEncoderRef.current.enc_q0,
-        enc_q1: Number.isFinite(parsed.enc_q1) ? parsed.enc_q1 : latestEncoderRef.current.enc_q1,
-        enc_q2: Number.isFinite(parsed.enc_q2) ? parsed.enc_q2 : latestEncoderRef.current.enc_q2,
-        enc_q3: Number.isFinite(parsed.enc_q3) ? parsed.enc_q3 : latestEncoderRef.current.enc_q3,
-      };
+      const now = parsed.encoderUpdatedAt || Date.now();
+      const encoderFields = makeEncoderFields({ ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'encoder packet' }, latestEncoderRef.current);
+      latestEncoderRef.current = encoderFields;
+      encoderCountRef.current += 1;
+      countersRef.current.valid += 1;
+
+      const currentPacket = latestPacketRef.current || DEFAULT_PACKET;
+      const attitudePacketExists = Boolean(currentPacket?.updatedAt);
+      latestPacketRef.current = mergeEncoderIntoPacket({
+        ...currentPacket,
+        raw: parsed.cleanLine || currentPacket.raw || '',
+        updatedAt: attitudePacketExists ? now : currentPacket.updatedAt,
+      }, encoderFields);
+
+      if (attitudePacketExists) {
+        recentPacketsRef.current = [latestPacketRef.current, ...recentPacketsRef.current.slice(1)].slice(0, MAX_RECENT_PACKETS);
+        const chartPoint = {
+          time: new Date(now).toLocaleTimeString('ko-KR', { hour12: false, minute: '2-digit', second: '2-digit' }),
+          roll: latestPacketRef.current.roll_deg,
+          pitch: latestPacketRef.current.pitch_deg,
+          yaw: latestPacketRef.current.yaw_deg,
+          encX: encoderFields.enc_x_deg,
+          encY: encoderFields.enc_y_deg,
+          encZ: encoderFields.enc_z_deg,
+        };
+        chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
+      }
+
       lastRawLineRef.current = parsed.cleanLine || '';
+      lastReceivedAtRef.current = now;
+      lastInvalidReasonRef.current = '';
       markPendingUiFlush();
       return;
     }
@@ -519,6 +684,13 @@ export default function useEsp32Serial() {
 
     const euler = quaternionToEulerDeg(q);
     const now = Date.now();
+    const encoderFields = hasEncoderAngles(parsed)
+      ? makeEncoderFields({
+          ...parsed,
+          encoderUpdatedAt: parsed.encoderUpdatedAt || now,
+          encoderSource: parsed.encoderSource || 'telemetry packet',
+        }, latestEncoderRef.current)
+      : makeEncoderFields(latestEncoderRef.current);
     const packet = {
       source: parsed.source || 'serial',
       pc_time_ms: now,
@@ -564,13 +736,7 @@ export default function useEsp32Serial() {
       ebimu_timestamp_ms: Number.isFinite(parsed.ebimu_timestamp_ms) ? parsed.ebimu_timestamp_ms : 0,
       seq: Number.isFinite(parsed.seq) ? parsed.seq : 0,
       rxCount: Number.isFinite(parsed.rxCount) ? parsed.rxCount : 0,
-      enc_x_deg: Number.isFinite(parsed.enc_x_deg) ? parsed.enc_x_deg : latestEncoderRef.current.enc_x_deg,
-      enc_y_deg: Number.isFinite(parsed.enc_y_deg) ? parsed.enc_y_deg : latestEncoderRef.current.enc_y_deg,
-      enc_z_deg: Number.isFinite(parsed.enc_z_deg) ? parsed.enc_z_deg : latestEncoderRef.current.enc_z_deg,
-      enc_q0: Number.isFinite(parsed.enc_q0) ? parsed.enc_q0 : latestEncoderRef.current.enc_q0,
-      enc_q1: Number.isFinite(parsed.enc_q1) ? parsed.enc_q1 : latestEncoderRef.current.enc_q1,
-      enc_q2: Number.isFinite(parsed.enc_q2) ? parsed.enc_q2 : latestEncoderRef.current.enc_q2,
-      enc_q3: Number.isFinite(parsed.enc_q3) ? parsed.enc_q3 : latestEncoderRef.current.enc_q3,
+      ...encoderFields,
       raw: parsed.cleanLine || '',
       updatedAt: now,
     };
@@ -579,25 +745,7 @@ export default function useEsp32Serial() {
     packet.pitchDeg = packet.pitch_deg;
     packet.yawDeg = packet.yaw_deg;
     packet.ebimuTimestampMs = packet.ebimu_timestamp_ms;
-    packet.encoder = {
-      x: packet.enc_x_deg,
-      y: packet.enc_y_deg,
-      z: packet.enc_z_deg,
-      q0: packet.enc_q0,
-      q1: packet.enc_q1,
-      q2: packet.enc_q2,
-      q3: packet.enc_q3,
-    };
-
-    latestEncoderRef.current = {
-      enc_x_deg: packet.enc_x_deg,
-      enc_y_deg: packet.enc_y_deg,
-      enc_z_deg: packet.enc_z_deg,
-      enc_q0: packet.enc_q0,
-      enc_q1: packet.enc_q1,
-      enc_q2: packet.enc_q2,
-      enc_q3: packet.enc_q3,
-    };
+    latestEncoderRef.current = makeEncoderFields(packet, latestEncoderRef.current);
 
     const normalizedPacket = normalizeLivePacket(packet, 'admin-web-serial') || packet;
     const commonPacket = {
@@ -612,6 +760,21 @@ export default function useEsp32Serial() {
       enc_q1: packet.enc_q1,
       enc_q2: packet.enc_q2,
       enc_q3: packet.enc_q3,
+      enc_timer_x: packet.enc_timer_x,
+      enc_timer_y: packet.enc_timer_y,
+      enc_timer_z: packet.enc_timer_z,
+      encoderXDeg: packet.encoderXDeg,
+      encoderYDeg: packet.encoderYDeg,
+      encoderZDeg: packet.encoderZDeg,
+      encoderQ0: packet.encoderQ0,
+      encoderQ1: packet.encoderQ1,
+      encoderQ2: packet.encoderQ2,
+      encoderQ3: packet.encoderQ3,
+      encoderTimerX: packet.encoderTimerX,
+      encoderTimerY: packet.encoderTimerY,
+      encoderTimerZ: packet.encoderTimerZ,
+      encoderUpdatedAt: packet.encoderUpdatedAt,
+      encoderSource: packet.encoderSource,
       encoder: packet.encoder,
       raw: packet.raw,
       updatedAt: now,
@@ -630,6 +793,9 @@ export default function useEsp32Serial() {
       roll: commonPacket.roll_deg,
       pitch: commonPacket.pitch_deg,
       yaw: commonPacket.yaw_deg,
+      encX: commonPacket.enc_x_deg ?? commonPacket.encoderXDeg,
+      encY: commonPacket.enc_y_deg ?? commonPacket.encoderYDeg,
+      encZ: commonPacket.enc_z_deg ?? commonPacket.encoderZDeg,
     };
     chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
 
@@ -861,6 +1027,7 @@ export default function useEsp32Serial() {
     lastReceivedAtRef.current = null;
     pendingUiFlushRef.current = true;
     droppedBufferCountRef.current = 0;
+    encoderCountRef.current = 0;
 
     setLastRawLine('');
     setLastInvalidReason('');
@@ -872,6 +1039,7 @@ export default function useEsp32Serial() {
     setInvalidCount(0);
     setIgnoredCount(0);
     setWarningCount(0);
+    setEncoderCount(0);
     setLastCommand('');
   }, []);
 
@@ -901,6 +1069,7 @@ export default function useEsp32Serial() {
     invalidCount,
     ignoredCount,
     warningCount,
+    encoderCount,
     validRatio,
     lastCommand,
     connect,
