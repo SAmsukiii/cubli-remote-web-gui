@@ -1296,6 +1296,13 @@ export default function CubliSimulator() {
   const serial = useEsp32Serial({
     imuEulerSequence: serverSync?.imuEulerSequence,
     encoderEulerSequence: serverSync?.encoderEulerSequence,
+    imuDisplayRollSign: serverSync?.imuDisplayRollSign,
+    imuDisplayPitchSign: serverSync?.imuDisplayPitchSign,
+    imuDisplayYawSign: serverSync?.imuDisplayYawSign,
+    encoderDisplayRollSign: serverSync?.encoderDisplayRollSign,
+    encoderDisplayPitchSign: serverSync?.encoderDisplayPitchSign,
+    encoderDisplayYawSign: serverSync?.encoderDisplayYawSign,
+    bodyRateWzDisplaySign: serverSync?.bodyRateWzDisplaySign,
   });
   const ble = useEsp32Ble();
   const {
@@ -1687,6 +1694,13 @@ export default function CubliSimulator() {
       }, 'phone', {
         imuEulerSequence: serverSync?.imuEulerSequence,
         encoderEulerSequence: serverSync?.encoderEulerSequence,
+        imuDisplayRollSign: serverSync?.imuDisplayRollSign,
+        imuDisplayPitchSign: serverSync?.imuDisplayPitchSign,
+        imuDisplayYawSign: serverSync?.imuDisplayYawSign,
+        encoderDisplayRollSign: serverSync?.encoderDisplayRollSign,
+        encoderDisplayPitchSign: serverSync?.encoderDisplayPitchSign,
+        encoderDisplayYawSign: serverSync?.encoderDisplayYawSign,
+        bodyRateWzDisplaySign: serverSync?.bodyRateWzDisplaySign,
       });
       if (!phonePacket?.ok) return;
       phonePacketMirrorRef.current = phonePacket;
@@ -1698,7 +1712,24 @@ export default function CubliSimulator() {
     }, 250);
 
     return () => window.clearInterval(timer);
-  }, [activeSourceType, attitude, attitudeQuat, enqueueSample, isAdmin, isSensorActive, publishLivePacket, serverSync?.encoderEulerSequence, serverSync?.imuEulerSequence]);
+  }, [
+    activeSourceType,
+    attitude,
+    attitudeQuat,
+    enqueueSample,
+    isAdmin,
+    isSensorActive,
+    publishLivePacket,
+    serverSync?.bodyRateWzDisplaySign,
+    serverSync?.encoderDisplayPitchSign,
+    serverSync?.encoderDisplayRollSign,
+    serverSync?.encoderDisplayYawSign,
+    serverSync?.encoderEulerSequence,
+    serverSync?.imuDisplayPitchSign,
+    serverSync?.imuDisplayRollSign,
+    serverSync?.imuDisplayYawSign,
+    serverSync?.imuEulerSequence,
+  ]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {

@@ -14,9 +14,15 @@ const CSV_COLUMNS = [
   'q2',
   'q3',
   'norm',
+  'raw_roll_deg',
+  'raw_pitch_deg',
+  'raw_yaw_deg',
   'roll_deg',
   'pitch_deg',
   'yaw_deg',
+  'imu_display_roll_sign',
+  'imu_display_pitch_sign',
+  'imu_display_yaw_sign',
   'Roll_deg',
   'Pitch_deg',
   'Yaw_deg',
@@ -28,6 +34,9 @@ const CSV_COLUMNS = [
   'wx',
   'wy',
   'wz',
+  'wz_raw',
+  'wz_display',
+  'body_rate_wz_display_sign',
   'angular_rate_source',
   'RPM1',
   'RPM2',
@@ -59,6 +68,12 @@ const CSV_COLUMNS = [
   'encoder_roll_deg',
   'encoder_pitch_deg',
   'encoder_yaw_deg',
+  'encoder_raw_roll_deg',
+  'encoder_raw_pitch_deg',
+  'encoder_raw_yaw_deg',
+  'encoder_display_roll_sign',
+  'encoder_display_pitch_sign',
+  'encoder_display_yaw_sign',
   'encoder_euler_sequence',
   'encoder_rpy_source',
   'encoder_status',
@@ -153,6 +168,14 @@ function formatStatusToken(value) {
   return String(value);
 }
 
+function signText(value) {
+  return Number(value) === -1 ? '-' : '+';
+}
+
+function signsText(rollSign, pitchSign, yawSign) {
+  return `[${signText(rollSign)},${signText(pitchSign)},${signText(yawSign)}]`;
+}
+
 function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
   const value = packet?.[snakeKey] ?? packet?.[camelKey] ?? packet?.encoder?.[nestedKey];
   if (value === null || value === undefined || value === '') return null;
@@ -179,6 +202,8 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
   const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
   const yawDeg = encoderNumber(packet, 'encoderYawDeg', 'encoderYawDeg', 'yawDeg');
+  const rawYawDeg = encoderNumber(packet, 'encoderRawYawDeg', 'encoderRawYawDeg', 'rawYawDeg');
+  const displayYawSign = encoderNumber(packet, 'encoderDisplayYawSign', 'encoderDisplayYawSign', 'displayYawSign');
   const source = encoderText(packet, 'encoderSource', 'source');
   const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
@@ -209,6 +234,8 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     eulerSequence,
     rpySource,
     hasQuaternion,
+    rawYawDeg,
+    displayYawSign,
     status,
   };
 }
@@ -234,6 +261,8 @@ function buildEncoderRows(packet = {}) {
     { label: 'Gimbal Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Yaw Sign', value: signText(encoder.displayYawSign ?? -1) },
     { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
@@ -290,14 +319,23 @@ function packetToCsvRow(packet) {
     source_label: packet.sourceLabel,
     imu_euler_sequence: packet.imuEulerSequence,
     rpy_source: packet.rpySource,
+    raw_roll_deg: packet.rawRollDeg,
+    raw_pitch_deg: packet.rawPitchDeg,
+    raw_yaw_deg: packet.rawYawDeg,
     roll_deg: packet.roll_deg ?? packet.Roll_deg ?? packet.rollDeg,
     pitch_deg: packet.pitch_deg ?? packet.Pitch_deg ?? packet.pitchDeg,
     yaw_deg: packet.yaw_deg ?? packet.Yaw_deg ?? packet.yawDeg,
+    imu_display_roll_sign: packet.imuDisplayRollSign,
+    imu_display_pitch_sign: packet.imuDisplayPitchSign,
+    imu_display_yaw_sign: packet.imuDisplayYawSign,
     Roll_deg: packet.Roll_deg ?? packet.roll_deg ?? packet.rollDeg,
     Pitch_deg: packet.Pitch_deg ?? packet.pitch_deg ?? packet.pitchDeg,
     Yaw_deg: packet.Yaw_deg ?? packet.yaw_deg ?? packet.yawDeg,
     qerr_source: packet.qerrSource,
     angular_rate_source: packet.angularRateSource,
+    wz_raw: packet.wzRaw ?? packet.wz_raw ?? packet.wz,
+    wz_display: packet.wzDisplay ?? packet.wz_display,
+    body_rate_wz_display_sign: packet.bodyRateWzDisplaySign,
     timestamp: packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs,
     enc_x_deg: packet.enc_x_deg ?? packet.encoderXDeg ?? packet.encoder?.x,
     enc_y_deg: packet.enc_y_deg ?? packet.encoderYDeg ?? packet.encoder?.y,
@@ -309,6 +347,12 @@ function packetToCsvRow(packet) {
     encoder_roll_deg: packet.encoderRollDeg ?? packet.encoder?.rollDeg,
     encoder_pitch_deg: packet.encoderPitchDeg ?? packet.encoder?.pitchDeg,
     encoder_yaw_deg: packet.encoderYawDeg ?? packet.encoder?.yawDeg,
+    encoder_raw_roll_deg: packet.encoderRawRollDeg ?? packet.encoder?.rawRollDeg,
+    encoder_raw_pitch_deg: packet.encoderRawPitchDeg ?? packet.encoder?.rawPitchDeg,
+    encoder_raw_yaw_deg: packet.encoderRawYawDeg ?? packet.encoder?.rawYawDeg,
+    encoder_display_roll_sign: packet.encoderDisplayRollSign ?? packet.encoder?.displayRollSign,
+    encoder_display_pitch_sign: packet.encoderDisplayPitchSign ?? packet.encoder?.displayPitchSign,
+    encoder_display_yaw_sign: packet.encoderDisplayYawSign ?? packet.encoder?.displayYawSign,
     encoder_euler_sequence: packet.encoderEulerSequence ?? packet.encoder?.eulerSequence,
     encoder_rpy_source: packet.encoderRpySource ?? packet.encoder?.rpySource,
     encoder_status: packet.encoderStatus ?? packet.encoder?.status,
@@ -576,7 +620,9 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       { label: 'Roll', value: `${formatNumber(latest.roll_deg, 2)} deg` },
       { label: 'Pitch', value: `${formatNumber(latest.pitch_deg, 2)} deg` },
       { label: 'Yaw', value: `${formatNumber(latest.yaw_deg, 2)} deg` },
+      { label: 'Raw Yaw', value: latest.rawYawDeg != null ? `${formatNumber(latest.rawYawDeg, 2)} deg` : '-' },
       { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
+      { label: 'Display signs', value: signsText(latest.imuDisplayRollSign ?? 1, latest.imuDisplayPitchSign ?? 1, latest.imuDisplayYawSign ?? -1) },
       { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
     ];
   }, [attitudeRows, latest]);
@@ -589,7 +635,9 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const rateRows = useMemo(() => [
     { label: 'wx (rad/s)', value: latest.wx != null ? formatNumber(latest.wx, 4) : '-' },
     { label: 'wy (rad/s)', value: latest.wy != null ? formatNumber(latest.wy, 4) : '-' },
-    { label: 'wz (rad/s)', value: latest.wz != null ? formatNumber(latest.wz, 4) : '-' },
+    { label: 'wz raw (rad/s)', value: latest.wzRaw != null || latest.wz != null ? formatNumber(latest.wzRaw ?? latest.wz, 4) : '-' },
+    { label: 'wz display (rad/s)', value: latest.wzDisplay != null ? formatNumber(latest.wzDisplay, 4) : '-' },
+    { label: 'wz display sign', value: signText(latest.bodyRateWzDisplaySign ?? 1) },
     { label: 'source', value: formatSourceLabel(latest.angularRateSource) },
   ], [latest]);
 
@@ -843,12 +891,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
       <Row className="g-2 mb-3">
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={displayAttitudeRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}, yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`} rows={displayAttitudeRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Angular Rate" rows={rateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Telemetry Status" rows={telemetryStatusRows} /></Col>
-        <Col xs={12}><ValueGrid title="Gimbal Rotary Encoder" rows={encoderRows} /></Col>
+        <Col xs={12}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}, yaw sign ${signText(latest.encoderDisplayYawSign ?? -1)}]`} rows={encoderRows} /></Col>
         <Col xs={12}><ValueGrid title="Receiver" rows={statusRows} /></Col>
       </Row>
 

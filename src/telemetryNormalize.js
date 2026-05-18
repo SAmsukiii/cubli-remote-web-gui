@@ -9,6 +9,9 @@ export const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX',
 const DEFAULT_EULER_SEQUENCE = 'ZYX';
 const DEFAULT_ENCODER_FRESH_MS = 1000;
 const DEFAULT_ENCODER_SYNC_MS = 1000;
+export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
+export const DEFAULT_TARGET_RPY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
+export const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
 
 function finiteNumber(value, fallback = null) {
   const number = Number(value);
@@ -39,6 +42,36 @@ function clamp(value, min, max) {
 export function normalizeEulerSequence(sequence, fallback = DEFAULT_EULER_SEQUENCE) {
   const text = String(sequence || '').trim().toUpperCase();
   return EULER_SEQUENCES.includes(text) ? text : fallback;
+}
+
+export function normalizeSign(value, fallback = 1) {
+  const number = Number(value);
+  if (number === -1) return -1;
+  if (number === 1) return 1;
+  return fallback === -1 ? -1 : 1;
+}
+
+export function normalizeRpySigns(source = {}, fallback = DEFAULT_RPY_DISPLAY_SIGNS) {
+  return {
+    roll: normalizeSign(source.roll ?? source.rollSign, fallback.roll),
+    pitch: normalizeSign(source.pitch ?? source.pitchSign, fallback.pitch),
+    yaw: normalizeSign(source.yaw ?? source.yawSign, fallback.yaw),
+  };
+}
+
+export function signsLabel(signs = DEFAULT_RPY_DISPLAY_SIGNS) {
+  const safeSigns = normalizeRpySigns(signs);
+  return `[${safeSigns.roll > 0 ? '+' : '-'},${safeSigns.pitch > 0 ? '+' : '-'},${safeSigns.yaw > 0 ? '+' : '-'}]`;
+}
+
+export function applyEulerDisplaySigns(euler = {}, signs = DEFAULT_RPY_DISPLAY_SIGNS) {
+  const safeSigns = normalizeRpySigns(signs);
+  return {
+    roll: finiteNumber(euler.roll, null) === null ? null : euler.roll * safeSigns.roll,
+    pitch: finiteNumber(euler.pitch, null) === null ? null : euler.pitch * safeSigns.pitch,
+    yaw: finiteNumber(euler.yaw, null) === null ? null : euler.yaw * safeSigns.yaw,
+    sequence: euler.sequence,
+  };
 }
 
 export function normalizeQuaternion(input) {
@@ -176,31 +209,84 @@ export function quaternionToEulerDeg(q, sequence = DEFAULT_EULER_SEQUENCE) {
   return { roll, pitch, yaw, sequence: order };
 }
 
-export function eulerDegToQuatZYX(rollDeg, pitchDeg, yawDeg) {
+export function eulerDegToQuat(rollDeg, pitchDeg, yawDeg, sequence = DEFAULT_EULER_SEQUENCE) {
   const roll = finiteNumber(rollDeg);
   const pitch = finiteNumber(pitchDeg);
   const yaw = finiteNumber(yawDeg);
   if ([roll, pitch, yaw].some((value) => value === null)) return null;
 
-  const r = roll * Math.PI / 180;
-  const p = pitch * Math.PI / 180;
-  const y = yaw * Math.PI / 180;
+  const order = normalizeEulerSequence(sequence);
+  const x = roll * Math.PI / 180;
+  const y = pitch * Math.PI / 180;
+  const z = yaw * Math.PI / 180;
 
-  const cr = Math.cos(r / 2);
-  const sr = Math.sin(r / 2);
-  const cp = Math.cos(p / 2);
-  const sp = Math.sin(p / 2);
-  const cy = Math.cos(y / 2);
-  const sy = Math.sin(y / 2);
+  const c1 = Math.cos(x / 2);
+  const c2 = Math.cos(y / 2);
+  const c3 = Math.cos(z / 2);
+  const s1 = Math.sin(x / 2);
+  const s2 = Math.sin(y / 2);
+  const s3 = Math.sin(z / 2);
+  let q = null;
 
-  const normalized = normalizeQuaternion([
-    cr * cp * cy + sr * sp * sy,
-    sr * cp * cy - cr * sp * sy,
-    cr * sp * cy + sr * cp * sy,
-    cr * cp * sy - sr * sp * cy,
-  ]);
+  switch (order) {
+    case 'XYZ':
+      q = [
+        c1 * c2 * c3 - s1 * s2 * s3,
+        s1 * c2 * c3 + c1 * s2 * s3,
+        c1 * s2 * c3 - s1 * c2 * s3,
+        c1 * c2 * s3 + s1 * s2 * c3,
+      ];
+      break;
+    case 'YXZ':
+      q = [
+        c1 * c2 * c3 + s1 * s2 * s3,
+        s1 * c2 * c3 + c1 * s2 * s3,
+        c1 * s2 * c3 - s1 * c2 * s3,
+        c1 * c2 * s3 - s1 * s2 * c3,
+      ];
+      break;
+    case 'ZXY':
+      q = [
+        c1 * c2 * c3 - s1 * s2 * s3,
+        s1 * c2 * c3 - c1 * s2 * s3,
+        c1 * s2 * c3 + s1 * c2 * s3,
+        c1 * c2 * s3 + s1 * s2 * c3,
+      ];
+      break;
+    case 'YZX':
+      q = [
+        c1 * c2 * c3 - s1 * s2 * s3,
+        s1 * c2 * c3 + c1 * s2 * s3,
+        c1 * s2 * c3 + s1 * c2 * s3,
+        c1 * c2 * s3 - s1 * s2 * c3,
+      ];
+      break;
+    case 'XZY':
+      q = [
+        c1 * c2 * c3 + s1 * s2 * s3,
+        s1 * c2 * c3 - c1 * s2 * s3,
+        c1 * s2 * c3 - s1 * c2 * s3,
+        c1 * c2 * s3 + s1 * s2 * c3,
+      ];
+      break;
+    case 'ZYX':
+    default:
+      q = [
+        c1 * c2 * c3 + s1 * s2 * s3,
+        s1 * c2 * c3 - c1 * s2 * s3,
+        c1 * s2 * c3 + s1 * c2 * s3,
+        c1 * c2 * s3 - s1 * s2 * c3,
+      ];
+      break;
+  }
+
+  const normalized = normalizeQuaternion(q);
 
   return normalized.ok ? normalized.q : null;
+}
+
+export function eulerDegToQuatZYX(rollDeg, pitchDeg, yawDeg) {
+  return eulerDegToQuat(rollDeg, pitchDeg, yawDeg, 'ZYX');
 }
 
 function quatDot(a, b) {
@@ -226,6 +312,8 @@ export function computeQerrDeg(qCurrent, desiredAttitude) {
   const current = normalizeQuaternion(qCurrent);
   const desiredQuat = Array.isArray(desiredAttitude)
     ? desiredAttitude
+    : [desiredAttitude?.qd0 ?? desiredAttitude?.targetQd0, desiredAttitude?.qd1 ?? desiredAttitude?.targetQd1, desiredAttitude?.qd2 ?? desiredAttitude?.targetQd2, desiredAttitude?.qd3 ?? desiredAttitude?.targetQd3].every((value) => finiteNumber(value, null) !== null)
+      ? [desiredAttitude.qd0 ?? desiredAttitude.targetQd0, desiredAttitude.qd1 ?? desiredAttitude.targetQd1, desiredAttitude.qd2 ?? desiredAttitude.targetQd2, desiredAttitude.qd3 ?? desiredAttitude.targetQd3]
     : eulerDegToQuatZYX(
         desiredAttitude?.rollDeg ?? desiredAttitude?.desiredRollDeg ?? desiredAttitude?.desired_roll_deg ?? desiredAttitude?.roll,
         desiredAttitude?.pitchDeg ?? desiredAttitude?.desiredPitchDeg ?? desiredAttitude?.desired_pitch_deg ?? desiredAttitude?.pitch,
@@ -334,6 +422,11 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const encoderEulerSequence = normalizeEulerSequence(
     options.encoderEulerSequence || packet.encoderEulerSequence || nested.eulerSequence
   );
+  const encoderDisplaySigns = normalizeRpySigns({
+    roll: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign ?? nested.displayRollSign,
+    pitch: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign ?? nested.displayPitchSign,
+    yaw: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign ?? nested.displayYawSign,
+  }, DEFAULT_RPY_DISPLAY_SIGNS);
   const encX = firstTelemetryNumber([packet.enc_x_deg, packet.encoderXDeg, nested.x], null);
   const encY = firstTelemetryNumber([packet.enc_y_deg, packet.encoderYDeg, nested.y], null);
   const encZ = firstTelemetryNumber([packet.enc_z_deg, packet.encoderZDeg, nested.z], null);
@@ -349,7 +442,8 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const encQ1 = encoderQ ? encoderQ[1] : null;
   const encQ2 = encoderQ ? encoderQ[2] : null;
   const encQ3 = encoderQ ? encoderQ[3] : null;
-  const encoderEuler = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
+  const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
+  const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
   const timerX = firstTelemetryNumber([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
   const timerY = firstTelemetryNumber([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
   const timerZ = firstTelemetryNumber([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
@@ -372,7 +466,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   });
   const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
   const encoderRpySource = encoderEuler
-    ? `encoder quaternion ${encoderEulerSequence}`
+    ? `encoder quaternion ${encoderEulerSequence}, display signs ${signsLabel(encoderDisplaySigns)}`
     : '';
 
   return {
@@ -400,6 +494,12 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     encoderSource,
     encoderStatus,
     encoderEulerSequence,
+    encoderDisplayRollSign: encoderDisplaySigns.roll,
+    encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+    encoderDisplayYawSign: encoderDisplaySigns.yaw,
+    encoderRawRollDeg: encoderEulerRaw?.roll ?? null,
+    encoderRawPitchDeg: encoderEulerRaw?.pitch ?? null,
+    encoderRawYawDeg: encoderEulerRaw?.yaw ?? null,
     encoderRollDeg: encoderEuler?.roll ?? null,
     encoderPitchDeg: encoderEuler?.pitch ?? null,
     encoderYawDeg: encoderEuler?.yaw ?? null,
@@ -421,6 +521,12 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
       source: encoderSource,
       status: encoderStatus,
       eulerSequence: encoderEulerSequence,
+      displayRollSign: encoderDisplaySigns.roll,
+      displayPitchSign: encoderDisplaySigns.pitch,
+      displayYawSign: encoderDisplaySigns.yaw,
+      rawRollDeg: encoderEulerRaw?.roll ?? null,
+      rawPitchDeg: encoderEulerRaw?.pitch ?? null,
+      rawYawDeg: encoderEulerRaw?.yaw ?? null,
       rollDeg: encoderEuler?.roll ?? null,
       pitchDeg: encoderEuler?.pitch ?? null,
       yawDeg: encoderEuler?.yaw ?? null,
@@ -436,10 +542,22 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const sourceLabel = packet.sourceLabel || SOURCE_LABELS[resolvedSource] || String(resolvedSource);
   const imuEulerSequence = normalizeEulerSequence(options.imuEulerSequence || packet.imuEulerSequence);
   const encoderEulerSequence = normalizeEulerSequence(options.encoderEulerSequence || packet.encoderEulerSequence);
+  const imuDisplaySigns = normalizeRpySigns({
+    roll: options.imuDisplayRollSign ?? packet.imuDisplayRollSign,
+    pitch: options.imuDisplayPitchSign ?? packet.imuDisplayPitchSign,
+    yaw: options.imuDisplayYawSign ?? packet.imuDisplayYawSign,
+  }, DEFAULT_RPY_DISPLAY_SIGNS);
+  const bodyRateWzDisplaySign = normalizeSign(
+    options.bodyRateWzDisplaySign ?? packet.bodyRateWzDisplaySign,
+    DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN
+  );
   const encoderTelemetry = normalizeEncoderTelemetry(packet, {
     now: options.now,
     encoderEulerSequence,
     encoderFreshMs: options.encoderFreshMs,
+    encoderDisplayRollSign: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign,
+    encoderDisplayPitchSign: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign,
+    encoderDisplayYawSign: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign,
   });
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4
     ? packet.q
@@ -460,7 +578,8 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const pcTimeMs = firstFinite([packet.pcTimeMs, packet.pc_time_ms, packet.updatedAt, packet.timestamp], now);
   const publishedAt = firstFinite([options.publishedAt, packet.publishedAt], now);
   const q = normalized.q;
-  const euler = quaternionToEulerDeg(q, imuEulerSequence) || {};
+  const rawEuler = quaternionToEulerDeg(q, imuEulerSequence) || {};
+  const euler = applyEulerDisplaySigns(rawEuler, imuDisplaySigns);
 
   const desired = options.desiredAttitude || packet.latestDesiredAttitude || packet.desiredAttitude || packet;
   const desiredRoll = firstFinite([desired.desired_roll_deg, desired.desiredRollDeg, desired.rollDeg, desired.roll], null);
@@ -490,6 +609,7 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const wx = hasTelemetryRate ? wxTelemetry : (rateEstimate.valid ? rateEstimate.wx : null);
   const wy = hasTelemetryRate ? wyTelemetry : (rateEstimate.valid ? rateEstimate.wy : null);
   const wz = hasTelemetryRate ? wzTelemetry : (rateEstimate.valid ? rateEstimate.wz : null);
+  const wzDisplay = wz === null ? null : wz * bodyRateWzDisplaySign;
   const angularRateSource = hasTelemetryRate
     ? (packet.angularRateSource || 'satellite body rate')
     : (rateEstimate.valid ? 'computed from quaternion' : '');
@@ -513,6 +633,9 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     Roll_deg: euler.roll ?? null,
     Pitch_deg: euler.pitch ?? null,
     Yaw_deg: euler.yaw ?? null,
+    rawRollDeg: rawEuler.roll ?? null,
+    rawPitchDeg: rawEuler.pitch ?? null,
+    rawYawDeg: rawEuler.yaw ?? null,
     rollDeg: euler.roll ?? null,
     pitchDeg: euler.pitch ?? null,
     yawDeg: euler.yaw ?? null,
@@ -520,7 +643,10 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     pitch_deg: euler.pitch ?? null,
     yaw_deg: euler.yaw ?? null,
     imuEulerSequence,
-    rpySource: `quaternion ${imuEulerSequence}`,
+    imuDisplayRollSign: imuDisplaySigns.roll,
+    imuDisplayPitchSign: imuDisplaySigns.pitch,
+    imuDisplayYawSign: imuDisplaySigns.yaw,
+    rpySource: `quaternion ${imuEulerSequence}, display signs ${signsLabel(imuDisplaySigns)}`,
     attitudeSource: resolvedSource === 'phone' ? 'phone_sensor' : 'computed_from_quaternion',
     remoteRollDeg: firstFinite([packet.remoteRollDeg, packet.Roll_deg, packet.rollDeg, packet.roll_deg, packet.roll], null),
     remotePitchDeg: firstFinite([packet.remotePitchDeg, packet.Pitch_deg, packet.pitchDeg, packet.pitch_deg, packet.pitch], null),
@@ -532,6 +658,17 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     desiredRollDeg: hasDesired ? desiredRoll : null,
     desiredPitchDeg: hasDesired ? desiredPitch : null,
     desiredYawDeg: hasDesired ? desiredYaw : null,
+    targetInputRollDeg: firstFinite([desired.inputRollDeg, desired.inputRoll], null),
+    targetInputPitchDeg: firstFinite([desired.inputPitchDeg, desired.inputPitch], null),
+    targetInputYawDeg: firstFinite([desired.inputYawDeg, desired.inputYaw], null),
+    targetRpySequence: desired.targetRpySequence || desired.targetSequence || '',
+    targetRollSign: finiteNumber(desired.targetRollSign, null),
+    targetPitchSign: finiteNumber(desired.targetPitchSign, null),
+    targetYawSign: finiteNumber(desired.targetYawSign, null),
+    targetQd0: finiteNumber(desired.qd0 ?? desired.targetQd0, null),
+    targetQd1: finiteNumber(desired.qd1 ?? desired.targetQd1, null),
+    targetQd2: finiteNumber(desired.qd2 ?? desired.targetQd2, null),
+    targetQd3: finiteNumber(desired.qd3 ?? desired.targetQd3, null),
 
     qerr_deg: qerr,
     qerrDeg: qerr,
@@ -540,6 +677,11 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     wx,
     wy,
     wz,
+    wzRaw: wz,
+    wz_raw: wz,
+    wzDisplay,
+    wz_display: wzDisplay,
+    bodyRateWzDisplaySign,
     angularRateSource,
 
     RPM1: finiteNumber(packet.RPM1, null),

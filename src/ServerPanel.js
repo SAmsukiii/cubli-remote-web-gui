@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Accordion, Alert, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { eulerDegToQuat, normalizeEulerSequence, normalizeSign } from './telemetryNormalize';
 
 const MAG_OPTIONS = [
   { label: 'Mag Off', commandKey: 'magOff' },
@@ -38,12 +39,14 @@ const LOG_COLUMNS = [
   'pc_time_ms', 'published_at', 'source', 'source_label',
   'imu_euler_sequence', 'rpy_source',
   'q0', 'q1', 'q2', 'q3', 'norm',
+  'raw_roll_deg', 'raw_pitch_deg', 'raw_yaw_deg',
   'roll_deg', 'pitch_deg', 'yaw_deg',
+  'imu_display_roll_sign', 'imu_display_pitch_sign', 'imu_display_yaw_sign',
   'Roll_deg', 'Pitch_deg', 'Yaw_deg',
   'desired_roll_deg', 'desired_pitch_deg', 'desired_yaw_deg',
   'qerr_deg',
   'qerr_source',
-  'wx', 'wy', 'wz', 'angular_rate_source',
+  'wx', 'wy', 'wz', 'wz_raw', 'wz_display', 'body_rate_wz_display_sign', 'angular_rate_source',
   'RPM1', 'RPM2', 'RPM3', 'RPMcmd1', 'RPMcmd2', 'RPMcmd3',
   'PWM1', 'PWM2', 'PWM3',
   'Tbodycmd_x_Nm', 'Tbodycmd_y_Nm', 'Tbodycmd_z_Nm',
@@ -53,6 +56,8 @@ const LOG_COLUMNS = [
   'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
   'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
   'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
+  'encoder_raw_roll_deg', 'encoder_raw_pitch_deg', 'encoder_raw_yaw_deg',
+  'encoder_display_roll_sign', 'encoder_display_pitch_sign', 'encoder_display_yaw_sign',
   'encoder_euler_sequence', 'encoder_rpy_source', 'encoder_status',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
   'encoder_source', 'encoder_updated_at',
@@ -149,6 +154,8 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
   const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
   const yawDeg = encoderNumber(packet, 'encoderYawDeg', 'encoderYawDeg', 'yawDeg');
+  const rawYawDeg = encoderNumber(packet, 'encoderRawYawDeg', 'encoderRawYawDeg', 'rawYawDeg');
+  const displayYawSign = encoderNumber(packet, 'encoderDisplayYawSign', 'encoderDisplayYawSign', 'displayYawSign');
   const source = encoderText(packet, 'encoderSource', 'source');
   const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
@@ -179,6 +186,8 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     eulerSequence,
     rpySource,
     hasQuaternion,
+    rawYawDeg,
+    displayYawSign,
     status,
   };
 }
@@ -204,6 +213,8 @@ function buildEncoderRows(packet = {}) {
     { label: 'Gimbal Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Yaw Sign', value: signText(encoder.displayYawSign ?? -1) },
     { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
@@ -247,6 +258,46 @@ function readWheelRpmTriplet(values = {}) {
   const z = parseWheelRpmValue(values.z);
   if (x === null || y === null || z === null) return null;
   return { x, y, z };
+}
+
+function signText(value) {
+  return normalizeSign(value, 1) > 0 ? '+' : '-';
+}
+
+function signsText(rollSign, pitchSign, yawSign) {
+  return `[${signText(rollSign)},${signText(pitchSign)},${signText(yawSign)}]`;
+}
+
+function signedNumber(value, sign) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number * normalizeSign(sign, 1) : 0;
+}
+
+function buildTargetPreview(values = {}, sequence = 'ZYX', signs = {}) {
+  const inputRoll = Number(values.roll) || 0;
+  const inputPitch = Number(values.pitch) || 0;
+  const inputYaw = Number(values.yaw) || 0;
+  const safeSequence = normalizeEulerSequence(sequence, 'ZYX');
+  const rollSign = normalizeSign(signs.roll, 1);
+  const pitchSign = normalizeSign(signs.pitch, 1);
+  const yawSign = normalizeSign(signs.yaw, -1);
+  const commandRoll = signedNumber(inputRoll, rollSign);
+  const commandPitch = signedNumber(inputPitch, pitchSign);
+  const commandYaw = signedNumber(inputYaw, yawSign);
+  const qd = eulerDegToQuat(commandRoll, commandPitch, commandYaw, safeSequence) || [1, 0, 0, 0];
+  return {
+    inputRoll,
+    inputPitch,
+    inputYaw,
+    commandRoll,
+    commandPitch,
+    commandYaw,
+    sequence: safeSequence,
+    rollSign,
+    pitchSign,
+    yawSign,
+    qd,
+  };
 }
 
 function statusVariant(status) {
@@ -320,9 +371,15 @@ function normalizePacketForLog(packet) {
     q2: source.q2,
     q3: source.q3,
     norm: source.norm,
+    raw_roll_deg: source.rawRollDeg,
+    raw_pitch_deg: source.rawPitchDeg,
+    raw_yaw_deg: source.rawYawDeg,
     roll_deg: source.roll_deg ?? source.Roll_deg ?? source.rollDeg,
     pitch_deg: source.pitch_deg ?? source.Pitch_deg ?? source.pitchDeg,
     yaw_deg: source.yaw_deg ?? source.Yaw_deg ?? source.yawDeg,
+    imu_display_roll_sign: source.imuDisplayRollSign,
+    imu_display_pitch_sign: source.imuDisplayPitchSign,
+    imu_display_yaw_sign: source.imuDisplayYawSign,
     Roll_deg: source.Roll_deg ?? source.roll_deg ?? source.rollDeg,
     Pitch_deg: source.Pitch_deg ?? source.pitch_deg ?? source.pitchDeg,
     Yaw_deg: source.Yaw_deg ?? source.yaw_deg ?? source.yawDeg,
@@ -334,6 +391,9 @@ function normalizePacketForLog(packet) {
     wx: source.wx,
     wy: source.wy,
     wz: source.wz,
+    wz_raw: source.wzRaw ?? source.wz_raw ?? source.wz,
+    wz_display: source.wzDisplay ?? source.wz_display,
+    body_rate_wz_display_sign: source.bodyRateWzDisplaySign,
     angular_rate_source: source.angularRateSource,
     RPM1: source.RPM1,
     RPM2: source.RPM2,
@@ -365,6 +425,12 @@ function normalizePacketForLog(packet) {
     encoder_roll_deg: source.encoderRollDeg ?? source.encoder?.rollDeg,
     encoder_pitch_deg: source.encoderPitchDeg ?? source.encoder?.pitchDeg,
     encoder_yaw_deg: source.encoderYawDeg ?? source.encoder?.yawDeg,
+    encoder_raw_roll_deg: source.encoderRawRollDeg ?? source.encoder?.rawRollDeg,
+    encoder_raw_pitch_deg: source.encoderRawPitchDeg ?? source.encoder?.rawPitchDeg,
+    encoder_raw_yaw_deg: source.encoderRawYawDeg ?? source.encoder?.rawYawDeg,
+    encoder_display_roll_sign: source.encoderDisplayRollSign ?? source.encoder?.displayRollSign,
+    encoder_display_pitch_sign: source.encoderDisplayPitchSign ?? source.encoder?.displayPitchSign,
+    encoder_display_yaw_sign: source.encoderDisplayYawSign ?? source.encoder?.displayYawSign,
     encoder_euler_sequence: source.encoderEulerSequence ?? source.encoder?.eulerSequence,
     encoder_rpy_source: source.encoderRpySource ?? source.encoder?.rpySource,
     encoder_status: source.encoderStatus ?? source.encoder?.status,
@@ -487,6 +553,18 @@ function CommandButton({ label, onClick, disabled }) {
 
 function CommandGroup({ children }) {
   return <div className="serial-command-grid compact-command-grid">{children}</div>;
+}
+
+function SignSelect({ label, value, onChange }) {
+  return (
+    <Form.Group>
+      <Form.Label className="serial-mini-label">{label}</Form.Label>
+      <Form.Select size="sm" value={normalizeSign(value, 1)} onChange={(event) => onChange?.(Number(event.target.value))}>
+        <option value={1}>+1</option>
+        <option value={-1}>-1</option>
+      </Form.Select>
+    </Form.Group>
+  );
 }
 
 function CommandAccordionItem({ eventKey, title, children }) {
@@ -657,6 +735,13 @@ function RpyConventionSection({ serverSync }) {
   const safeServerSync = serverSync || {};
   const imuSequence = safeServerSync.imuEulerSequence || 'ZYX';
   const encoderSequence = safeServerSync.encoderEulerSequence || 'ZYX';
+  const imuRollSign = normalizeSign(safeServerSync.imuDisplayRollSign, 1);
+  const imuPitchSign = normalizeSign(safeServerSync.imuDisplayPitchSign, 1);
+  const imuYawSign = normalizeSign(safeServerSync.imuDisplayYawSign, -1);
+  const encoderRollSign = normalizeSign(safeServerSync.encoderDisplayRollSign, 1);
+  const encoderPitchSign = normalizeSign(safeServerSync.encoderDisplayPitchSign, 1);
+  const encoderYawSign = normalizeSign(safeServerSync.encoderDisplayYawSign, -1);
+  const wzSign = normalizeSign(safeServerSync.bodyRateWzDisplaySign, 1);
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
@@ -689,7 +774,36 @@ function RpyConventionSection({ serverSync }) {
             ))}
           </Form.Select>
         </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="IMU Display Roll Sign" value={imuRollSign} onChange={safeServerSync.setImuDisplayRollSign} />
+        </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="IMU Display Pitch Sign" value={imuPitchSign} onChange={safeServerSync.setImuDisplayPitchSign} />
+        </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="IMU Display Yaw Sign" value={imuYawSign} onChange={safeServerSync.setImuDisplayYawSign} />
+        </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="Encoder Display Roll Sign" value={encoderRollSign} onChange={safeServerSync.setEncoderDisplayRollSign} />
+        </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="Encoder Display Pitch Sign" value={encoderPitchSign} onChange={safeServerSync.setEncoderDisplayPitchSign} />
+        </Col>
+        <Col xs={4} md={2}>
+          <SignSelect label="Encoder Display Yaw Sign" value={encoderYawSign} onChange={safeServerSync.setEncoderDisplayYawSign} />
+        </Col>
+        <Col xs={12} md={4}>
+          <SignSelect label="Body Rate wz Display Sign" value={wzSign} onChange={safeServerSync.setBodyRateWzDisplaySign} />
+        </Col>
+        <Col xs={12} md={8} className="d-flex align-items-end">
+          <Button variant="outline-light" className="w-100" onClick={safeServerSync.resetRpySignsToDefault}>
+            Reset RPY Signs to Default
+          </Button>
+        </Col>
       </Row>
+      <div className="server-small-note mt-2">
+        Current RPY [{imuSequence}, yaw sign {signText(imuYawSign)}] / Encoder RPY [{encoderSequence}, yaw sign {signText(encoderYawSign)}].
+      </div>
     </div>
   );
 }
@@ -835,6 +949,19 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const gainInputInvalid = !kpValues || !kdValues;
   const rpmValues = readWheelRpmTriplet(rpmCommand);
   const rpmInputInvalid = !rpmValues;
+  const targetSequence = normalizeEulerSequence(safeSerial.targetRpySequence, 'ZYX');
+  const targetRollSign = normalizeSign(safeSerial.targetRollSign, 1);
+  const targetPitchSign = normalizeSign(safeSerial.targetPitchSign, 1);
+  const targetYawSign = normalizeSign(safeSerial.targetYawSign, -1);
+  const targetPreview = buildTargetPreview(
+    { roll: targetRoll, pitch: targetPitch, yaw: targetYaw },
+    targetSequence,
+    { roll: targetRollSign, pitch: targetPitchSign, yaw: targetYawSign }
+  );
+  const latestPacket = safeStatus.latestPacket || safeStatus.latestSharedPacket || {};
+  const currentRawYaw = latestPacket.rawYawDeg ?? latestPacket.yawRawDeg ?? latestPacket.remoteYawDeg;
+  const currentDisplayYaw = latestPacket.yawDeg ?? latestPacket.yaw_deg ?? latestPacket.Yaw_deg;
+  const qdPreviewText = targetPreview.qd.map((value) => formatNumber(value, 6)).join(', ');
 
   if (!canViewCommand) return null;
 
@@ -956,6 +1083,34 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         </CommandAccordionItem>
 
         <CommandAccordionItem eventKey="target" title="Target Attitude">
+          <div className="serial-subsection-title mb-2">Target RPY Command Convention</div>
+          <Row className="g-2 align-items-end mb-3">
+            <Col xs={12} md={3}>
+              <Form.Label className="serial-mini-label">Target Rotation Sequence</Form.Label>
+              <Form.Select size="sm" value={targetSequence} onChange={(event) => safeSerial.setTargetRpySequence?.(event.target.value)}>
+                {EULER_SEQUENCE_OPTIONS.map((sequence) => (
+                  <option key={sequence} value={sequence}>{sequence}</option>
+                ))}
+              </Form.Select>
+            </Col>
+            <Col xs={4} md={2}>
+              <SignSelect label="Target Roll Sign" value={targetRollSign} onChange={safeSerial.setTargetRollSign} />
+            </Col>
+            <Col xs={4} md={2}>
+              <SignSelect label="Target Pitch Sign" value={targetPitchSign} onChange={safeSerial.setTargetPitchSign} />
+            </Col>
+            <Col xs={4} md={2}>
+              <SignSelect label="Target Yaw Sign" value={targetYawSign} onChange={safeSerial.setTargetYawSign} />
+            </Col>
+            <Col xs={12} md={3}>
+              <Button variant="outline-light" className="w-100" onClick={safeSerial.resetTargetCommandConvention}>
+                Reset Target Command Convention
+              </Button>
+            </Col>
+          </Row>
+          <div className="server-small-note mb-2">
+            Target command uses: {targetPreview.sequence}, signs {signsText(targetRollSign, targetPitchSign, targetYawSign)}. Display RPY signs do not affect target command.
+          </div>
           <Row className="g-2 align-items-end">
             <Col xs={4}>
               <Form.Label className="serial-mini-label">Roll</Form.Label>
@@ -980,6 +1135,14 @@ function CommandSection({ serial, status, role, controllerClientId, isController
               </Button>
             </Col>
           </Row>
+          <div className="serial-value-card rounded p-2 mt-3">
+            <div className="serial-section-title mb-2">qd preview</div>
+            <ValueRow label="Target yaw after command sign" value={`${formatNumber(targetPreview.commandYaw, 2)} deg`} />
+            <ValueRow label="qd0" value={formatNumber(targetPreview.qd[0], 6)} />
+            <ValueRow label="qd1" value={formatNumber(targetPreview.qd[1], 6)} />
+            <ValueRow label="qd2" value={formatNumber(targetPreview.qd[2], 6)} />
+            <ValueRow label="qd3" value={formatNumber(targetPreview.qd[3], 6)} />
+          </div>
         </CommandAccordionItem>
 
         <CommandAccordionItem eventKey="wheel-rpm" title="Wheel RPM Command">
@@ -1127,6 +1290,22 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             <CommandButton label="Refresh Status" onClick={safeSerial.refreshStatus} disabled={false} />
           </CommandGroup>
         </CommandAccordionItem>
+
+        <CommandAccordionItem eventKey="yaw-diagnostic" title="Yaw Sign Diagnostic">
+          <ValueGrid
+            title="Yaw Sign Diagnostic"
+            rows={[
+              { label: 'Current Display Yaw Sign', value: signText(latestPacket.imuDisplayYawSign ?? safeSerial.imuDisplayYawSign ?? -1) },
+              { label: 'Target Command Yaw Sign', value: signText(targetYawSign) },
+              { label: 'Current yaw from quaternion before sign', value: currentRawYaw != null ? `${formatNumber(currentRawYaw, 2)} deg` : '-' },
+              { label: 'Current yaw after display sign', value: currentDisplayYaw != null ? `${formatNumber(currentDisplayYaw, 2)} deg` : '-' },
+              { label: 'Target input yaw', value: `${formatNumber(targetPreview.inputYaw, 2)} deg` },
+              { label: 'Target yaw after command sign', value: `${formatNumber(targetPreview.commandYaw, 2)} deg` },
+              { label: 'qd preview', value: qdPreviewText },
+              { label: 'wz sign setting', value: signText(safeSerial.bodyRateWzDisplaySign ?? latestPacket.bodyRateWzDisplaySign ?? 1) },
+            ]}
+          />
+        </CommandAccordionItem>
       </Accordion>
     </div>
   );
@@ -1161,7 +1340,9 @@ function MonitoringSection({ status, isActive = true }) {
     { label: 'Roll', value: `${formatNumber(latest.roll_deg ?? latest.rollDeg, 2)} deg` },
     { label: 'Pitch', value: `${formatNumber(latest.pitch_deg ?? latest.pitchDeg, 2)} deg` },
     { label: 'Yaw', value: `${formatNumber(latest.yaw_deg ?? latest.yawDeg, 2)} deg` },
+    { label: 'Raw Yaw', value: latest.rawYawDeg != null ? `${formatNumber(latest.rawYawDeg, 2)} deg` : '-' },
     { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
+    { label: 'Display signs', value: signsText(latest.imuDisplayRollSign ?? 1, latest.imuDisplayPitchSign ?? 1, latest.imuDisplayYawSign ?? -1) },
     { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
   ], [latest]);
 
@@ -1179,7 +1360,9 @@ function MonitoringSection({ status, isActive = true }) {
   const rateRows = useMemo(() => [
     { label: 'wx (rad/s)', value: latest.wx != null ? formatNumber(latest.wx, 4) : '-' },
     { label: 'wy (rad/s)', value: latest.wy != null ? formatNumber(latest.wy, 4) : '-' },
-    { label: 'wz (rad/s)', value: latest.wz != null ? formatNumber(latest.wz, 4) : '-' },
+    { label: 'wz raw (rad/s)', value: latest.wzRaw != null || latest.wz != null ? formatNumber(latest.wzRaw ?? latest.wz, 4) : '-' },
+    { label: 'wz display (rad/s)', value: latest.wzDisplay != null ? formatNumber(latest.wzDisplay, 4) : '-' },
+    { label: 'wz display sign', value: signText(latest.bodyRateWzDisplaySign ?? 1) },
     { label: 'source', value: formatSourceLabel(latest.angularRateSource) },
   ], [latest]);
 
@@ -1314,7 +1497,7 @@ function MonitoringSection({ status, isActive = true }) {
       <Row className="g-2 mb-3">
         <Col xs={12}><ValueGrid title="Shared Live Data" rows={sharedRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={rpyRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}, yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`} rows={rpyRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Desired RPY (last command)" rows={commandStateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}>
@@ -1326,7 +1509,7 @@ function MonitoringSection({ status, isActive = true }) {
           )}
         </Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Gimbal Rotary Encoder" rows={encoderRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}, yaw sign ${signText(latest.encoderDisplayYawSign ?? -1)}]`} rows={encoderRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Direction / Frame" rows={frameRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
@@ -1374,7 +1557,7 @@ function MonitoringSection({ status, isActive = true }) {
           <Row className="g-2">
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
-                title="Current RPY"
+                title={`Current RPY [yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`}
                 data={livePlotData}
                 yLabel="deg"
                 lines={[

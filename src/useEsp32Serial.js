@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { normalizeEulerSequence, normalizeLivePacket, quaternionToEulerDeg } from './telemetryNormalize';
+import {
+  applyEulerDisplaySigns,
+  normalizeEulerSequence,
+  normalizeLivePacket,
+  normalizeRpySigns,
+  normalizeSign,
+  quaternionToEulerDeg,
+  signsLabel,
+} from './telemetryNormalize';
 
 const MAX_BUFFER_LENGTH = 262144;
 const MAX_RECENT_PACKETS = 10;
@@ -53,6 +61,21 @@ const DEFAULT_PACKET = {
   encoderPitchDeg: null,
   encoderYawDeg: null,
   encoderRpySource: '',
+  rawRollDeg: 0,
+  rawPitchDeg: 0,
+  rawYawDeg: 0,
+  imuDisplayRollSign: 1,
+  imuDisplayPitchSign: 1,
+  imuDisplayYawSign: -1,
+  encoderRawRollDeg: null,
+  encoderRawPitchDeg: null,
+  encoderRawYawDeg: null,
+  encoderDisplayRollSign: 1,
+  encoderDisplayPitchSign: 1,
+  encoderDisplayYawSign: -1,
+  wzRaw: null,
+  wzDisplay: null,
+  bodyRateWzDisplaySign: 1,
   encoderHasQuaternion: false,
   encoderFresh: false,
   imuEulerSequence: 'ZYX',
@@ -157,6 +180,11 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const encoderEulerSequence = normalizeEulerSequence(
     options.encoderEulerSequence || input.encoderEulerSequence || input.encoder?.eulerSequence || fallback.encoderEulerSequence || fallback.encoder?.eulerSequence
   );
+  const encoderDisplaySigns = normalizeRpySigns({
+    roll: options.encoderDisplayRollSign ?? input.encoderDisplayRollSign ?? input.encoder?.displayRollSign ?? fallback.encoderDisplayRollSign ?? fallback.encoder?.displayRollSign,
+    pitch: options.encoderDisplayPitchSign ?? input.encoderDisplayPitchSign ?? input.encoder?.displayPitchSign ?? fallback.encoderDisplayPitchSign ?? fallback.encoder?.displayPitchSign,
+    yaw: options.encoderDisplayYawSign ?? input.encoderDisplayYawSign ?? input.encoder?.displayYawSign ?? fallback.encoderDisplayYawSign ?? fallback.encoder?.displayYawSign,
+  });
   const fallbackValue = (snakeKey, camelKey, nestedKey, nestedAltKey = nestedKey) => (
     useFallback
       ? (fallback[snakeKey] ?? fallback[camelKey] ?? fallback.encoder?.[nestedKey] ?? fallback.encoder?.[nestedAltKey] ?? null)
@@ -207,8 +235,9 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     updatedAt,
     now,
   });
-  const encoderEuler = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
-  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
+  const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
+  const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
+  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}, display signs ${signsLabel(encoderDisplaySigns)}` : '';
 
   return {
     enc_x_deg: encX,
@@ -235,6 +264,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     encoderSource: source,
     encoderStatus,
     encoderEulerSequence,
+    encoderDisplayRollSign: encoderDisplaySigns.roll,
+    encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+    encoderDisplayYawSign: encoderDisplaySigns.yaw,
+    encoderRawRollDeg: encoderEulerRaw?.roll ?? null,
+    encoderRawPitchDeg: encoderEulerRaw?.pitch ?? null,
+    encoderRawYawDeg: encoderEulerRaw?.yaw ?? null,
     encoderRollDeg: encoderEuler?.roll ?? null,
     encoderPitchDeg: encoderEuler?.pitch ?? null,
     encoderYawDeg: encoderEuler?.yaw ?? null,
@@ -256,6 +291,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
       source,
       status: encoderStatus,
       eulerSequence: encoderEulerSequence,
+      displayRollSign: encoderDisplaySigns.roll,
+      displayPitchSign: encoderDisplaySigns.pitch,
+      displayYawSign: encoderDisplaySigns.yaw,
+      rawRollDeg: encoderEulerRaw?.roll ?? null,
+      rawPitchDeg: encoderEulerRaw?.pitch ?? null,
+      rawYawDeg: encoderEulerRaw?.yaw ?? null,
       rollDeg: encoderEuler?.roll ?? null,
       pitchDeg: encoderEuler?.pitch ?? null,
       yawDeg: encoderEuler?.yaw ?? null,
@@ -710,6 +751,17 @@ function makeInitialEncoder(encoderEulerSequence = 'ZYX') {
 export default function useEsp32Serial(options = {}) {
   const imuEulerSequence = normalizeEulerSequence(options.imuEulerSequence);
   const encoderEulerSequence = normalizeEulerSequence(options.encoderEulerSequence);
+  const imuDisplaySigns = normalizeRpySigns({
+    roll: options.imuDisplayRollSign,
+    pitch: options.imuDisplayPitchSign,
+    yaw: options.imuDisplayYawSign,
+  });
+  const encoderDisplaySigns = normalizeRpySigns({
+    roll: options.encoderDisplayRollSign,
+    pitch: options.encoderDisplayPitchSign,
+    yaw: options.encoderDisplayYawSign,
+  });
+  const bodyRateWzDisplaySign = normalizeSign(options.bodyRateWzDisplaySign, 1);
   const [isSupported] = useState(
     typeof navigator !== 'undefined' && typeof navigator.serial !== 'undefined'
   );
@@ -786,7 +838,14 @@ export default function useEsp32Serial(options = {}) {
       const encoderFields = makeEncoderFields(
         { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
         latestEncoderRef.current,
-        { useFallback: true, now, encoderEulerSequence }
+        {
+          useFallback: true,
+          now,
+          encoderEulerSequence,
+          encoderDisplayRollSign: encoderDisplaySigns.roll,
+          encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+          encoderDisplayYawSign: encoderDisplaySigns.yaw,
+        }
       );
       latestEncoderRef.current = encoderFields;
       encoderCountRef.current += 1;
@@ -801,7 +860,14 @@ export default function useEsp32Serial(options = {}) {
         pc_time_ms: currentPacket.pc_time_ms || currentPacket.pcTimeMs || now,
         raw: parsed.cleanLine || currentPacket.raw || '',
         updatedAt: now,
-      }, encoderFields, { useFallback: false, now, encoderEulerSequence });
+      }, encoderFields, {
+        useFallback: false,
+        now,
+        encoderEulerSequence,
+        encoderDisplayRollSign: encoderDisplaySigns.roll,
+        encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+        encoderDisplayYawSign: encoderDisplaySigns.yaw,
+      });
 
       recentPacketsRef.current = [latestPacketRef.current, ...recentPacketsRef.current.slice(1)].slice(0, MAX_RECENT_PACKETS);
       const chartPoint = {
@@ -847,8 +913,22 @@ export default function useEsp32Serial(options = {}) {
           ...parsed,
           encoderUpdatedAt: parsed.encoderUpdatedAt || now,
           encoderSource: parsed.encoderSource || 'telemetry packet',
-        }, {}, { useFallback: false, now, encoderEulerSequence })
-      : makeEncoderFields(latestEncoderRef.current, {}, { useFallback: false, now, encoderEulerSequence });
+        }, {}, {
+          useFallback: false,
+          now,
+          encoderEulerSequence,
+          encoderDisplayRollSign: encoderDisplaySigns.roll,
+          encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+          encoderDisplayYawSign: encoderDisplaySigns.yaw,
+        })
+      : makeEncoderFields(latestEncoderRef.current, {}, {
+          useFallback: false,
+          now,
+          encoderEulerSequence,
+          encoderDisplayRollSign: encoderDisplaySigns.roll,
+          encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+          encoderDisplayYawSign: encoderDisplaySigns.yaw,
+        });
     const packet = {
       source: parsed.source || 'serial',
       pc_time_ms: now,
@@ -906,7 +986,14 @@ export default function useEsp32Serial(options = {}) {
     packet.yawDeg = packet.yaw_deg;
     packet.ebimuTimestampMs = packet.ebimu_timestamp_ms;
     if (hasIncomingEncoderData(parsed)) {
-      latestEncoderRef.current = makeEncoderFields(packet, {}, { useFallback: false, now, encoderEulerSequence });
+      latestEncoderRef.current = makeEncoderFields(packet, {}, {
+        useFallback: false,
+        now,
+        encoderEulerSequence,
+        encoderDisplayRollSign: encoderDisplaySigns.roll,
+        encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+        encoderDisplayYawSign: encoderDisplaySigns.yaw,
+      });
     } else {
       latestEncoderRef.current = encoderFields;
     }
@@ -914,6 +1001,13 @@ export default function useEsp32Serial(options = {}) {
     const normalizedPacket = normalizeLivePacket(packet, 'admin-web-serial', {
       imuEulerSequence,
       encoderEulerSequence,
+      imuDisplayRollSign: imuDisplaySigns.roll,
+      imuDisplayPitchSign: imuDisplaySigns.pitch,
+      imuDisplayYawSign: imuDisplaySigns.yaw,
+      encoderDisplayRollSign: encoderDisplaySigns.roll,
+      encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+      encoderDisplayYawSign: encoderDisplaySigns.yaw,
+      bodyRateWzDisplaySign,
       now,
     }) || packet;
     const commonPacket = {
@@ -981,7 +1075,18 @@ export default function useEsp32Serial(options = {}) {
     }
 
     markPendingUiFlush();
-  }, [encoderEulerSequence, imuEulerSequence, markPendingUiFlush]);
+  }, [
+    bodyRateWzDisplaySign,
+    encoderDisplaySigns.pitch,
+    encoderDisplaySigns.roll,
+    encoderDisplaySigns.yaw,
+    encoderEulerSequence,
+    imuDisplaySigns.pitch,
+    imuDisplaySigns.roll,
+    imuDisplaySigns.yaw,
+    imuEulerSequence,
+    markPendingUiFlush,
+  ]);
 
   const registerInvalidLineRefOnly = useCallback((parsed) => {
     if (parsed.warning) {

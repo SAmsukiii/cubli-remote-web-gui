@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { EULER_SEQUENCES, normalizeEulerSequence, normalizeLivePacket } from './telemetryNormalize';
+import { EULER_SEQUENCES, eulerDegToQuat, normalizeEulerSequence, normalizeLivePacket, normalizeSign } from './telemetryNormalize';
 
 const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
 const SERVER_URL_KEY = 'cubliServerUrl';
 const IMU_EULER_SEQUENCE_KEY = 'cubliImuEulerSequence';
 const ENCODER_EULER_SEQUENCE_KEY = 'cubliEncoderEulerSequence';
+const IMU_DISPLAY_ROLL_SIGN_KEY = 'cubliImuDisplayRollSign';
+const IMU_DISPLAY_PITCH_SIGN_KEY = 'cubliImuDisplayPitchSign';
+const IMU_DISPLAY_YAW_SIGN_KEY = 'cubliImuDisplayYawSign';
+const ENCODER_DISPLAY_ROLL_SIGN_KEY = 'cubliEncoderDisplayRollSign';
+const ENCODER_DISPLAY_PITCH_SIGN_KEY = 'cubliEncoderDisplayPitchSign';
+const ENCODER_DISPLAY_YAW_SIGN_KEY = 'cubliEncoderDisplayYawSign';
+const TARGET_RPY_SEQUENCE_KEY = 'cubliTargetRpySequence';
+const TARGET_ROLL_SIGN_KEY = 'cubliTargetRollSign';
+const TARGET_PITCH_SIGN_KEY = 'cubliTargetPitchSign';
+const TARGET_YAW_SIGN_KEY = 'cubliTargetYawSign';
+const BODY_RATE_WZ_DISPLAY_SIGN_KEY = 'cubliBodyRateWzDisplaySign';
+const DEFAULT_ROLL_SIGN = 1;
+const DEFAULT_PITCH_SIGN = 1;
+const DEFAULT_YAW_SIGN = -1;
+const DEFAULT_WZ_DISPLAY_SIGN = 1;
 const FALLBACK_SERVER_URL = 'http://localhost:5050';
 const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 const MAX_SAMPLE_QUEUE = 1200;
@@ -88,6 +103,11 @@ function getStoredDisplayName() {
 function getStoredEulerSequence(key) {
   if (typeof window === 'undefined') return 'ZYX';
   return normalizeEulerSequence(getLocalStorageValue(key), 'ZYX');
+}
+
+function getStoredSign(key, fallback = 1) {
+  if (typeof window === 'undefined') return normalizeSign(fallback, 1);
+  return normalizeSign(getLocalStorageValue(key), fallback);
 }
 
 function makeSuggestedDisplayName(role = 'Viewer', clientId = '') {
@@ -408,6 +428,11 @@ function normalizeGainTriplet(values = {}, names = ['x', 'y', 'z']) {
   return { [names[0]]: a, [names[1]]: b, [names[2]]: c };
 }
 
+function finiteCommandNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function normalizeSource(source) {
   const text = String(source || '').toLowerCase();
   if (text === 'server-serial' || text.includes('server')) return 'server-serial';
@@ -438,6 +463,12 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     rollDeg: firstFinite([src.rollDeg, src.roll_deg, src.roll], 0),
     pitchDeg: firstFinite([src.pitchDeg, src.pitch_deg, src.pitch], 0),
     yawDeg: firstFinite([src.yawDeg, src.yaw_deg, src.yaw], 0),
+    rawRollDeg: firstFinite([src.rawRollDeg], null),
+    rawPitchDeg: firstFinite([src.rawPitchDeg], null),
+    rawYawDeg: firstFinite([src.rawYawDeg], null),
+    imuDisplayRollSign: firstFinite([src.imuDisplayRollSign], DEFAULT_ROLL_SIGN),
+    imuDisplayPitchSign: firstFinite([src.imuDisplayPitchSign], DEFAULT_PITCH_SIGN),
+    imuDisplayYawSign: firstFinite([src.imuDisplayYawSign], DEFAULT_YAW_SIGN),
     enc_x_deg: firstFinite([src.enc_x_deg, src.encoderXDeg, src.encoder?.x], null),
     enc_y_deg: firstFinite([src.enc_y_deg, src.encoderYDeg, src.encoder?.y], null),
     enc_z_deg: firstFinite([src.enc_z_deg, src.encoderZDeg, src.encoder?.z], null),
@@ -463,6 +494,12 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     encoderRollDeg: firstFinite([src.encoderRollDeg, src.encoder?.rollDeg], null),
     encoderPitchDeg: firstFinite([src.encoderPitchDeg, src.encoder?.pitchDeg], null),
     encoderYawDeg: firstFinite([src.encoderYawDeg, src.encoder?.yawDeg], null),
+    encoderRawRollDeg: firstFinite([src.encoderRawRollDeg, src.encoder?.rawRollDeg], null),
+    encoderRawPitchDeg: firstFinite([src.encoderRawPitchDeg, src.encoder?.rawPitchDeg], null),
+    encoderRawYawDeg: firstFinite([src.encoderRawYawDeg, src.encoder?.rawYawDeg], null),
+    encoderDisplayRollSign: firstFinite([src.encoderDisplayRollSign, src.encoder?.displayRollSign], DEFAULT_ROLL_SIGN),
+    encoderDisplayPitchSign: firstFinite([src.encoderDisplayPitchSign, src.encoder?.displayPitchSign], DEFAULT_PITCH_SIGN),
+    encoderDisplayYawSign: firstFinite([src.encoderDisplayYawSign, src.encoder?.displayYawSign], DEFAULT_YAW_SIGN),
     encoderEulerSequence: src.encoderEulerSequence || src.encoder?.eulerSequence || '',
     encoderRpySource: src.encoderRpySource || src.encoder?.rpySource || '',
     encoderStatus: src.encoderStatus || src.encoder?.status || '',
@@ -474,6 +511,9 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     wx: firstFinite([src.wx, src.wxTelemetry], null),
     wy: firstFinite([src.wy, src.wyTelemetry], null),
     wz: firstFinite([src.wz, src.wzTelemetry], null),
+    wzRaw: firstFinite([src.wzRaw, src.wz_raw, src.wz, src.wzTelemetry], null),
+    wzDisplay: firstFinite([src.wzDisplay, src.wz_display], null),
+    bodyRateWzDisplaySign: firstFinite([src.bodyRateWzDisplaySign], DEFAULT_WZ_DISPLAY_SIGN),
     angularRateSource: src.angularRateSource || '',
     RPM1: firstFinite([src.RPM1], null),
     RPM2: firstFinite([src.RPM2], null),
@@ -549,6 +589,17 @@ export default function useServerSync() {
   const [serverUrl, setServerUrlState] = useState(DEFAULT_SERVER_URL);
   const [imuEulerSequence, setImuEulerSequenceState] = useState(() => getStoredEulerSequence(IMU_EULER_SEQUENCE_KEY));
   const [encoderEulerSequence, setEncoderEulerSequenceState] = useState(() => getStoredEulerSequence(ENCODER_EULER_SEQUENCE_KEY));
+  const [imuDisplayRollSign, setImuDisplayRollSignState] = useState(() => getStoredSign(IMU_DISPLAY_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
+  const [imuDisplayPitchSign, setImuDisplayPitchSignState] = useState(() => getStoredSign(IMU_DISPLAY_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
+  const [imuDisplayYawSign, setImuDisplayYawSignState] = useState(() => getStoredSign(IMU_DISPLAY_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
+  const [encoderDisplayRollSign, setEncoderDisplayRollSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
+  const [encoderDisplayPitchSign, setEncoderDisplayPitchSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
+  const [encoderDisplayYawSign, setEncoderDisplayYawSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
+  const [targetRpySequence, setTargetRpySequenceState] = useState(() => getStoredEulerSequence(TARGET_RPY_SEQUENCE_KEY));
+  const [targetRollSign, setTargetRollSignState] = useState(() => getStoredSign(TARGET_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
+  const [targetPitchSign, setTargetPitchSignState] = useState(() => getStoredSign(TARGET_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
+  const [targetYawSign, setTargetYawSignState] = useState(() => getStoredSign(TARGET_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
+  const [bodyRateWzDisplaySign, setBodyRateWzDisplaySignState] = useState(() => getStoredSign(BODY_RATE_WZ_DISPLAY_SIGN_KEY, DEFAULT_WZ_DISPLAY_SIGN));
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastError, setLastError] = useState('');
   const [sessionId, setSessionId] = useState('');
@@ -691,6 +742,55 @@ export default function useServerSync() {
     setLocalStorageValue(ENCODER_EULER_SEQUENCE_KEY, next);
     return next;
   }, []);
+
+  const setStoredSign = useCallback((key, setter, value, fallback = 1) => {
+    const next = normalizeSign(value, fallback);
+    setter(next);
+    setLocalStorageValue(key, next);
+    return next;
+  }, []);
+
+  const setImuDisplayRollSign = useCallback((value) => setStoredSign(IMU_DISPLAY_ROLL_SIGN_KEY, setImuDisplayRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
+  const setImuDisplayPitchSign = useCallback((value) => setStoredSign(IMU_DISPLAY_PITCH_SIGN_KEY, setImuDisplayPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
+  const setImuDisplayYawSign = useCallback((value) => setStoredSign(IMU_DISPLAY_YAW_SIGN_KEY, setImuDisplayYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
+  const setEncoderDisplayRollSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_ROLL_SIGN_KEY, setEncoderDisplayRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
+  const setEncoderDisplayPitchSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_PITCH_SIGN_KEY, setEncoderDisplayPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
+  const setEncoderDisplayYawSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_YAW_SIGN_KEY, setEncoderDisplayYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
+  const setBodyRateWzDisplaySign = useCallback((value) => setStoredSign(BODY_RATE_WZ_DISPLAY_SIGN_KEY, setBodyRateWzDisplaySignState, value, DEFAULT_WZ_DISPLAY_SIGN), [setStoredSign]);
+
+  const resetRpySignsToDefault = useCallback(() => {
+    setImuDisplayRollSign(DEFAULT_ROLL_SIGN);
+    setImuDisplayPitchSign(DEFAULT_PITCH_SIGN);
+    setImuDisplayYawSign(DEFAULT_YAW_SIGN);
+    setEncoderDisplayRollSign(DEFAULT_ROLL_SIGN);
+    setEncoderDisplayPitchSign(DEFAULT_PITCH_SIGN);
+    setEncoderDisplayYawSign(DEFAULT_YAW_SIGN);
+    setBodyRateWzDisplaySign(DEFAULT_WZ_DISPLAY_SIGN);
+  }, [
+    setBodyRateWzDisplaySign,
+    setEncoderDisplayPitchSign,
+    setEncoderDisplayRollSign,
+    setEncoderDisplayYawSign,
+    setImuDisplayPitchSign,
+    setImuDisplayRollSign,
+    setImuDisplayYawSign,
+  ]);
+
+  const setTargetRpySequence = useCallback((value) => {
+    const next = normalizeEulerSequence(value, 'ZYX');
+    setTargetRpySequenceState(next);
+    setLocalStorageValue(TARGET_RPY_SEQUENCE_KEY, next);
+    return next;
+  }, []);
+  const setTargetRollSign = useCallback((value) => setStoredSign(TARGET_ROLL_SIGN_KEY, setTargetRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
+  const setTargetPitchSign = useCallback((value) => setStoredSign(TARGET_PITCH_SIGN_KEY, setTargetPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
+  const setTargetYawSign = useCallback((value) => setStoredSign(TARGET_YAW_SIGN_KEY, setTargetYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
+  const resetTargetCommandConvention = useCallback(() => {
+    setTargetRpySequence('ZYX');
+    setTargetRollSign(DEFAULT_ROLL_SIGN);
+    setTargetPitchSign(DEFAULT_PITCH_SIGN);
+    setTargetYawSign(DEFAULT_YAW_SIGN);
+  }, [setTargetPitchSign, setTargetRollSign, setTargetRpySequence, setTargetYawSign]);
 
   const getSuggestedDisplayName = useCallback((role = 'Viewer') => (
     makeSuggestedDisplayName(role, clientId)
@@ -959,6 +1059,13 @@ export default function useServerSync() {
       now,
       imuEulerSequence,
       encoderEulerSequence,
+      imuDisplayRollSign,
+      imuDisplayPitchSign,
+      imuDisplayYawSign,
+      encoderDisplayRollSign,
+      encoderDisplayPitchSign,
+      encoderDisplayYawSign,
+      bodyRateWzDisplaySign,
     });
 
     if (!normalized || normalized.invalid || normalized.ok === false) {
@@ -1116,7 +1223,22 @@ export default function useServerSync() {
       setLastError(errorMessage);
       return false;
     }
-  }, [clientId, discoverServerUrl, encoderEulerSequence, imuEulerSequence, safeDisplayName, ensureApiServerUrl, serverSerialStatus.latestDesiredAttitude]);
+  }, [
+    bodyRateWzDisplaySign,
+    clientId,
+    discoverServerUrl,
+    encoderDisplayPitchSign,
+    encoderDisplayRollSign,
+    encoderDisplayYawSign,
+    encoderEulerSequence,
+    imuDisplayPitchSign,
+    imuDisplayRollSign,
+    imuDisplayYawSign,
+    imuEulerSequence,
+    safeDisplayName,
+    ensureApiServerUrl,
+    serverSerialStatus.latestDesiredAttitude,
+  ]);
 
   const publishCommandState = useCallback(async (commandKey, params = {}, label = '') => {
     const key = String(commandKey || '').trim();
@@ -1235,6 +1357,39 @@ export default function useServerSync() {
     setServerSerialBaudRateState(number);
   }, []);
 
+  const buildTargetCommandParams = useCallback((params = {}) => {
+    if (params.targetConventionApplied) return params;
+    const inputRoll = finiteCommandNumber(params.inputRoll ?? params.roll ?? params.target1, 0);
+    const inputPitch = finiteCommandNumber(params.inputPitch ?? params.pitch ?? params.target2, 0);
+    const inputYaw = finiteCommandNumber(params.inputYaw ?? params.yaw ?? params.target3, 0);
+    const sequence = normalizeEulerSequence(params.targetRpySequence || params.targetSequence || targetRpySequence, 'ZYX');
+    const rollSign = normalizeSign(params.targetRollSign, targetRollSign);
+    const pitchSign = normalizeSign(params.targetPitchSign, targetPitchSign);
+    const yawSign = normalizeSign(params.targetYawSign, targetYawSign);
+    const roll = inputRoll * rollSign;
+    const pitch = inputPitch * pitchSign;
+    const yaw = inputYaw * yawSign;
+    const qd = eulerDegToQuat(roll, pitch, yaw, sequence) || [1, 0, 0, 0];
+    return {
+      ...params,
+      inputRoll,
+      inputPitch,
+      inputYaw,
+      roll,
+      pitch,
+      yaw,
+      targetRpySequence: sequence,
+      targetRollSign: rollSign,
+      targetPitchSign: pitchSign,
+      targetYawSign: yawSign,
+      qd0: qd[0],
+      qd1: qd[1],
+      qd2: qd[2],
+      qd3: qd[3],
+      targetConventionApplied: true,
+    };
+  }, [targetPitchSign, targetRollSign, targetRpySequence, targetYawSign]);
+
   const updateServerSerialStatusState = useCallback((data) => {
     if (!data) return data;
     setServerSerialStatus((prev) => ({ ...prev, ...data }));
@@ -1331,7 +1486,9 @@ export default function useServerSync() {
       ? { commandKey: explicitKey, params: paramsOrMeta || {} }
       : legacyCommandToKey(explicitKey);
     const commandKey = mapped.commandKey;
-    const params = mapped.params || {};
+    const params = commandKey === 'targetAttitude'
+      ? buildTargetCommandParams(mapped.params || {})
+      : (mapped.params || {});
     const eventMeta = knownKeys.has(explicitKey) ? maybeMeta : paramsOrMeta;
     if (!commandKey) {
       setServerSerialStatus((prev) => ({ ...prev, lastError: 'Unsupported server serial command' }));
@@ -1343,7 +1500,7 @@ export default function useServerSync() {
       detail: eventMeta.detail || {},
     });
     return Boolean(commandId);
-  }, [requestBridgeCommand]);
+  }, [buildTargetCommandParams, requestBridgeCommand]);
 
   const sendServerControllerCommand = useCallback(async (type, v1 = 0, v2 = 0, v3 = 0, eventMeta = {}) => {
     const cleanType = Number(type);
@@ -1821,6 +1978,30 @@ export default function useServerSync() {
     setImuEulerSequence,
     encoderEulerSequence,
     setEncoderEulerSequence,
+    imuDisplayRollSign,
+    imuDisplayPitchSign,
+    imuDisplayYawSign,
+    setImuDisplayRollSign,
+    setImuDisplayPitchSign,
+    setImuDisplayYawSign,
+    encoderDisplayRollSign,
+    encoderDisplayPitchSign,
+    encoderDisplayYawSign,
+    setEncoderDisplayRollSign,
+    setEncoderDisplayPitchSign,
+    setEncoderDisplayYawSign,
+    bodyRateWzDisplaySign,
+    setBodyRateWzDisplaySign,
+    resetRpySignsToDefault,
+    targetRpySequence,
+    setTargetRpySequence,
+    targetRollSign,
+    setTargetRollSign,
+    targetPitchSign,
+    setTargetPitchSign,
+    targetYawSign,
+    setTargetYawSign,
+    resetTargetCommandConvention,
     getSuggestedDisplayName,
     role: serverSerialStatus.access?.myEffectiveRole || 'viewer',
     isAdmin: serverSerialStatus.access?.myEffectiveRole === 'admin',
@@ -1884,6 +2065,17 @@ export default function useServerSync() {
       sendCommand: sendServerSerialCommand,
       sendCommandKey: sendServerSerialCommand,
       sendControllerCommand: sendServerControllerCommand,
+      targetRpySequence,
+      setTargetRpySequence,
+      targetRollSign,
+      setTargetRollSign,
+      targetPitchSign,
+      setTargetPitchSign,
+      targetYawSign,
+      setTargetYawSign,
+      resetTargetCommandConvention,
+      imuDisplayYawSign,
+      bodyRateWzDisplaySign,
       sendTare: () => sendServerSerialCommand('tare', {}, { eventType: 'TARE', label: 'Set Zero / Tare' }),
       sendStop: () => sendServerSerialCommand('stop', {}, { eventType: 'STOP', label: 'Stop' }),
       sendCubliInitialize,
