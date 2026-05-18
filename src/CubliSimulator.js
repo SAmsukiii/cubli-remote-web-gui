@@ -11,7 +11,7 @@ import SerialPanel from './SerialPanel';
 import BlePanel from './BlePanel';
 import ServerPanel from './ServerPanel';
 import useServerSync from './useServerSync';
-import { normalizeLivePacket } from './telemetryNormalize';
+import { normalizeLivePacket, normalizeQuaternion } from './telemetryNormalize';
 import {
   DEFAULT_FRAME_DEBUG_CONFIG,
   FrameAxisDebugHelpers,
@@ -36,6 +36,49 @@ const WEB_SERIAL_BRIDGE_PUBLISH_INTERVAL_MS = 10; // 100 Hz target for Admin Web
 const WEB_SERIAL_BRIDGE_MAX_IN_FLIGHT = 10; // fast 204 publish endpoint allows more overlap without blocking Viewer streaming
 const WEB_SERIAL_BRIDGE_COMMAND_POLL_MS = 50; // faster bridge command relay
 const EMPTY_OBJECT = Object.freeze({});
+const IDENTITY_LIVE_PACKET = Object.freeze({
+  q0: 1,
+  q1: 0,
+  q2: 0,
+  q3: 0,
+  q: Object.freeze([1, 0, 0, 0]),
+  rollDeg: 0,
+  pitchDeg: 0,
+  yawDeg: 0,
+  roll_deg: 0,
+  pitch_deg: 0,
+  yaw_deg: 0,
+  source: 'fallback identity',
+  sourceLabel: 'Fallback Identity',
+  stale: true,
+  updatedAt: 0,
+});
+
+// This transform fixes the displayed Cubli model layout only.
+// It must not change telemetry quaternion interpretation.
+// 3D attitude still uses q0,q1,q2,q3 from IMU/TEL.
+const CUBLI_VISUAL_TRANSFORM = Object.freeze({
+  mirrorWheelX: true,
+  mirrorWheelZ: true,
+  flipVisualVertical: true,
+  alignAxesToReferenceFrame: true,
+});
+const WHEEL_VISUAL_FIX = Object.freeze({
+  xWheel: Object.freeze({ mirrorX: CUBLI_VISUAL_TRANSFORM.mirrorWheelX }),
+  yWheel: Object.freeze({}),
+  zWheel: Object.freeze({ mirrorZ: CUBLI_VISUAL_TRANSFORM.mirrorWheelZ }),
+});
+const BODY_VISUAL_FIX = Object.freeze({
+  flipVertical: CUBLI_VISUAL_TRANSFORM.flipVisualVertical,
+});
+const FRAME_ARROW_VISUAL_FIX = Object.freeze({
+  alignToReferenceFrame: CUBLI_VISUAL_TRANSFORM.alignAxesToReferenceFrame,
+});
+const REFERENCE_ALIGNED_FRAME_AXIS_DIRECTIONS = Object.freeze({
+  x: Object.freeze([1, 0, 0]),
+  y: Object.freeze([0, 0, 1]),
+  z: Object.freeze([0, 1, 0]),
+});
 // Serial/IMU packet은 보통 10~100 Hz로 들어오지만 화면은 60 fps로 그려진다.
 // 목표 자세까지 매 프레임 보간해서 EBIMU 자세가 계단식으로 튀지 않게 만든다.
 const ATTITUDE_SMOOTHING_SPEED = 12;
@@ -143,6 +186,19 @@ function normalizeDeg180(value) {
 
 function round1(value) {
   return Math.round((Number(value) || 0) * 10) / 10;
+}
+
+function resolvePacketFor3D(packet) {
+  return packet && typeof packet === 'object' ? packet : IDENTITY_LIVE_PACKET;
+}
+
+function getPacketQuaternionOrIdentity(packet) {
+  const safePacket = resolvePacketFor3D(packet);
+  const rawQ = Array.isArray(safePacket.q)
+    ? safePacket.q
+    : [safePacket.q0, safePacket.q1, safePacket.q2, safePacket.q3];
+  const normalized = normalizeQuaternion(rawQ);
+  return normalized.ok ? normalized.q : IDENTITY_LIVE_PACKET.q;
 }
 
 // Sensor/body frame -> displayed Cubli body frame remap.
@@ -289,17 +345,40 @@ function CubliModel({
     : DEFAULT_FRAME_DEBUG_CONFIG.wheelPositionScale;
   const showFrameHelpers = Boolean(debugConfig.showHelpers);
 
-  const wheelPositions = useMemo(() => ({
-    x: mapFrameDebugVector([WHEEL_DISTANCE, 0, 0], wheelPreset, wheelPositionScale),
-    y: mapFrameDebugVector([0, WHEEL_DISTANCE, 0], wheelPreset, wheelPositionScale),
-    z: mapFrameDebugVector([0, 0, -WHEEL_DISTANCE], wheelPreset, wheelPositionScale),
-  }), [wheelPreset, wheelPositionScale]);
+  const wheelPositions = useMemo(() => {
+    const xSign = WHEEL_VISUAL_FIX.xWheel.mirrorX ? -1 : 1;
+    const zSign = WHEEL_VISUAL_FIX.zWheel.mirrorZ ? 1 : -1;
 
-  const frameAxisDirections = useMemo(() => ({
-    x: mapFrameDebugVector([1, 0, 0], arrowPreset, 1),
-    y: mapFrameDebugVector([0, 0, 1], arrowPreset, 1),
-    z: mapFrameDebugVector([0, -1, 0], arrowPreset, 1),
-  }), [arrowPreset]);
+    return {
+      x: mapFrameDebugVector([xSign * WHEEL_DISTANCE, 0, 0], wheelPreset, wheelPositionScale),
+      y: mapFrameDebugVector([0, WHEEL_DISTANCE, 0], wheelPreset, wheelPositionScale),
+      z: mapFrameDebugVector([0, 0, zSign * WHEEL_DISTANCE], wheelPreset, wheelPositionScale),
+    };
+  }, [wheelPreset, wheelPositionScale]);
+
+  const wheelVisualRotations = useMemo(() => ({
+    x: [0, 0, WHEEL_VISUAL_FIX.xWheel.mirrorX ? Math.PI / 2 : -Math.PI / 2],
+    y: [0, 0, 0],
+    z: [WHEEL_VISUAL_FIX.zWheel.mirrorZ ? -Math.PI / 2 : Math.PI / 2, 0, 0],
+  }), []);
+
+  const visualRootScale = BODY_VISUAL_FIX.flipVertical ? [1, -1, 1] : [1, 1, 1];
+
+  const frameAxisDirections = useMemo(() => {
+    const baseDirections = FRAME_ARROW_VISUAL_FIX.alignToReferenceFrame
+      ? REFERENCE_ALIGNED_FRAME_AXIS_DIRECTIONS
+      : {
+          x: [1, 0, 0],
+          y: [0, 0, 1],
+          z: [0, -1, 0],
+        };
+
+    return {
+      x: mapFrameDebugVector(baseDirections.x, arrowPreset, 1),
+      y: mapFrameDebugVector(baseDirections.y, arrowPreset, 1),
+      z: mapFrameDebugVector(baseDirections.z, arrowPreset, 1),
+    };
+  }, [arrowPreset]);
 
   useFrame((state, delta) => {
     // wheel mesh의 기본 회전축을 local Y로 가정
@@ -322,7 +401,7 @@ function CubliModel({
       // 핵심: sensorMode / isSensorActive 조건에 묶어두면 탭 전환이나 UI 패치 후
       // 첫 packet만 반영되고 이후 live packet을 놓치는 경우가 생길 수 있다.
       // 따라서 livePacketRef가 존재하고 q=[qw,qx,qy,qz]가 유효하면 항상 quaternion을 우선 사용한다.
-      let packet = livePacketRef?.current || null;
+      let packet = resolvePacketFor3D(livePacketRef?.current);
       // livePacketRef 전달이 탭/렌더 타이밍 때문에 늦어지는 경우를 막기 위한 최종 fallback.
       // useEsp32Serial/useEsp32Ble가 valid packet을 받는 즉시 window slot에 최신값을 넣는다.
       if (typeof window !== 'undefined') {
@@ -335,16 +414,13 @@ function CubliModel({
               : null;
 
         if (globalPacket?.updatedAt && (!packet?.updatedAt || globalPacket.updatedAt > packet.updatedAt)) {
-          packet = globalPacket;
+          packet = resolvePacketFor3D(globalPacket);
         }
       }
 
-      const q = packet?.q;
-      if (Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)) {
-        const [qw, qx, qy, qz] = q;
-        targetQuatRef.current.set(qx, qy, qz, qw).normalize();
-        usedLivePacketQuat = true;
-      }
+      const [qw, qx, qy, qz] = getPacketQuaternionOrIdentity(packet);
+      targetQuatRef.current.set(qx, qy, qz, qw).normalize();
+      usedLivePacketQuat = true;
 
       if (!usedLivePacketQuat) {
         if (isSensorActive && sensorMode === 'quaternion') {
@@ -391,7 +467,9 @@ function CubliModel({
 
   return (
     <group ref={modelRef}>
-      <BodyFrameAxes axisLength={axisLength} axisDirections={frameAxisDirections} />
+      {/* Visual-only model fix. Telemetry quaternion interpretation remains unchanged. */}
+      <group scale={visualRootScale}>
+        <BodyFrameAxes axisLength={axisLength} axisDirections={frameAxisDirections} />
       {showFrameHelpers ? (
         <FrameAxisDebugHelpers axisDirections={frameAxisDirections} axisLength={axisLength} />
       ) : null}
@@ -404,7 +482,7 @@ function CubliModel({
 
         {/* X wheel: local Y -> body X */}
         <group position={wheelPositions.x}>
-          <group rotation={[0, 0, -Math.PI / 2]}>
+          <group rotation={wheelVisualRotations.x}>
             <group ref={wheelXSpinRef} scale={[WHEEL_SCALE, WHEEL_SCALE, WHEEL_SCALE]}>
               <primitive object={centeredWheelXScene} />
             </group>
@@ -420,12 +498,13 @@ function CubliModel({
 
         {/* Z wheel: local Y -> body -Z, 위치는 -Z 방향 */}
         <group position={wheelPositions.z}>
-          <group rotation={[Math.PI / 2, 0, 0]}>
+          <group rotation={wheelVisualRotations.z}>
             <group ref={wheelZSpinRef} scale={[WHEEL_SCALE, WHEEL_SCALE, WHEEL_SCALE]}>
               <primitive object={centeredWheelZScene} />
             </group>
           </group>
         </group>
+      </group>
       </group>
     </group>
   );
@@ -563,9 +642,14 @@ function CubliCanvas({
   frameDebug,
   setFrameDebug,
   showFrameDebug,
+  liveStatusText,
 }) {
   const cubliRef = useRef();
   const cameraTargetRef = useRef(new THREE.Vector3(0, 0, 0));
+  const currentPacket = resolvePacketFor3D(livePacketRef?.current);
+  const hasLiveData = Boolean(currentPacket.updatedAt || currentPacket.publishedAt);
+  const safeLiveStatusText = liveStatusText
+    || (hasLiveData ? (currentPacket.sourceLabel || currentPacket.source || 'Live data') : 'No live data yet');
 
   useEffect(() => {
     let rafId;
@@ -645,6 +729,12 @@ function CubliCanvas({
           style={{ fontSize: isMobile ? '0.76rem' : '1rem' }}
         >
           Auto Framed Cubli View
+        </p>
+        <p
+          className="m-0"
+          style={{ color: '#d6d6d6', fontSize: isMobile ? '0.7rem' : '0.82rem' }}
+        >
+          {safeLiveStatusText}
         </p>
       </div>
 
@@ -1320,6 +1410,7 @@ export default function CubliSimulator() {
   const serverSerialPacketMirrorRef = useRef(null);
   const phonePacketMirrorRef = useRef(null);
   const sharedPacketMirrorRef = useRef(null);
+  const fallbackLivePacketRef = useRef(IDENTITY_LIVE_PACKET);
 
   useEffect(() => {
     if (serial.latestPacket?.updatedAt) {
@@ -1364,8 +1455,9 @@ export default function CubliSimulator() {
           ? (serial.latestPacketRef || serialPacketMirrorRef)
           : phoneImuActive
             ? phonePacketMirrorRef
-            : (serverSerial.latestPacketRef || sharedPacketMirrorRef))
+          : (serverSerial.latestPacketRef || sharedPacketMirrorRef))
     : (serverSerial.latestPacketRef || sharedPacketMirrorRef);
+  const activeLivePacketFor3DRef = activeLivePacketRef || fallbackLivePacketRef;
 
   const activeSourceLabel = isAdmin
     ? (serverSerialImuActive
@@ -1376,8 +1468,21 @@ export default function CubliSimulator() {
           ? 'Admin Web Serial Bridge'
           : phoneImuActive
             ? 'Admin Phone Sensor'
-            : (sharedPacket?.sourceLabel || 'No active source'))
+          : (sharedPacket?.sourceLabel || 'No active source'))
     : (sharedPacket?.sourceLabel || 'Shared Server Data');
+  const activePacketFor3D = resolvePacketFor3D(activeLivePacketFor3DRef.current);
+  const hasLiveDataFor3D = Boolean(
+    activePacketFor3D.updatedAt ||
+    activePacketFor3D.publishedAt ||
+    serial.latestPacket?.updatedAt ||
+    ble.latestPacket?.updatedAt ||
+    sharedPacketActive
+  );
+  const cubliLiveStatusText = hasLiveDataFor3D
+    ? activeSourceLabel
+    : (isAdmin
+      ? (webSerialBridgeEnabled ? 'Waiting for Web Serial' : 'No live data yet')
+      : 'No shared live data yet');
 
   const commandEventToRemoteKey = React.useCallback((event = {}) => {
     const detail = event.detail || {};
@@ -2169,12 +2274,13 @@ export default function CubliSimulator() {
             controlsRef={controlsRef}
             viewResetKey={viewResetKey}
             isMobile={isMobile}
-            livePacketRef={activeLivePacketRef}
+            livePacketRef={activeLivePacketFor3DRef}
             activeSourceType={activeSourceType}
             axisLength={axisLength}
             frameDebug={frameDebug}
             setFrameDebug={setFrameDebug}
             showFrameDebug={showFrameDebug}
+            liveStatusText={cubliLiveStatusText}
           />
         </section>
 
