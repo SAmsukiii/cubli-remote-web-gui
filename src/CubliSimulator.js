@@ -14,12 +14,16 @@ import useServerSync from './useServerSync';
 import { normalizeLivePacket, normalizeQuaternion } from './telemetryNormalize';
 import {
   DEFAULT_FRAME_DEBUG_CONFIG,
+  DebugLabel,
   FrameAxisDebugHelpers,
   FrameDebugPanel,
   WheelLayoutDebugHelpers,
   getStoredFrameDebugConfig,
+  mapFrameArrowMirrorVector,
   mapWheelMirrorVector,
   normalizeFrameDebugConfig,
+  resolveBodyFrameArrowMirrorPresetKey,
+  resolveReferenceFrameArrowMirrorPresetKey,
 } from './CubliFrameDebug';
 
 // LOCAL 3D DEBUG ONLY: Cubli wheel/frame mapping presets are for local visual inspection only.
@@ -72,6 +76,28 @@ const REFERENCE_ALIGNED_FRAME_AXIS_DIRECTIONS = Object.freeze({
   x: Object.freeze([1, 0, 0]),
   y: Object.freeze([0, 0, 1]),
   z: Object.freeze([0, 1, 0]),
+});
+const BODY_FRAME_BASE_AXES = Object.freeze([
+  Object.freeze({ key: 'x', label: '+X_body', color: 0xff0000, vector: Object.freeze([1, 0, 0]) }),
+  Object.freeze({ key: 'y', label: '+Y_body', color: 0x00ff00, vector: Object.freeze([0, 1, 0]) }),
+  Object.freeze({ key: 'z', label: '+Z_body', color: 0x0000ff, vector: Object.freeze([0, 0, 1]) }),
+]);
+const REFERENCE_FRAME_BASE_AXES = Object.freeze([
+  Object.freeze({ key: 'x', label: '+X', color: '#ff4b4b', vector: Object.freeze([1, 0, 0]) }),
+  Object.freeze({ key: 'y', label: '+Y', color: '#4dff6a', vector: Object.freeze([0, 1, 0]) }),
+  Object.freeze({ key: 'z', label: '+Z', color: '#4d7dff', vector: Object.freeze([0, 0, 1]) }),
+]);
+const REFERENCE_FRAME_SVG_BASIS = Object.freeze({
+  x: Object.freeze([62, 0]),
+  y: Object.freeze([-30, 38]),
+  z: Object.freeze([0, 68]),
+});
+const REFERENCE_FRAME_SVG_BOUNDS = Object.freeze({
+  minX: 0,
+  minY: 0,
+  maxX: 140,
+  maxY: 126,
+  padding: 8,
 });
 // Serial/IMU packet은 보통 10~100 Hz로 들어오지만 화면은 60 fps로 그려진다.
 // 목표 자세까지 매 프레임 보간해서 EBIMU 자세가 계단식으로 튀지 않게 만든다.
@@ -183,9 +209,86 @@ function getPacketQuaternionOrIdentity(packet) {
   return normalized.ok ? normalized.q : IDENTITY_LIVE_PACKET.q;
 }
 
+function getBodyFrameDisplayBasis() {
+  return FRAME_ARROW_VISUAL_FIX.alignToReferenceFrame
+    ? REFERENCE_ALIGNED_FRAME_AXIS_DIRECTIONS
+    : {
+        x: [1, 0, 0],
+        y: [0, 0, 1],
+        z: [0, -1, 0],
+      };
+}
+
+function mapLocalAxisToDisplayDirection(localVector, displayBasis) {
+  const [x, y, z] = Array.isArray(localVector) ? localVector : [0, 0, 0];
+  return [
+    x * displayBasis.x[0] + y * displayBasis.y[0] + z * displayBasis.z[0],
+    x * displayBasis.x[1] + y * displayBasis.y[1] + z * displayBasis.z[1],
+    x * displayBasis.x[2] + y * displayBasis.y[2] + z * displayBasis.z[2],
+  ];
+}
+
+function createBodyFrameAxisDirections(mirrorPresetKey) {
+  const displayBasis = getBodyFrameDisplayBasis();
+  return BODY_FRAME_BASE_AXES.reduce((directions, axis) => {
+    const mirroredLocalDirection = mapFrameArrowMirrorVector(axis.vector, mirrorPresetKey);
+    return {
+      ...directions,
+      [axis.key]: mapLocalAxisToDisplayDirection(mirroredLocalDirection, displayBasis),
+    };
+  }, {});
+}
+
+function projectReferenceFrameVector(vector) {
+  const [x, y, z] = Array.isArray(vector) ? vector : [0, 0, 0];
+  return [
+    x * REFERENCE_FRAME_SVG_BASIS.x[0] + y * REFERENCE_FRAME_SVG_BASIS.y[0] + z * REFERENCE_FRAME_SVG_BASIS.z[0],
+    x * REFERENCE_FRAME_SVG_BASIS.x[1] + y * REFERENCE_FRAME_SVG_BASIS.y[1] + z * REFERENCE_FRAME_SVG_BASIS.z[1],
+  ];
+}
+
+function fitReferenceFrameDelta(origin, delta) {
+  const [dx, dy] = delta;
+  const { minX, minY, maxX, maxY, padding } = REFERENCE_FRAME_SVG_BOUNDS;
+  let scale = 1;
+
+  if (dx < 0) scale = Math.min(scale, (origin.x - minX - padding) / -dx);
+  if (dx > 0) scale = Math.min(scale, (maxX - padding - origin.x) / dx);
+  if (dy < 0) scale = Math.min(scale, (origin.y - minY - padding) / -dy);
+  if (dy > 0) scale = Math.min(scale, (maxY - padding - origin.y) / dy);
+
+  const safeScale = Math.max(0.25, Math.min(1, Number.isFinite(scale) ? scale : 1));
+  return [dx * safeScale, dy * safeScale];
+}
+
+function clampReferenceFrameLabel(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function createReferenceFrameAxisLayout(mirrorPresetKey, origin) {
+  const { minX, minY, maxX, maxY, padding } = REFERENCE_FRAME_SVG_BOUNDS;
+
+  return REFERENCE_FRAME_BASE_AXES.map((axis) => {
+    const mirroredDirection = mapFrameArrowMirrorVector(axis.vector, mirrorPresetKey);
+    const delta = fitReferenceFrameDelta(origin, projectReferenceFrameVector(mirroredDirection));
+    const length = Math.hypot(delta[0], delta[1]) || 1;
+    const labelOffset = 15;
+    const x2 = origin.x + delta[0];
+    const y2 = origin.y + delta[1];
+
+    return {
+      ...axis,
+      x2,
+      y2,
+      textX: clampReferenceFrameLabel(x2 + (delta[0] / length) * labelOffset, minX + padding, maxX - padding),
+      textY: clampReferenceFrameLabel(y2 + (delta[1] / length) * labelOffset, minY + padding, maxY - padding),
+    };
+  });
+}
+
 // Sensor/body frame -> displayed Cubli body frame remap.
 // Mapping: X -> X, Y -> Z, Z -> -Y.
-// This swaps Y/Z and makes the sensor/body Z axis point downward in the displayed Cubli frame.
+// This keeps telemetry quaternion interpretation unchanged while matching the displayed Cubli frame.
 const SENSOR_TO_CUBLI_FRAME_QUAT = new THREE.Quaternion().setFromEuler(
   new THREE.Euler(Math.PI / 2, 0, 0, 'XYZ')
 );
@@ -223,57 +326,52 @@ function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
 ========================= */
 
 const BodyFrameAxes = forwardRef(({ axisLength = 34, axisDirections = null }, ref) => {
+  const fallbackDirections = useMemo(() => createBodyFrameAxisDirections('current'), []);
+  const directions = axisDirections || fallbackDirections;
+  const labelDistance = Math.max(8, Number(axisLength) || 34) * 1.18;
   const axes = useMemo(() => {
     const length = Math.max(8, Number(axisLength) || 34);
     const headLength = Math.max(3, length * 0.15);
     const headWidth = Math.max(1.8, length * 0.08);
-    const directions = axisDirections || {
-      x: [1, 0, 0],
-      y: [0, 0, 1],
-      z: [0, -1, 0],
-    };
 
     const group = new THREE.Group();
 
-    group.add(
-      new THREE.ArrowHelper(
-        new THREE.Vector3(...directions.x).normalize(),
-        new THREE.Vector3(0, 0, 0),
-        length,
-        0xff0000,
-        headLength,
-        headWidth
-      )
-    );
-
-    // Displayed body Y axis: sensor/body Y is remapped to displayed Cubli Z.
-    group.add(
-      new THREE.ArrowHelper(
-        new THREE.Vector3(...directions.y).normalize(),
-        new THREE.Vector3(0, 0, 0),
-        length,
-        0x00ff00,
-        headLength,
-        headWidth
-      )
-    );
-
-    // Displayed body Z axis: sensor/body Z is remapped to displayed Cubli -Y, downward.
-    group.add(
-      new THREE.ArrowHelper(
-        new THREE.Vector3(...directions.z).normalize(),
-        new THREE.Vector3(0, 0, 0),
-        length,
-        0x0000ff,
-        headLength,
-        headWidth
-      )
-    );
+    BODY_FRAME_BASE_AXES.forEach((axis) => {
+      group.add(
+        new THREE.ArrowHelper(
+          new THREE.Vector3(...directions[axis.key]).normalize(),
+          new THREE.Vector3(0, 0, 0),
+          length,
+          axis.color,
+          headLength,
+          headWidth
+        )
+      );
+    });
 
     return group;
-  }, [axisLength, axisDirections]);
+  }, [axisLength, directions]);
 
-  return <primitive object={axes} ref={ref} />;
+  useEffect(() => () => {
+    axes.traverse((object) => {
+      if (object.geometry) object.geometry.dispose();
+      if (object.material) object.material.dispose();
+    });
+  }, [axes]);
+
+  return (
+    <group ref={ref}>
+      <primitive object={axes} />
+      {BODY_FRAME_BASE_AXES.map((axis) => (
+        <DebugLabel
+          key={axis.key}
+          position={directions[axis.key].map((value) => value * labelDistance)}
+        >
+          {axis.label}
+        </DebugLabel>
+      ))}
+    </group>
+  );
 });
 
 function CameraLocker({ cameraRef, targetRef }) {
@@ -338,21 +436,11 @@ function CubliModel({
 
   const visualRootScale = BODY_VISUAL_FIX.flipVertical ? [1, -1, 1] : [1, 1, 1];
 
-  const frameAxisDirections = useMemo(() => {
-    const baseDirections = FRAME_ARROW_VISUAL_FIX.alignToReferenceFrame
-      ? REFERENCE_ALIGNED_FRAME_AXIS_DIRECTIONS
-      : {
-          x: [1, 0, 0],
-          y: [0, 0, 1],
-          z: [0, -1, 0],
-        };
-
-    return {
-      x: baseDirections.x,
-      y: baseDirections.y,
-      z: baseDirections.z,
-    };
-  }, []);
+  const bodyFrameArrowMirrorPresetKey = resolveBodyFrameArrowMirrorPresetKey(debugConfig);
+  const frameAxisDirections = useMemo(
+    () => createBodyFrameAxisDirections(bodyFrameArrowMirrorPresetKey),
+    [bodyFrameArrowMirrorPresetKey]
+  );
 
   useFrame((state, delta) => {
     // wheel mesh의 기본 회전축을 local Y로 가정
@@ -484,21 +572,22 @@ function CubliModel({
   );
 }
 
-function ReferenceFrameOverlay({ isMobile }) {
+function ReferenceFrameOverlay({ isMobile, frameDebug }) {
   // Mini reference frame overlay. UI-only SVG coordinates.
   const width = isMobile ? 118 : 146;
   const height = isMobile ? 104 : 126;
 
-  const origin = { x: 54, y: 34 };
-  const axes = [
-    { label: 'X', color: '#ff4b4b', x2: 116, y2: 34, textX: 130, textY: 39 },
-    { label: 'Y', color: '#4dff6a', x2: 24, y2: 72, textX: 15, textY: 85 },
-    { label: 'Z', color: '#4d7dff', x2: 54, y2: 102, textX: 54, textY: 121 },
-  ];
+  const origin = useMemo(() => ({ x: 54, y: 34 }), []);
+  const debugConfig = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
+  const referenceFrameArrowMirrorPresetKey = resolveReferenceFrameArrowMirrorPresetKey(debugConfig);
+  const axes = useMemo(
+    () => createReferenceFrameAxisLayout(referenceFrameArrowMirrorPresetKey, origin),
+    [referenceFrameArrowMirrorPresetKey, origin]
+  );
 
-  const markerForAxis = (label) => {
-    if (label === 'X') return 'url(#cubli-axis-arrow-red)';
-    if (label === 'Y') return 'url(#cubli-axis-arrow-green)';
+  const markerForAxis = (key) => {
+    if (key === 'x') return 'url(#cubli-axis-arrow-red)';
+    if (key === 'y') return 'url(#cubli-axis-arrow-green)';
     return 'url(#cubli-axis-arrow-blue)';
   };
 
@@ -513,7 +602,7 @@ function ReferenceFrameOverlay({ isMobile }) {
         zIndex: 1060,
         pointerEvents: 'none',
       }}
-      aria-label="Cubli body-fixed reference frame"
+      aria-label="Cubli reference frame"
     >
       <svg width="100%" height="100%" viewBox="0 0 140 126" preserveAspectRatio="xMidYMid meet">
         <defs>
@@ -553,7 +642,7 @@ function ReferenceFrameOverlay({ isMobile }) {
         </defs>
 
         {axes.map((axis) => (
-          <g key={axis.label}>
+          <g key={axis.key}>
             <line
               x1={origin.x}
               y1={origin.y}
@@ -562,7 +651,7 @@ function ReferenceFrameOverlay({ isMobile }) {
               stroke={axis.color}
               strokeWidth="3.4"
               strokeLinecap="round"
-              markerEnd={markerForAxis(axis.label)}
+              markerEnd={markerForAxis(axis.key)}
             />
             <text
               x={axis.textX}
@@ -740,7 +829,7 @@ function CubliCanvas({
         </Button>
       </div>
 
-      <ReferenceFrameOverlay isMobile={isMobile} />
+      <ReferenceFrameOverlay isMobile={isMobile} frameDebug={frameDebug} />
       {showFrameDebug ? (
         <FrameDebugPanel value={frameDebug} onChange={setFrameDebug} isMobile={isMobile} />
       ) : null}
