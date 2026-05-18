@@ -5,11 +5,13 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 
 const WHEEL_MIRROR_DEFAULT_KEY = 'cubliWheelMirrorDefault';
+const WHEEL_MIRROR_DEFAULT_VERSION_KEY = 'cubliWheelMirrorDefaultVersion';
+const WHEEL_MIRROR_DEFAULT_VERSION = 'mirror-x-y-default-v1';
 
 export const DEFAULT_FRAME_DEBUG_CONFIG = Object.freeze({
   mirrorX: true,
-  mirrorY: false,
-  mirrorZ: true,
+  mirrorY: true,
+  mirrorZ: false,
   showHelpers: false,
   wheelPositionScale: 1,
 });
@@ -37,8 +39,20 @@ export function getStoredFrameDebugConfig() {
   if (typeof window === 'undefined') return { ...DEFAULT_FRAME_DEBUG_CONFIG };
 
   try {
+    const storedVersion = window.localStorage.getItem(WHEEL_MIRROR_DEFAULT_VERSION_KEY);
+    if (storedVersion !== WHEEL_MIRROR_DEFAULT_VERSION) {
+      const nextDefault = { ...DEFAULT_FRAME_DEBUG_CONFIG };
+      window.localStorage.setItem(WHEEL_MIRROR_DEFAULT_KEY, JSON.stringify(nextDefault));
+      window.localStorage.setItem(WHEEL_MIRROR_DEFAULT_VERSION_KEY, WHEEL_MIRROR_DEFAULT_VERSION);
+      return nextDefault;
+    }
+
     const raw = window.localStorage.getItem(WHEEL_MIRROR_DEFAULT_KEY);
-    if (!raw) return { ...DEFAULT_FRAME_DEBUG_CONFIG };
+    if (!raw) {
+      const nextDefault = { ...DEFAULT_FRAME_DEBUG_CONFIG };
+      window.localStorage.setItem(WHEEL_MIRROR_DEFAULT_KEY, JSON.stringify(nextDefault));
+      return nextDefault;
+    }
     return normalizeFrameDebugConfig(JSON.parse(raw));
   } catch (_) {
     return { ...DEFAULT_FRAME_DEBUG_CONFIG };
@@ -53,6 +67,7 @@ export function saveFrameDebugDefaultConfig(config) {
       WHEEL_MIRROR_DEFAULT_KEY,
       JSON.stringify(normalizeFrameDebugConfig(config))
     );
+    window.localStorage.setItem(WHEEL_MIRROR_DEFAULT_VERSION_KEY, WHEEL_MIRROR_DEFAULT_VERSION);
   } catch (_) {
     // Ignore blocked storage; the current in-memory visual setting still works.
   }
@@ -63,6 +78,7 @@ export function clearStoredFrameDebugConfig() {
 
   try {
     window.localStorage.removeItem(WHEEL_MIRROR_DEFAULT_KEY);
+    window.localStorage.removeItem(WHEEL_MIRROR_DEFAULT_VERSION_KEY);
   } catch (_) {
     // Ignore blocked storage.
   }
