@@ -6,6 +6,8 @@ const CSV_COLUMNS = [
   'published_at',
   'source',
   'source_label',
+  'imu_euler_sequence',
+  'rpy_source',
   'q0',
   'q1',
   'q2',
@@ -49,6 +51,12 @@ const CSV_COLUMNS = [
   'enc_q1',
   'enc_q2',
   'enc_q3',
+  'encoder_roll_deg',
+  'encoder_pitch_deg',
+  'encoder_yaw_deg',
+  'encoder_euler_sequence',
+  'encoder_rpy_source',
+  'encoder_status',
   'enc_timer_x',
   'enc_timer_y',
   'enc_timer_z',
@@ -125,6 +133,10 @@ function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
   return Number.isFinite(number) ? number : null;
 }
 
+function encoderText(packet, key, nestedKey, fallback = '') {
+  return String(packet?.[key] ?? packet?.encoder?.[nestedKey] ?? fallback ?? '').trim();
+}
+
 function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const x = encoderNumber(packet, 'enc_x_deg', 'encoderXDeg', 'x');
   const y = encoderNumber(packet, 'enc_y_deg', 'encoderYDeg', 'y');
@@ -137,9 +149,18 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
   const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
   const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
+  const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
+  const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
+  const yawDeg = encoderNumber(packet, 'encoderYawDeg', 'encoderYawDeg', 'yawDeg');
+  const source = encoderText(packet, 'encoderSource', 'source');
+  const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
+  const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
+  const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
+  const hasAllAxes = [x, y, z].every((value) => value !== null);
+  const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
-  const status = !hasValues ? 'NONE' : (ageMs !== null && ageMs <= 1000 ? 'LIVE' : 'STALE');
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (hasAllAxes && hasQuaternion ? 'LIVE' : 'PARTIAL')));
   return {
     x,
     y,
@@ -151,9 +172,15 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     timerX,
     timerY,
     timerZ,
+    rollDeg,
+    pitchDeg,
+    yawDeg,
     updatedAt,
     ageMs,
-    source: packet?.encoderSource || packet?.encoder?.source || '',
+    source,
+    eulerSequence,
+    rpySource,
+    hasQuaternion,
     status,
   };
 }
@@ -174,6 +201,13 @@ function buildEncoderRows(packet = {}) {
       { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
     );
   }
+  rows.push(
+    { label: `Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
+    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
+    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
+    { label: 'Encoder RPY source', value: encoder.rpySource || '-' },
+  );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
     rows.push(
       { label: 'Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
@@ -212,14 +246,6 @@ function gainLine(prefix, values) {
   return `${prefix},${formatGainValue(values.x)},${formatGainValue(values.y)},${formatGainValue(values.z)}`;
 }
 
-function formatElapsedTime(ms) {
-  const totalTenths = Math.floor(ms / 100);
-  const minutes = Math.floor(totalTenths / 600);
-  const seconds = Math.floor((totalTenths % 600) / 10);
-  const tenths = totalTenths % 10;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
-}
-
 function csvEscape(value) {
   const text = String(value ?? '');
   if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
@@ -232,6 +258,8 @@ function packetToCsvRow(packet) {
     pc_time_ms: packet.pc_time_ms ?? packet.pcTimeMs ?? packet.updatedAt,
     published_at: packet.publishedAt,
     source_label: packet.sourceLabel,
+    imu_euler_sequence: packet.imuEulerSequence,
+    rpy_source: packet.rpySource,
     Roll_deg: packet.Roll_deg ?? packet.roll_deg ?? packet.rollDeg,
     Pitch_deg: packet.Pitch_deg ?? packet.pitch_deg ?? packet.pitchDeg,
     Yaw_deg: packet.Yaw_deg ?? packet.yaw_deg ?? packet.yawDeg,
@@ -245,6 +273,12 @@ function packetToCsvRow(packet) {
     enc_q1: packet.enc_q1 ?? packet.encoderQ1 ?? packet.encoder?.q1,
     enc_q2: packet.enc_q2 ?? packet.encoderQ2 ?? packet.encoder?.q2,
     enc_q3: packet.enc_q3 ?? packet.encoderQ3 ?? packet.encoder?.q3,
+    encoder_roll_deg: packet.encoderRollDeg ?? packet.encoder?.rollDeg,
+    encoder_pitch_deg: packet.encoderPitchDeg ?? packet.encoder?.pitchDeg,
+    encoder_yaw_deg: packet.encoderYawDeg ?? packet.encoder?.yawDeg,
+    encoder_euler_sequence: packet.encoderEulerSequence ?? packet.encoder?.eulerSequence,
+    encoder_rpy_source: packet.encoderRpySource ?? packet.encoder?.rpySource,
+    encoder_status: packet.encoderStatus ?? packet.encoder?.status,
     enc_timer_x: packet.enc_timer_x ?? packet.encoderTimerX ?? packet.encoder?.timerX ?? packet.encoder?.timer_x,
     enc_timer_y: packet.enc_timer_y ?? packet.encoderTimerY ?? packet.encoder?.timerY ?? packet.encoder?.timer_y,
     enc_timer_z: packet.enc_timer_z ?? packet.encoderTimerZ ?? packet.encoder?.timerZ ?? packet.encoder?.timer_z,
@@ -314,19 +348,17 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const [kpGain, setKpGain] = useState(ATTITUDE_GAIN_DEFAULTS.kp);
   const [kdGain, setKdGain] = useState(ATTITUDE_GAIN_DEFAULTS.kd);
   const [gainStatus, setGainStatus] = useState('');
-  const [isLogging, setIsLogging] = useState(false);
-  const [loggingStartTime, setLoggingStartTime] = useState(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const [showMonitor, setShowMonitor] = useState(false);
   const logRef = useRef([]);
   const lastLoggedPacketTimeRef = useRef(0);
 
-  const latest = serial.latestPacket || {};
+  const latest = useMemo(() => serial.latestPacket || {}, [serial.latestPacket]);
   const stale = serial.lastReceivedAt ? Date.now() - serial.lastReceivedAt > 500 : true;
   const statusVariant = !serial.isConnected ? 'secondary' : stale ? 'warning' : 'success';
   const statusText = !serial.isConnected ? 'DISCONNECTED' : stale ? 'STALE' : 'LIVE';
   const adminLocked = !isAdmin;
   const commandDisabled = adminLocked || !serial.isConnected;
+  const showDirectCommandPanel = false;
   const kpValues = readGainTriplet(kpGain);
   const kdValues = readGainTriplet(kdGain);
   const gainInputInvalid = !kpValues || !kdValues;
@@ -342,18 +374,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   }, [onCommandEvent]);
 
   useEffect(() => {
-    if (!isLogging || loggingStartTime == null) return undefined;
-    const timer = setInterval(() => setElapsedMs(Date.now() - loggingStartTime), 100);
-    return () => clearInterval(timer);
-  }, [isLogging, loggingStartTime]);
-
-  useEffect(() => {
-    if (!isLogging) return;
     if (!latest?.updatedAt) return;
     if (latest.updatedAt === lastLoggedPacketTimeRef.current) return;
     logRef.current.push({ ...latest });
     lastLoggedPacketTimeRef.current = latest.updatedAt;
-  }, [isLogging, latest]);
+    if (logRef.current.length > 2000) logRef.current.splice(0, logRef.current.length - 2000);
+  }, [latest]);
 
   const sendController = (type, v1 = 0, v2 = 0, v3 = 0, meta = {}) => {
     const commandType = Number(type) || 0;
@@ -494,6 +520,17 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'Yaw', value: `${formatNumber(latest.yaw_deg, 2)}°` },
   ], [latest]);
 
+  const displayAttitudeRows = useMemo(() => {
+    if (!attitudeRows) return [];
+    return [
+      { label: 'Roll', value: `${formatNumber(latest.roll_deg, 2)} deg` },
+      { label: 'Pitch', value: `${formatNumber(latest.pitch_deg, 2)} deg` },
+      { label: 'Yaw', value: `${formatNumber(latest.yaw_deg, 2)} deg` },
+      { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
+      { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
+    ];
+  }, [attitudeRows, latest]);
+
   const qerrRows = useMemo(() => [
     { label: 'qerr_deg', value: latest.qerr_deg != null || latest.qerrDeg != null ? `${formatNumber(latest.qerr_deg ?? latest.qerrDeg, 2)} deg` : '-' },
     { label: 'qerr source', value: formatSourceLabel(latest.qerrSource) },
@@ -536,23 +573,9 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'Last command', value: serial.lastCommand || '-' },
   ], [latest, serial]);
 
-  const handleStartLogging = () => {
-    logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
-    setElapsedMs(0);
-    setLoggingStartTime(Date.now());
-    setIsLogging(true);
-  };
-
-  const handleStopLogging = () => {
-    if (loggingStartTime != null) setElapsedMs(Date.now() - loggingStartTime);
-    setIsLogging(false);
-    setLoggingStartTime(null);
-  };
-
   const handleDownloadCsv = () => {
     if (logRef.current.length === 0) {
-      alert('저장된 Serial 데이터가 없습니다. Start Logging 후 packet을 수신해 주세요.');
+      alert('No Web Serial data has been captured yet.');
       return;
     }
     const csv = [CSV_COLUMNS.join(','), ...logRef.current.map(packetToCsvRow)].join('\n');
@@ -597,7 +620,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       </div>
       ) : null}
 
-      {isAdmin ? (
+      {isAdmin && showDirectCommandPanel ? (
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="serial-section-title mb-3">Commands</div>
         <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
@@ -741,7 +764,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
       <Row className="g-2 mb-3">
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Current RPY (computed from quaternion)" rows={attitudeRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={displayAttitudeRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Angular Rate" rows={rateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
@@ -752,18 +775,13 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">
-          <div className="serial-section-title">Logging</div>
-          <Badge bg={isLogging ? 'danger' : 'secondary'}>{isLogging ? 'REC' : 'IDLE'}</Badge>
+          <div>
+            <div className="serial-section-title">CSV Download</div>
+            <div className="server-small-note">Recent Web Serial packets captured in this browser.</div>
+          </div>
+          <Badge bg="secondary">{logRef.current.length}</Badge>
         </div>
-        <div className="serial-timer mb-2">{formatElapsedTime(elapsedMs)}</div>
-        <div className="d-grid gap-2">
-          {isLogging ? (
-            <Button variant="danger" onClick={handleStopLogging}>Stop Logging</Button>
-          ) : (
-            <Button variant="outline-success" onClick={handleStartLogging}>Start Logging</Button>
-          )}
-          <Button variant="outline-light" onClick={handleDownloadCsv}>Download CSV</Button>
-        </div>
+        <Button variant="outline-light" className="w-100" onClick={handleDownloadCsv}>Download CSV</Button>
       </div>
 
       <div className="serial-control-card rounded p-3 mb-3">

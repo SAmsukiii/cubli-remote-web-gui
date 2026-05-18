@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { normalizeLivePacket } from './telemetryNormalize';
+import { EULER_SEQUENCES, normalizeEulerSequence, normalizeLivePacket } from './telemetryNormalize';
 
 const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
 const SERVER_URL_KEY = 'cubliServerUrl';
+const IMU_EULER_SEQUENCE_KEY = 'cubliImuEulerSequence';
+const ENCODER_EULER_SEQUENCE_KEY = 'cubliEncoderEulerSequence';
 const FALLBACK_SERVER_URL = 'http://localhost:5050';
 const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 const MAX_SAMPLE_QUEUE = 1200;
@@ -81,6 +83,11 @@ function makeClientHeaders(clientId, displayName, extraHeaders = {}) {
 function getStoredDisplayName() {
   if (typeof window === 'undefined') return '';
   return sanitizeDisplayName(getLocalStorageValue(DISPLAY_NAME_KEY));
+}
+
+function getStoredEulerSequence(key) {
+  if (typeof window === 'undefined') return 'ZYX';
+  return normalizeEulerSequence(getLocalStorageValue(key), 'ZYX');
 }
 
 function makeSuggestedDisplayName(role = 'Viewer', clientId = '') {
@@ -336,6 +343,11 @@ function legacyCommandToKey(command) {
   const upper = raw.toUpperCase();
   const exact = {
     'TARE': 'tare',
+    'CUBLI_INIT': 'cubliInitialize',
+    'INIT': 'cubliInitialize',
+    'ENC_TARE': 'encoderInitialize',
+    'ENC_INIT': 'encoderInitialize',
+    'ENCODER_ZERO': 'encoderInitialize',
     'STOP': 'stop',
     'STATUS?': 'status',
     'MAC?': 'macInfo',
@@ -439,6 +451,14 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     encoderTimerZ: firstFinite([src.encoderTimerZ, src.enc_timer_z, src.encoder?.timerZ, src.encoder?.timer_z], null),
     encoderSource: src.encoderSource || src.encoder?.source || '',
     encoderUpdatedAt: firstFinite([src.encoderUpdatedAt, src.encoder?.updatedAt], null),
+    encoderRollDeg: firstFinite([src.encoderRollDeg, src.encoder?.rollDeg], null),
+    encoderPitchDeg: firstFinite([src.encoderPitchDeg, src.encoder?.pitchDeg], null),
+    encoderYawDeg: firstFinite([src.encoderYawDeg, src.encoder?.yawDeg], null),
+    encoderEulerSequence: src.encoderEulerSequence || src.encoder?.eulerSequence || '',
+    encoderRpySource: src.encoderRpySource || src.encoder?.rpySource || '',
+    encoderStatus: src.encoderStatus || src.encoder?.status || '',
+    imuEulerSequence: src.imuEulerSequence || '',
+    rpySource: src.rpySource || '',
     qerr_deg: firstFinite([src.qerr_deg, src.qerrDeg, src.qerrTelemetryDeg], null),
     qerrDeg: firstFinite([src.qerrDeg, src.qerr_deg, src.qerrTelemetryDeg], null),
     qerrSource: src.qerrSource || '',
@@ -518,6 +538,8 @@ export default function useServerSync() {
   const [clientId] = useState(getStoredClientId);
   const [displayName, setDisplayNameState] = useState(getStoredDisplayName);
   const [serverUrl, setServerUrlState] = useState(DEFAULT_SERVER_URL);
+  const [imuEulerSequence, setImuEulerSequenceState] = useState(() => getStoredEulerSequence(IMU_EULER_SEQUENCE_KEY));
+  const [encoderEulerSequence, setEncoderEulerSequenceState] = useState(() => getStoredEulerSequence(ENCODER_EULER_SEQUENCE_KEY));
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastError, setLastError] = useState('');
   const [sessionId, setSessionId] = useState('');
@@ -644,6 +666,20 @@ export default function useServerSync() {
     setDisplayNameState(next);
     setLocalStorageValue(DISPLAY_NAME_KEY, next);
     setLastError('');
+    return next;
+  }, []);
+
+  const setImuEulerSequence = useCallback((value) => {
+    const next = normalizeEulerSequence(value, 'ZYX');
+    setImuEulerSequenceState(next);
+    setLocalStorageValue(IMU_EULER_SEQUENCE_KEY, next);
+    return next;
+  }, []);
+
+  const setEncoderEulerSequence = useCallback((value) => {
+    const next = normalizeEulerSequence(value, 'ZYX');
+    setEncoderEulerSequenceState(next);
+    setLocalStorageValue(ENCODER_EULER_SEQUENCE_KEY, next);
     return next;
   }, []);
 
@@ -912,6 +948,8 @@ export default function useServerSync() {
       publisherClientId: clientId,
       publisherRole: 'admin',
       now,
+      imuEulerSequence,
+      encoderEulerSequence,
     });
 
     if (!normalized || normalized.invalid || normalized.ok === false) {
@@ -1069,7 +1107,7 @@ export default function useServerSync() {
       setLastError(errorMessage);
       return false;
     }
-  }, [clientId, discoverServerUrl, safeDisplayName, ensureApiServerUrl, serverSerialStatus.latestDesiredAttitude]);
+  }, [clientId, discoverServerUrl, encoderEulerSequence, imuEulerSequence, safeDisplayName, ensureApiServerUrl, serverSerialStatus.latestDesiredAttitude]);
 
   const publishCommandState = useCallback(async (commandKey, params = {}, label = '') => {
     const key = String(commandKey || '').trim();
@@ -1272,8 +1310,9 @@ export default function useServerSync() {
 
   const sendServerSerialCommand = useCallback(async (commandKeyOrCommand, paramsOrMeta = {}, maybeMeta = {}) => {
     const explicitKey = String(commandKeyOrCommand || '').trim();
-    const knownKeys = new Set([
-      'tare', 'stop', 'emergencyStop', 'targetAttitude', 'ebimuDefault', 'ebimuStart', 'ebimuStop',
+  const knownKeys = new Set([
+      'tare', 'cubliInitialize', 'encoderInitialize', 'encoderTare',
+      'stop', 'emergencyStop', 'targetAttitude', 'ebimuDefault', 'ebimuStart', 'ebimuStop',
       'magOff', 'magOn', 'magAuto', 'gyro250', 'gyro500', 'gyro1000', 'gyro2000',
       'acc2g', 'acc4g', 'acc8g', 'acc16g', 'accFactor', 'status', 'macInfo',
       'attitudeKp', 'attitudeKd',
@@ -1324,6 +1363,22 @@ export default function useServerSync() {
 
   const sendTargetAttitude = useCallback((roll, pitch, yaw) => (
     sendServerSerialCommand('targetAttitude', { roll, pitch, yaw }, { eventType: 'TARGET_ATTITUDE', label: 'Send Target Attitude' })
+  ), [sendServerSerialCommand]);
+
+  const sendCubliInitialize = useCallback(() => (
+    sendServerSerialCommand('cubliInitialize', {}, {
+      eventType: 'CUBLI_INITIALIZE',
+      label: 'Cubli Initialize',
+      detail: { firmwareCommand: 'TARE' },
+    })
+  ), [sendServerSerialCommand]);
+
+  const sendEncoderInitialize = useCallback(() => (
+    sendServerSerialCommand('encoderInitialize', {}, {
+      eventType: 'ENCODER_INITIALIZE',
+      label: 'Encoder Initialize',
+      detail: { firmwareCommand: 'TARE' },
+    })
   ), [sendServerSerialCommand]);
 
   const sendAttitudeKp = useCallback((kx, ky, kz) => {
@@ -1751,6 +1806,11 @@ export default function useServerSync() {
     clientName: safeDisplayName,
     hasDisplayName,
     setDisplayName,
+    eulerSequences: EULER_SEQUENCES,
+    imuEulerSequence,
+    setImuEulerSequence,
+    encoderEulerSequence,
+    setEncoderEulerSequence,
     getSuggestedDisplayName,
     role: serverSerialStatus.access?.myEffectiveRole || 'viewer',
     isAdmin: serverSerialStatus.access?.myEffectiveRole === 'admin',
@@ -1816,6 +1876,8 @@ export default function useServerSync() {
       sendControllerCommand: sendServerControllerCommand,
       sendTare: () => sendServerSerialCommand('tare', {}, { eventType: 'TARE', label: 'Set Zero / Tare' }),
       sendStop: () => sendServerSerialCommand('stop', {}, { eventType: 'STOP', label: 'Stop' }),
+      sendCubliInitialize,
+      sendEncoderInitialize,
       sendTarget: sendTargetAttitude,
       sendAttitudeKp,
       sendAttitudeKd,

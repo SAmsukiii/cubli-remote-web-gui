@@ -21,6 +21,8 @@ const ACCEL_OPTIONS = [
   { label: '16 g', commandKey: 'acc16g' },
 ];
 const FILTER_PRESETS = [1, 5, 10, 20, 50];
+const WEB_APP_URL = 'https://cubli-remote-web-gui.onrender.com';
+const EULER_SEQUENCE_OPTIONS = ['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY'];
 const ATTITUDE_GAIN_DEFAULTS = {
   kp: { x: '0.040', y: '0.040', z: '0.040' },
   kd: { x: '0.080', y: '0.080', z: '0.080' },
@@ -30,6 +32,7 @@ const ATTITUDE_GAIN_MAX = 10;
 const ATTITUDE_GAIN_STEP = 0.001;
 const LOG_COLUMNS = [
   'pc_time_ms', 'published_at', 'source', 'source_label',
+  'imu_euler_sequence', 'rpy_source',
   'q0', 'q1', 'q2', 'q3', 'norm',
   'Roll_deg', 'Pitch_deg', 'Yaw_deg',
   'desired_roll_deg', 'desired_pitch_deg', 'desired_yaw_deg',
@@ -44,6 +47,8 @@ const LOG_COLUMNS = [
   'timestamp', 'seq',
   'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
   'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
+  'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
+  'encoder_euler_sequence', 'encoder_rpy_source', 'encoder_status',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
   'encoder_source', 'encoder_updated_at',
   'lastCommandKey', 'lastCommandLabel',
@@ -107,6 +112,10 @@ function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
   return Number.isFinite(number) ? number : null;
 }
 
+function encoderText(packet, key, nestedKey, fallback = '') {
+  return String(packet?.[key] ?? packet?.encoder?.[nestedKey] ?? fallback ?? '').trim();
+}
+
 function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const x = encoderNumber(packet, 'enc_x_deg', 'encoderXDeg', 'x');
   const y = encoderNumber(packet, 'enc_y_deg', 'encoderYDeg', 'y');
@@ -119,9 +128,18 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
   const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
   const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
+  const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
+  const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
+  const yawDeg = encoderNumber(packet, 'encoderYawDeg', 'encoderYawDeg', 'yawDeg');
+  const source = encoderText(packet, 'encoderSource', 'source');
+  const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
+  const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
+  const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
+  const hasAllAxes = [x, y, z].every((value) => value !== null);
+  const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
-  const status = !hasValues ? 'NONE' : (ageMs !== null && ageMs <= 1000 ? 'LIVE' : 'STALE');
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (hasAllAxes && hasQuaternion ? 'LIVE' : 'PARTIAL')));
   return {
     x,
     y,
@@ -133,9 +151,15 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     timerX,
     timerY,
     timerZ,
+    rollDeg,
+    pitchDeg,
+    yawDeg,
     updatedAt,
     ageMs,
-    source: packet?.encoderSource || packet?.encoder?.source || '',
+    source,
+    eulerSequence,
+    rpySource,
+    hasQuaternion,
     status,
   };
 }
@@ -156,6 +180,13 @@ function buildEncoderRows(packet = {}) {
       { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
     );
   }
+  rows.push(
+    { label: `Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
+    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
+    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
+    { label: 'Encoder RPY source', value: encoder.rpySource || '-' },
+  );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
     rows.push(
       { label: 'Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
@@ -247,6 +278,8 @@ function normalizePacketForLog(packet) {
     published_at: source.publishedAt ?? source.serverReceivedAt ?? source.serverReceivedAtMs ?? '',
     source: source.source || 'server-serial',
     source_label: source.sourceLabel || '',
+    imu_euler_sequence: source.imuEulerSequence || '',
+    rpy_source: source.rpySource || '',
     q0: source.q0,
     q1: source.q1,
     q2: source.q2,
@@ -291,6 +324,12 @@ function normalizePacketForLog(packet) {
     enc_q1: source.enc_q1 ?? source.encoderQ1 ?? source.encoder?.q1,
     enc_q2: source.enc_q2 ?? source.encoderQ2 ?? source.encoder?.q2,
     enc_q3: source.enc_q3 ?? source.encoderQ3 ?? source.encoder?.q3,
+    encoder_roll_deg: source.encoderRollDeg ?? source.encoder?.rollDeg,
+    encoder_pitch_deg: source.encoderPitchDeg ?? source.encoder?.pitchDeg,
+    encoder_yaw_deg: source.encoderYawDeg ?? source.encoder?.yawDeg,
+    encoder_euler_sequence: source.encoderEulerSequence ?? source.encoder?.eulerSequence,
+    encoder_rpy_source: source.encoderRpySource ?? source.encoder?.rpySource,
+    encoder_status: source.encoderStatus ?? source.encoder?.status,
     enc_timer_x: source.enc_timer_x ?? source.encoderTimerX ?? source.encoder?.timerX ?? source.encoder?.timer_x,
     enc_timer_y: source.enc_timer_y ?? source.encoderTimerY ?? source.encoder?.timerY ?? source.encoder?.timer_y,
     enc_timer_z: source.enc_timer_z ?? source.encoderTimerZ ?? source.encoder?.timerZ ?? source.encoder?.timer_z,
@@ -326,20 +365,25 @@ function ValueGrid({ title, rows }) {
 }
 
 function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
+  const hasData = Array.isArray(data) && data.some((row) => row[rpmKey] != null || row[commandKey] != null);
   return (
     <div className="serial-value-card rounded p-2">
       <div className="serial-section-title mb-2">{title}</div>
-      <div style={{ width: '100%', height: 180 }}>
-        <ResponsiveContainer>
-          <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
-            <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} />
-            <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={44} />
-            <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
-            <Line type="monotone" dataKey={rpmKey} stroke="#4dabf7" strokeWidth={2} dot={false} isAnimationActive={false} name={rpmKey} />
-            <Line type="monotone" dataKey={commandKey} stroke="#ffd43b" strokeWidth={2} dot={false} isAnimationActive={false} name={commandKey} />
-          </LineChart>
-        </ResponsiveContainer>
+      <div style={{ width: '100%', minHeight: 180, height: 180 }}>
+        {hasData ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
+              <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={44} />
+              <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
+              <Line type="monotone" dataKey={rpmKey} stroke="#4dabf7" strokeWidth={2} dot={false} isAnimationActive={false} name={rpmKey} />
+              <Line type="monotone" dataKey={commandKey} stroke="#ffd43b" strokeWidth={2} dot={false} isAnimationActive={false} name={commandKey} />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="server-small-note d-flex align-items-center h-100">No plot data yet</div>
+        )}
       </div>
     </div>
   );
@@ -356,9 +400,9 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
         <div className="serial-section-title">{title}</div>
         {yLabel ? <div className="server-small-note">{yLabel}</div> : null}
       </div>
-      <div style={{ width: '100%', height: 220 }}>
+      <div style={{ width: '100%', minHeight: 220, height: 220 }}>
         {hasData ? (
-          <ResponsiveContainer>
+          <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
               <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} interval="preserveStartEnd" />
@@ -462,6 +506,7 @@ function AdminLoginSection({ serverSync, role }) {
         <div>
           <div className="serial-section-title">Login</div>
           <div className="server-small-note text-break">Client ID: {safeServerSync?.clientId || '-'}</div>
+          <div className="server-small-note">Admin credentials are configured on server. Default and legacy Admin logins are accepted.</div>
         </div>
         <Badge bg={roleVariant(roleText)}>{roleText.toUpperCase()}</Badge>
       </div>
@@ -515,9 +560,25 @@ function AdminLoginSection({ serverSync, role }) {
 
 function ServerConnectionSection({ serverSync }) {
   const safeServerSync = serverSync || {};
+  const copyWebAppLink = () => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(WEB_APP_URL).catch(() => {});
+    }
+  };
   return (
     <div className="serial-control-card rounded p-3 mb-3">
       <div className="serial-section-title mb-2">Connection</div>
+      <div className="serial-value-card rounded p-2 mb-3">
+        <ValueRow label="Web App Link" value={WEB_APP_URL} />
+        <div className="d-flex gap-2 mt-2">
+          <Button variant="outline-info" size="sm" href={WEB_APP_URL} target="_blank" rel="noreferrer">
+            Open Web App
+          </Button>
+          <Button variant="outline-light" size="sm" onClick={copyWebAppLink}>
+            Copy Link
+          </Button>
+        </div>
+      </div>
       <Form.Group className="mb-3">
         <Form.Label className="serial-mini-label">Server URL</Form.Label>
         <Form.Control
@@ -552,6 +613,47 @@ function RoleNotice({ role }) {
     );
   }
   return null;
+}
+
+function RpyConventionSection({ serverSync }) {
+  const safeServerSync = serverSync || {};
+  const imuSequence = safeServerSync.imuEulerSequence || 'ZYX';
+  const encoderSequence = safeServerSync.encoderEulerSequence || 'ZYX';
+
+  return (
+    <div className="serial-control-card rounded p-3 mb-3">
+      <div className="serial-section-title mb-2">RPY Display Convention</div>
+      <div className="server-small-note mb-3">
+        RPY is display-only. 3D rendering still uses quaternion. Changing sequence changes displayed Euler angles only.
+      </div>
+      <Row className="g-2">
+        <Col xs={12} md={6}>
+          <Form.Label className="serial-mini-label">IMU RPY Sequence</Form.Label>
+          <Form.Select
+            size="sm"
+            value={imuSequence}
+            onChange={(event) => safeServerSync.setImuEulerSequence?.(event.target.value)}
+          >
+            {EULER_SEQUENCE_OPTIONS.map((sequence) => (
+              <option key={sequence} value={sequence}>{sequence}</option>
+            ))}
+          </Form.Select>
+        </Col>
+        <Col xs={12} md={6}>
+          <Form.Label className="serial-mini-label">Encoder RPY Sequence</Form.Label>
+          <Form.Select
+            size="sm"
+            value={encoderSequence}
+            onChange={(event) => safeServerSync.setEncoderEulerSequence?.(event.target.value)}
+          >
+            {EULER_SEQUENCE_OPTIONS.map((sequence) => (
+              <option key={sequence} value={sequence}>{sequence}</option>
+            ))}
+          </Form.Select>
+        </Col>
+      </Row>
+    </div>
+  );
 }
 
 function AdminManagementPanel({ serverSync, serial, status, access, role, controllerClientId, commandOwner }) {
@@ -769,9 +871,15 @@ function CommandSection({ serial, status, role, controllerClientId, isController
 
       <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
         <CommandAccordionItem eventKey="control" title="Control">
+          <div className="server-small-note mb-2">
+            Initialize commands currently use the firmware TARE line until firmware-specific init commands are added.
+          </div>
           <CommandGroup>
+            <CommandButton label="Cubli Initialize" onClick={safeSerial.sendCubliInitialize} disabled={!canSendCommand} />
+            <CommandButton label="Encoder Initialize" onClick={safeSerial.sendEncoderInitialize} disabled={!canSendCommand} />
             <CommandButton label="Set Zero / Tare" onClick={safeSerial.sendTare} disabled={!canSendCommand} />
             <CommandButton label="Stop" onClick={safeSerial.sendStop} disabled={!canSendCommand} />
+            <CommandButton label="Emergency Stop" onClick={safeSerial.sendEmergencyStop} disabled={!canSendCommand} />
           </CommandGroup>
         </CommandAccordionItem>
 
@@ -912,7 +1020,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   );
 }
 
-function MonitoringSection({ status }) {
+function MonitoringSection({ status, isActive = true }) {
   const safeStatus = status ?? EMPTY_OBJECT;
   const latest = useMemo(() => safeStatus.latestPacket || {}, [safeStatus.latestPacket]);
   const lastCommandInfo = useMemo(() => safeStatus.lastCommandInfo || {}, [safeStatus.lastCommandInfo]);
@@ -941,6 +1049,8 @@ function MonitoringSection({ status }) {
     { label: 'Roll', value: `${formatNumber(latest.roll_deg ?? latest.rollDeg, 2)} deg` },
     { label: 'Pitch', value: `${formatNumber(latest.pitch_deg ?? latest.pitchDeg, 2)} deg` },
     { label: 'Yaw', value: `${formatNumber(latest.yaw_deg ?? latest.yawDeg, 2)} deg` },
+    { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
+    { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
   ], [latest]);
 
   const commandStateRows = useMemo(() => [
@@ -977,6 +1087,14 @@ function MonitoringSection({ status }) {
   ], [latest]);
 
   const encoderRows = useMemo(() => buildEncoderRows(latest), [latest]);
+
+  const frameRows = useMemo(() => [
+    { label: 'Attitude quaternion source', value: latest.attitudeSource || latest.sourceLabel || latest.source || '-' },
+    { label: 'Current RPY source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
+    { label: 'Encoder RPY source', value: latest.encoderRpySource || '-' },
+    { label: '3D rendering', value: 'quaternion' },
+    { label: 'Frame convention', value: 'current Cubli display mapping' },
+  ], [latest]);
 
   const debugRows = useMemo(() => [
     { label: 'PWM1', value: formatNumber(latest.PWM1, 1) },
@@ -1028,6 +1146,9 @@ function MonitoringSection({ status }) {
         encX: n(row.encX ?? row.enc_x_deg ?? row.encoderXDeg),
         encY: n(row.encY ?? row.enc_y_deg ?? row.encoderYDeg),
         encZ: n(row.encZ ?? row.enc_z_deg ?? row.encoderZDeg),
+        encoderRoll: n(row.encoderRoll ?? row.encoderRollDeg),
+        encoderPitch: n(row.encoderPitch ?? row.encoderPitchDeg),
+        encoderYaw: n(row.encoderYaw ?? row.encoderYawDeg),
       };
     });
   }, [safeStatus.chartData]);
@@ -1081,7 +1202,7 @@ function MonitoringSection({ status }) {
       <Row className="g-2 mb-3">
         <Col xs={12}><ValueGrid title="Shared Live Data" rows={sharedRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Current RPY (computed from quaternion)" rows={rpyRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={rpyRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Desired RPY (last command)" rows={commandStateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}>
@@ -1094,6 +1215,7 @@ function MonitoringSection({ status }) {
         </Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Encoder Reference" rows={encoderRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title="Direction / Frame" rows={frameRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Time / Command" rows={timeCommandRows} /></Col>
@@ -1105,7 +1227,7 @@ function MonitoringSection({ status }) {
           <div className="serial-section-title">Wheel Speed Graph</div>
           <Form.Check type="switch" id="show-wheel-speed-graphs" label="Show" checked={showWheelGraphs} onChange={(event) => setShowWheelGraphs(event.target.checked)} />
         </div>
-        {showWheelGraphs ? (
+        {showWheelGraphs && isActive ? (
           hasWheelGraphData ? (
             <Row className="g-2">
               <Col xs={12} xl={4}><WheelSpeedChart title="RPM1 vs RPMcmd1" data={wheelGraphData} rpmKey="RPM1" commandKey="RPMcmd1" /></Col>
@@ -1136,7 +1258,7 @@ function MonitoringSection({ status }) {
           </div>
           <Form.Check type="switch" id="show-server-live-plot" label="Show" checked={showLivePlot} onChange={(event) => setShowLivePlot(event.target.checked)} />
         </div>
-        {showLivePlot ? (
+        {showLivePlot && isActive ? (
           <Row className="g-2">
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
@@ -1159,6 +1281,18 @@ function MonitoringSection({ status }) {
                   { key: 'encX', name: 'Enc X [deg]', stroke: '#20c997' },
                   { key: 'encY', name: 'Enc Y [deg]', stroke: '#ffa94d' },
                   { key: 'encZ', name: 'Enc Z [deg]', stroke: '#f06595' },
+                ]}
+              />
+            </Col>
+            <Col xs={12} xl={6}>
+              <LiveTelemetryChart
+                title={`Encoder RPY [${latest.encoderEulerSequence || 'ZYX'}]`}
+                data={livePlotData}
+                yLabel="deg"
+                lines={[
+                  { key: 'encoderRoll', name: 'Encoder Roll', stroke: '#63e6be' },
+                  { key: 'encoderPitch', name: 'Encoder Pitch', stroke: '#ffd43b' },
+                  { key: 'encoderYaw', name: 'Encoder Yaw', stroke: '#ff8787' },
                 ]}
               />
             </Col>
@@ -1206,38 +1340,17 @@ function MonitoringSection({ status }) {
 }
 
 function DataLoggingSection({ latestPacket }) {
-  const [isLogging, setIsLogging] = useState(false);
-  const [loggingStartTime, setLoggingStartTime] = useState(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const logRef = useRef([]);
   const lastLoggedPacketTimeRef = useRef(0);
 
   useEffect(() => {
-    if (!isLogging || loggingStartTime == null) return undefined;
-    const timer = window.setInterval(() => setElapsedMs(Date.now() - loggingStartTime), 100);
-    return () => window.clearInterval(timer);
-  }, [isLogging, loggingStartTime]);
-
-  useEffect(() => {
-    if (!isLogging || !latestPacket?.updatedAt) return;
-    if (latestPacket.updatedAt === lastLoggedPacketTimeRef.current) return;
+    const packetTime = latestPacket?.publishedAt || latestPacket?.updatedAt;
+    if (!packetTime) return;
+    if (packetTime === lastLoggedPacketTimeRef.current) return;
     logRef.current.push({ ...latestPacket });
-    lastLoggedPacketTimeRef.current = latestPacket.updatedAt;
-  }, [isLogging, latestPacket]);
-
-  const handleStartLogging = () => {
-    logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
-    setElapsedMs(0);
-    setLoggingStartTime(Date.now());
-    setIsLogging(true);
-  };
-
-  const handleStopLogging = () => {
-    if (loggingStartTime != null) setElapsedMs(Date.now() - loggingStartTime);
-    setIsLogging(false);
-    setLoggingStartTime(null);
-  };
+    lastLoggedPacketTimeRef.current = packetTime;
+    if (logRef.current.length > 2000) logRef.current.splice(0, logRef.current.length - 2000);
+  }, [latestPacket]);
 
   const handleDownloadCsv = () => {
     if (logRef.current.length === 0) {
@@ -1251,18 +1364,13 @@ function DataLoggingSection({ latestPacket }) {
   return (
     <div className="serial-control-card rounded p-3 mb-3">
       <div className="d-flex justify-content-between align-items-center mb-2">
-        <div className="serial-section-title">Data Logging</div>
-        <Badge bg={isLogging ? 'danger' : 'secondary'}>{isLogging ? 'REC' : 'IDLE'}</Badge>
+        <div>
+          <div className="serial-section-title">CSV Download</div>
+          <div className="server-small-note">Recent shared live packets captured in this browser.</div>
+        </div>
+        <Badge bg="secondary">{logRef.current.length}</Badge>
       </div>
-      <div className="serial-timer mb-2">{Math.floor(elapsedMs / 1000)}s</div>
-      <div className="d-grid gap-2">
-        {isLogging ? (
-          <Button variant="danger" onClick={handleStopLogging}>Stop Logging</Button>
-        ) : (
-          <Button variant="outline-success" onClick={handleStartLogging}>Start Logging</Button>
-        )}
-        <Button variant="outline-light" onClick={handleDownloadCsv}>Download CSV</Button>
-      </div>
+      <Button variant="outline-light" className="w-100" onClick={handleDownloadCsv}>Download CSV</Button>
     </div>
   );
 }
@@ -1322,7 +1430,7 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
   );
 }
 
-export default function ServerPanel({ serverSync, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, onChangeDisplayName = null }) {
+export default function ServerPanel({ serverSync, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, onChangeDisplayName = null, isActive = true }) {
   const safeServerSync = serverSync || {};
   const serial = safeServerSync.serverSerial || {};
   const status = serial.status || {};
@@ -1349,13 +1457,16 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
       <AdminLoginSection serverSync={safeServerSync} role={role} />
       <ServerConnectionSection serverSync={safeServerSync} />
       <RoleNotice role={isController ? 'controller' : role} />
-      <WebSerialBridgeDebugSection
-        serverSync={safeServerSync}
-        status={status}
-        isAdmin={isAdmin}
-        webSerialConnected={webSerialConnected}
-        webSerialLatestPacketUpdatedAt={webSerialLatestPacketUpdatedAt}
-      />
+      <RpyConventionSection serverSync={safeServerSync} />
+      {isAdmin ? (
+        <WebSerialBridgeDebugSection
+          serverSync={safeServerSync}
+          status={status}
+          isAdmin={isAdmin}
+          webSerialConnected={webSerialConnected}
+          webSerialLatestPacketUpdatedAt={webSerialLatestPacketUpdatedAt}
+        />
+      ) : null}
 
       {isAdmin ? (
         <AdminManagementPanel
@@ -1377,7 +1488,7 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
         isController={Boolean(isController)}
       />
 
-      <MonitoringSection status={status} />
+      <MonitoringSection status={status} isActive={isActive} />
       <DataLoggingSection latestPacket={status.latestPacket} />
     </div>
   );

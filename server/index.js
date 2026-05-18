@@ -22,13 +22,19 @@ const DATA_DIR = path.join(__dirname, 'data');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const BUILD_INDEX = path.join(BUILD_DIR, 'index.html');
-const ADMIN_ID = process.env.CUBLI_ADMIN_ID || 'sscstu9307';
-const ADMIN_PASSWORD = process.env.CUBLI_ADMIN_PASSWORD || 'sscstudent9333';
+const DEFAULT_ADMIN_CREDENTIALS = [
+  { id: 'admin', password: '1234', label: 'Admin' },
+  { id: 'sscstu9307', password: 'sscstudent9333', label: 'Legacy Admin' },
+];
+const ENV_ADMIN_CREDENTIAL = process.env.CUBLI_ADMIN_ID && process.env.CUBLI_ADMIN_PASSWORD
+  ? { id: process.env.CUBLI_ADMIN_ID, password: process.env.CUBLI_ADMIN_PASSWORD, label: 'Environment Admin' }
+  : null;
 const CLIENT_STALE_MS = Number(process.env.CUBLI_CLIENT_STALE_MS || 7000);
 const LIVE_STALE_MS = Number(process.env.CUBLI_LIVE_STALE_MS || 1000);
 const MAX_CHART_POINTS = 240;
 const MAX_RAW_LINES = 60;
 const MAX_BRIDGE_COMMANDS = 80;
+const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY']);
 
 const SOURCE_LABELS = {
   'server-serial': 'Server Remote Serial',
@@ -46,6 +52,8 @@ app.use(express.json({ limit: '10mb' }));
 
 const accessState = {
   adminClientId: null,
+  adminLoginId: '',
+  adminLabel: '',
   controllerClientId: null,
   clients: new Map(),
   log: [],
@@ -138,22 +146,77 @@ function firstStrictFinite(values, fallback = null) {
   return fallback;
 }
 
-function normalizeEncoderTelemetry(packet = {}) {
+function getAdminCredentials() {
+  const credentials = [...DEFAULT_ADMIN_CREDENTIALS];
+  if (ENV_ADMIN_CREDENTIAL?.id && ENV_ADMIN_CREDENTIAL?.password) {
+    const exists = credentials.some((item) => item.id === ENV_ADMIN_CREDENTIAL.id && item.password === ENV_ADMIN_CREDENTIAL.password);
+    if (!exists) credentials.push(ENV_ADMIN_CREDENTIAL);
+  }
+  return credentials;
+}
+
+function findAdminCredential(id, password) {
+  const adminId = String(id || '').trim();
+  const adminPassword = String(password || '');
+  return getAdminCredentials().find((credential) => (
+    credential.id === adminId && credential.password === adminPassword
+  )) || null;
+}
+
+function normalizeEulerSequence(sequence, fallback = 'ZYX') {
+  const text = String(sequence || '').trim().toUpperCase();
+  return EULER_SEQUENCES.includes(text) ? text : fallback;
+}
+
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, hasValidQuaternion, updatedAt, now, freshMs }) {
+  if (!hasData) return 'NONE';
+  if (updatedAt && now - updatedAt > freshMs) return 'STALE';
+
+  const explicit = String(explicitStatus || '').trim().toUpperCase();
+  if (explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
+  if (hasAllAxes && hasValidQuaternion) return 'LIVE';
+  return 'PARTIAL';
+}
+
+function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const nested = packet?.encoder || {};
+  const now = finiteNumber(options.now, Date.now());
+  const freshMs = finiteNumber(options.encoderFreshMs, LIVE_STALE_MS);
+  const encoderEulerSequence = normalizeEulerSequence(options.encoderEulerSequence || packet.encoderEulerSequence || nested.eulerSequence);
   const encX = firstStrictFinite([packet.enc_x_deg, packet.encoderXDeg, nested.x], null);
   const encY = firstStrictFinite([packet.enc_y_deg, packet.encoderYDeg, nested.y], null);
   const encZ = firstStrictFinite([packet.enc_z_deg, packet.encoderZDeg, nested.z], null);
-  const encQ0 = firstStrictFinite([packet.enc_q0, packet.encoderQ0, nested.q0], null);
-  const encQ1 = firstStrictFinite([packet.enc_q1, packet.encoderQ1, nested.q1], null);
-  const encQ2 = firstStrictFinite([packet.enc_q2, packet.encoderQ2, nested.q2], null);
-  const encQ3 = firstStrictFinite([packet.enc_q3, packet.encoderQ3, nested.q3], null);
+  const rawQ0 = firstStrictFinite([packet.enc_q0, packet.encoderQ0, nested.q0], null);
+  const rawQ1 = firstStrictFinite([packet.enc_q1, packet.encoderQ1, nested.q1], null);
+  const rawQ2 = firstStrictFinite([packet.enc_q2, packet.encoderQ2, nested.q2], null);
+  const rawQ3 = firstStrictFinite([packet.enc_q3, packet.encoderQ3, nested.q3], null);
+  const encoderQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
+    ? normalizeQuat([rawQ0, rawQ1, rawQ2, rawQ3])
+    : null;
+  const encQ0 = encoderQ ? encoderQ[0] : null;
+  const encQ1 = encoderQ ? encoderQ[1] : null;
+  const encQ2 = encoderQ ? encoderQ[2] : null;
+  const encQ3 = encoderQ ? encoderQ[3] : null;
+  const encoderEuler = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const timerX = firstStrictFinite([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
   const timerY = firstStrictFinite([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
   const timerZ = firstStrictFinite([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
   const encoderUpdatedAt = firstStrictFinite([packet.encoderUpdatedAt, nested.updatedAt], null);
-  const hasEncoderData = [encX, encY, encZ, encQ0, encQ1, encQ2, encQ3, timerX, timerY, timerZ]
+  const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ]
     .some((value) => value !== null);
+  const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
+  const hasValidQuaternion = Boolean(encoderQ);
+  const encoderStatus = normalizeEncoderStatus({
+    explicitStatus: packet.encoderStatus || nested.status,
+    hasData: hasEncoderData,
+    hasAllAxes,
+    hasValidQuaternion,
+    updatedAt: encoderUpdatedAt,
+    now,
+    freshMs,
+  });
   const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'encoder packet' : '');
+  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
 
   return {
     enc_x_deg: encX,
@@ -178,6 +241,14 @@ function normalizeEncoderTelemetry(packet = {}) {
     encoderTimerZ: timerZ,
     encoderUpdatedAt,
     encoderSource,
+    encoderStatus,
+    encoderEulerSequence,
+    encoderRollDeg: encoderEuler?.roll ?? null,
+    encoderPitchDeg: encoderEuler?.pitch ?? null,
+    encoderYawDeg: encoderEuler?.yaw ?? null,
+    encoderRpySource,
+    encoderHasQuaternion: hasValidQuaternion,
+    encoderFresh: encoderStatus === 'LIVE',
     encoder: {
       x: encX,
       y: encY,
@@ -191,6 +262,12 @@ function normalizeEncoderTelemetry(packet = {}) {
       timerZ,
       updatedAt: encoderUpdatedAt,
       source: encoderSource,
+      status: encoderStatus,
+      eulerSequence: encoderEulerSequence,
+      rollDeg: encoderEuler?.roll ?? null,
+      pitchDeg: encoderEuler?.pitch ?? null,
+      yawDeg: encoderEuler?.yaw ?? null,
+      rpySource: encoderRpySource,
     },
   };
 }
@@ -241,20 +318,112 @@ function quatMultiply(a, b) {
   ];
 }
 
-function quaternionToEulerDeg(rawQ) {
+function quaternionToMatrixElements(q) {
+  const [w, x, y, z] = q;
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  return {
+    m11: 1 - (yy + zz),
+    m12: xy - wz,
+    m13: xz + wy,
+    m21: xy + wz,
+    m22: 1 - (xx + zz),
+    m23: yz - wx,
+    m31: xz - wy,
+    m32: yz + wx,
+    m33: 1 - (xx + yy),
+  };
+}
+
+function quaternionToEulerDeg(rawQ, sequence = 'ZYX') {
   const q = normalizeQuat(rawQ);
   if (!q) return null;
-  const [w, x, y, z] = q;
-  const sinrCosp = 2 * (w * x + y * z);
-  const cosrCosp = 1 - 2 * (x * x + y * y);
-  const roll = Math.atan2(sinrCosp, cosrCosp) * 180 / Math.PI;
-  const sinp = clamp(2 * (w * y - z * x), -1, 1);
-  const pitch = Math.asin(sinp) * 180 / Math.PI;
-  const sinyCosp = 2 * (w * z + x * y);
-  const cosyCosp = 1 - 2 * (y * y + z * z);
-  const yaw = Math.atan2(sinyCosp, cosyCosp) * 180 / Math.PI;
+  const order = normalizeEulerSequence(sequence);
+  const { m11, m12, m13, m21, m22, m23, m31, m32, m33 } = quaternionToMatrixElements(q);
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  const limit = 0.9999999;
+
+  switch (order) {
+    case 'XYZ':
+      y = Math.asin(clamp(m13, -1, 1));
+      if (Math.abs(m13) < limit) {
+        x = Math.atan2(-m23, m33);
+        z = Math.atan2(-m12, m11);
+      } else {
+        x = Math.atan2(m32, m22);
+        z = 0;
+      }
+      break;
+    case 'YXZ':
+      x = Math.asin(-clamp(m23, -1, 1));
+      if (Math.abs(m23) < limit) {
+        y = Math.atan2(m13, m33);
+        z = Math.atan2(m21, m22);
+      } else {
+        y = Math.atan2(-m31, m11);
+        z = 0;
+      }
+      break;
+    case 'ZXY':
+      x = Math.asin(clamp(m32, -1, 1));
+      if (Math.abs(m32) < limit) {
+        y = Math.atan2(-m31, m33);
+        z = Math.atan2(-m12, m22);
+      } else {
+        y = 0;
+        z = Math.atan2(m21, m11);
+      }
+      break;
+    case 'YZX':
+      z = Math.asin(clamp(m21, -1, 1));
+      if (Math.abs(m21) < limit) {
+        x = Math.atan2(-m23, m22);
+        y = Math.atan2(-m31, m11);
+      } else {
+        x = 0;
+        y = Math.atan2(m13, m33);
+      }
+      break;
+    case 'XZY':
+      z = Math.asin(-clamp(m12, -1, 1));
+      if (Math.abs(m12) < limit) {
+        x = Math.atan2(m32, m22);
+        y = Math.atan2(m13, m11);
+      } else {
+        x = Math.atan2(-m23, m33);
+        y = 0;
+      }
+      break;
+    case 'ZYX':
+    default:
+      y = Math.asin(-clamp(m31, -1, 1));
+      if (Math.abs(m31) < limit) {
+        x = Math.atan2(m32, m33);
+        z = Math.atan2(m21, m11);
+      } else {
+        x = 0;
+        z = Math.atan2(-m12, m22);
+      }
+      break;
+  }
+
+  const roll = x * 180 / Math.PI;
+  const pitch = y * 180 / Math.PI;
+  const yaw = z * 180 / Math.PI;
   if (![roll, pitch, yaw].every(Number.isFinite)) return null;
-  return { roll, pitch, yaw };
+  return { roll, pitch, yaw, sequence: order };
 }
 
 function eulerDegToQuatZYX(rollDeg, pitchDeg, yawDeg) {
@@ -335,6 +504,8 @@ function normalizePublishedPacket(packet, source, identity) {
   const now = Date.now();
   const resolvedSource = normalizeSourceKey(source || packet.source || 'admin-web-serial');
   if (!SOURCE_LABELS[resolvedSource]) return { ok: false, error: 'Unsupported live packet source' };
+  const imuEulerSequence = normalizeEulerSequence(packet.imuEulerSequence);
+  const encoderEulerSequence = normalizeEulerSequence(packet.encoderEulerSequence);
 
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4 ? packet.q : [packet.q0, packet.q1, packet.q2, packet.q3];
   let q = normalizeQuat(rawQ);
@@ -345,7 +516,7 @@ function normalizePublishedPacket(packet, source, identity) {
     q = q.map((value) => -value);
   }
 
-  const euler = quaternionToEulerDeg(q);
+  const euler = quaternionToEulerDeg(q, imuEulerSequence);
   if (!euler) return { ok: false, error: 'packet quaternion could not be converted to Euler angles' };
 
   const pcTimeMs = firstFinite([packet.pcTimeMs, packet.pc_time_ms, packet.updatedAt, packet.timestamp], now);
@@ -377,7 +548,7 @@ function normalizePublishedPacket(packet, source, identity) {
   const wy = hasTelemetryRate ? wyTelemetry : (rateFresh ? omega.wy : null);
   const wz = hasTelemetryRate ? wzTelemetry : (rateFresh ? omega.wz : null);
   const angularRateSource = hasTelemetryRate ? (packet.angularRateSource || 'satellite body rate') : (rateFresh ? 'computed from quaternion' : '');
-  const encoderTelemetry = normalizeEncoderTelemetry(packet);
+  const encoderTelemetry = normalizeEncoderTelemetry(packet, { now, encoderEulerSequence });
 
   const publishedAt = now;
   const normalized = {
@@ -405,6 +576,8 @@ function normalizePublishedPacket(packet, source, identity) {
     roll_deg: euler.roll,
     pitch_deg: euler.pitch,
     yaw_deg: euler.yaw,
+    imuEulerSequence,
+    rpySource: `quaternion ${imuEulerSequence}`,
     remoteRollDeg: firstFinite([packet.remoteRollDeg, packet.Roll_deg, packet.rollDeg, packet.roll_deg, packet.roll], null),
     remotePitchDeg: firstFinite([packet.remotePitchDeg, packet.Pitch_deg, packet.pitchDeg, packet.pitch_deg, packet.pitch], null),
     remoteYawDeg: firstFinite([packet.remoteYawDeg, packet.Yaw_deg, packet.yawDeg, packet.yaw_deg, packet.yaw], null),
@@ -597,6 +770,8 @@ function cleanupStaleAdmin() {
   const admin = accessState.clients.get(adminId);
   if (admin && isClientConnected(admin)) return false;
   accessState.adminClientId = null;
+  accessState.adminLoginId = '';
+  accessState.adminLabel = '';
   if (accessState.controllerClientId === adminId) accessState.controllerClientId = null;
   appendAccessLog({ type: 'ADMIN_AUTO_LOGOUT', previousAdminClientId: adminId, previousAdminDisplayName: getClientLabel(adminId), reason: admin ? 'admin heartbeat stale' : 'admin client missing' });
   return true;
@@ -670,6 +845,8 @@ function publicAccessState(forClientId = '') {
     adminClientId: accessState.adminClientId,
     adminDisplayName,
     adminClientName: adminDisplayName,
+    adminLoginId: accessState.adminLoginId || '',
+    adminLabel: accessState.adminLabel || '',
     controllerClientId: accessState.controllerClientId,
     controllerDisplayName,
     controllerClientName: controllerDisplayName,
@@ -752,7 +929,10 @@ function setLatestSharedPacket(packet, meta = {}) {
   const source = normalizeSourceKey(meta.source || packet.source || 'admin-web-serial');
   const publishedAt = meta.publishedAt || Date.now();
   const sourceLabel = meta.sourceLabel || SOURCE_LABELS[source] || packet.sourceLabel || source;
-  const encoderTelemetry = normalizeEncoderTelemetry(packet);
+  const encoderTelemetry = normalizeEncoderTelemetry(packet, {
+    now: publishedAt,
+    encoderEulerSequence: packet.encoderEulerSequence,
+  });
   const sharedPacket = {
     ...packet,
     ...encoderTelemetry,
@@ -792,6 +972,9 @@ function setLatestSharedPacket(packet, meta = {}) {
     encX: sharedPacket.enc_x_deg ?? sharedPacket.encoderXDeg,
     encY: sharedPacket.enc_y_deg ?? sharedPacket.encoderYDeg,
     encZ: sharedPacket.enc_z_deg ?? sharedPacket.encoderZDeg,
+    encoderRoll: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderRollDeg : null,
+    encoderPitch: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderPitchDeg : null,
+    encoderYaw: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderYawDeg : null,
   }, MAX_CHART_POINTS);
   if (sharedPacket.raw) pushLimited(sharedState.rawLines, { time: publishedAt, raw: sharedPacket.raw, source, sourceLabel }, MAX_RAW_LINES);
   appendActiveSessionSample(sharedPacket);
@@ -814,7 +997,10 @@ function setLatestSharedPacket(packet, meta = {}) {
 }
 
 function sanitizeSharedState() {
-  const packet = sharedState.latestSharedPacket;
+  const storedPacket = sharedState.latestSharedPacket;
+  const packet = storedPacket
+    ? { ...storedPacket, ...normalizeEncoderTelemetry(storedPacket, { now: Date.now(), encoderEulerSequence: storedPacket.encoderEulerSequence }) }
+    : null;
   const ageMs = packet?.publishedAt ? Date.now() - packet.publishedAt : null;
   return {
     latestSharedPacket: packet,
@@ -906,6 +1092,12 @@ function formatGain(value) {
 function buildSerialCommandFromKey(commandKey, params = {}) {
   const key = String(commandKey || '').trim();
   switch (key) {
+    // Firmware currently exposes TARE as the known runtime reference reset.
+    // Keep these command keys distinct so firmware-specific CUBLI_INIT/ENC_TARE
+    // lines can be swapped in later without changing the web/server contract.
+    case 'cubliInitialize': return makeCommandDescriptor(key, 'Cubli Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
+    case 'encoderInitialize':
+    case 'encoderTare': return makeCommandDescriptor(key, 'Encoder Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
     case 'tare': return makeCommandDescriptor(key, 'Set Zero / Tare', 'TARE');
     case 'stop': return makeCommandDescriptor(key, 'Stop / Motor Stop', 'STOP');
     case 'emergencyStop': return makeCommandDescriptor(key, 'Emergency Stop', 'STOP');
@@ -1309,14 +1501,32 @@ app.post('/api/admin/login', (req, res) => {
   const password = String(req.body?.password || '');
   if (!identity.clientId) return res.status(400).json({ ok: false, error: 'clientId is required', access: publicAccessState(identity.clientId) });
   cleanupStaleAdmin();
-  if (adminId !== ADMIN_ID || password !== ADMIN_PASSWORD) {
+  const credential = findAdminCredential(adminId, password);
+  if (!credential) {
     appendAccessLog({ type: 'ADMIN_LOGIN_FAILED', clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName });
     return res.status(403).json({ ok: false, error: 'Invalid Admin ID or password', access: publicAccessState(identity.clientId) });
+  }
+  if (accessState.adminClientId && accessState.adminClientId !== identity.clientId) {
+    const currentAdmin = accessState.clients.get(accessState.adminClientId);
+    if (currentAdmin && isClientConnected(currentAdmin)) {
+      appendAccessLog({
+        type: 'ADMIN_LOGIN_BLOCKED',
+        clientId: identity.clientId,
+        displayName: identity.displayName,
+        clientName: identity.displayName,
+        currentAdminClientId: accessState.adminClientId,
+        currentAdminDisplayName: getClientLabel(accessState.adminClientId),
+      });
+      return res.status(409).json({ ok: false, error: 'Another Admin is already logged in', access: publicAccessState(identity.clientId) });
+    }
+    cleanupStaleAdmin();
   }
   const previousAdminClientId = accessState.adminClientId && accessState.adminClientId !== identity.clientId
     ? accessState.adminClientId
     : null;
   accessState.adminClientId = identity.clientId;
+  accessState.adminLoginId = credential.id;
+  accessState.adminLabel = credential.label || 'Admin';
   if (accessState.controllerClientId === identity.clientId || accessState.controllerClientId === previousAdminClientId) {
     accessState.controllerClientId = null;
   }
@@ -1326,6 +1536,8 @@ app.post('/api/admin/login', (req, res) => {
     adminClientId: identity.clientId,
     adminDisplayName: identity.displayName,
     adminClientName: identity.displayName,
+    adminLoginId: credential.id,
+    adminLabel: credential.label || 'Admin',
     previousAdminClientId,
     previousAdminDisplayName: getClientLabel(previousAdminClientId),
   });
@@ -1337,6 +1549,8 @@ app.post('/api/admin/logout', (req, res) => {
   if (identity.clientId && accessState.adminClientId === identity.clientId) {
     appendAccessLog({ type: 'ADMIN_LOGOUT', adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, previousControllerClientId: accessState.controllerClientId || null, previousControllerDisplayName: getClientLabel(accessState.controllerClientId) });
     accessState.adminClientId = null;
+    accessState.adminLoginId = '';
+    accessState.adminLabel = '';
     accessState.controllerClientId = null;
     rememberClient(identity);
   }

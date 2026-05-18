@@ -12,6 +12,16 @@ import BlePanel from './BlePanel';
 import ServerPanel from './ServerPanel';
 import useServerSync from './useServerSync';
 import { normalizeLivePacket } from './telemetryNormalize';
+import {
+  DEFAULT_FRAME_DEBUG_CONFIG,
+  FrameAxisDebugHelpers,
+  FrameDebugPanel,
+  WheelLayoutDebugHelpers,
+  mapFrameDebugVector,
+  resolveFrameArrowPreset,
+} from './CubliFrameDebug';
+
+// LOCAL 3D DEBUG ONLY: Cubli wheel/frame mapping presets are for local visual inspection only.
 
 /* =========================
    Camera / Layout settings
@@ -174,17 +184,22 @@ function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
    1. Sub Components
 ========================= */
 
-const BodyFrameAxes = forwardRef(({ axisLength = 34 }, ref) => {
+const BodyFrameAxes = forwardRef(({ axisLength = 34, axisDirections = null }, ref) => {
   const axes = useMemo(() => {
     const length = Math.max(8, Number(axisLength) || 34);
     const headLength = Math.max(3, length * 0.15);
     const headWidth = Math.max(1.8, length * 0.08);
+    const directions = axisDirections || {
+      x: [1, 0, 0],
+      y: [0, 0, 1],
+      z: [0, -1, 0],
+    };
 
     const group = new THREE.Group();
 
     group.add(
       new THREE.ArrowHelper(
-        new THREE.Vector3(1, 0, 0),
+        new THREE.Vector3(...directions.x).normalize(),
         new THREE.Vector3(0, 0, 0),
         length,
         0xff0000,
@@ -196,7 +211,7 @@ const BodyFrameAxes = forwardRef(({ axisLength = 34 }, ref) => {
     // Displayed body Y axis: sensor/body Y is remapped to displayed Cubli Z.
     group.add(
       new THREE.ArrowHelper(
-        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(...directions.y).normalize(),
         new THREE.Vector3(0, 0, 0),
         length,
         0x00ff00,
@@ -208,7 +223,7 @@ const BodyFrameAxes = forwardRef(({ axisLength = 34 }, ref) => {
     // Displayed body Z axis: sensor/body Z is remapped to displayed Cubli -Y, downward.
     group.add(
       new THREE.ArrowHelper(
-        new THREE.Vector3(0, -1, 0),
+        new THREE.Vector3(...directions.z).normalize(),
         new THREE.Vector3(0, 0, 0),
         length,
         0x0000ff,
@@ -218,7 +233,7 @@ const BodyFrameAxes = forwardRef(({ axisLength = 34 }, ref) => {
     );
 
     return group;
-  }, [axisLength]);
+  }, [axisLength, axisDirections]);
 
   return <primitive object={axes} ref={ref} />;
 });
@@ -244,6 +259,7 @@ function CubliModel({
   livePacketRef,
   activeSourceType,
   axisLength,
+  frameDebug,
 }) {
   const bodyGLTF = useGLTF('/models/body.glb');
   const wheelGLTF = useGLTF('/models/wheel.glb');
@@ -262,6 +278,28 @@ function CubliModel({
   const centeredWheelXScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
   const centeredWheelYScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
   const centeredWheelZScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
+  const debugConfig = frameDebug || DEFAULT_FRAME_DEBUG_CONFIG;
+  const wheelPreset = debugConfig.wheelPreset || DEFAULT_FRAME_DEBUG_CONFIG.wheelPreset;
+  const arrowPreset = resolveFrameArrowPreset(
+    debugConfig.arrowPreset || DEFAULT_FRAME_DEBUG_CONFIG.arrowPreset,
+    wheelPreset
+  );
+  const wheelPositionScale = Number.isFinite(Number(debugConfig.wheelPositionScale))
+    ? Number(debugConfig.wheelPositionScale)
+    : DEFAULT_FRAME_DEBUG_CONFIG.wheelPositionScale;
+  const showFrameHelpers = Boolean(debugConfig.showHelpers);
+
+  const wheelPositions = useMemo(() => ({
+    x: mapFrameDebugVector([WHEEL_DISTANCE, 0, 0], wheelPreset, wheelPositionScale),
+    y: mapFrameDebugVector([0, WHEEL_DISTANCE, 0], wheelPreset, wheelPositionScale),
+    z: mapFrameDebugVector([0, 0, -WHEEL_DISTANCE], wheelPreset, wheelPositionScale),
+  }), [wheelPreset, wheelPositionScale]);
+
+  const frameAxisDirections = useMemo(() => ({
+    x: mapFrameDebugVector([1, 0, 0], arrowPreset, 1),
+    y: mapFrameDebugVector([0, 0, 1], arrowPreset, 1),
+    z: mapFrameDebugVector([0, -1, 0], arrowPreset, 1),
+  }), [arrowPreset]);
 
   useFrame((state, delta) => {
     // wheel mesh의 기본 회전축을 local Y로 가정
@@ -353,15 +391,19 @@ function CubliModel({
 
   return (
     <group ref={modelRef}>
-      <BodyFrameAxes axisLength={axisLength} />
+      <BodyFrameAxes axisLength={axisLength} axisDirections={frameAxisDirections} />
+      {showFrameHelpers ? (
+        <FrameAxisDebugHelpers axisDirections={frameAxisDirections} axisLength={axisLength} />
+      ) : null}
 
       <group rotation={[Math.PI, 0, 0]}>
         <group scale={[BODY_SCALE, BODY_SCALE, BODY_SCALE]}>
           <primitive object={centeredBodyScene} />
         </group>
+        {showFrameHelpers ? <WheelLayoutDebugHelpers wheelPositions={wheelPositions} /> : null}
 
         {/* X wheel: local Y -> body X */}
-        <group position={[WHEEL_DISTANCE, 0, 0]}>
+        <group position={wheelPositions.x}>
           <group rotation={[0, 0, -Math.PI / 2]}>
             <group ref={wheelXSpinRef} scale={[WHEEL_SCALE, WHEEL_SCALE, WHEEL_SCALE]}>
               <primitive object={centeredWheelXScene} />
@@ -370,14 +412,14 @@ function CubliModel({
         </group>
 
         {/* Y wheel: local Y 그대로 body Y */}
-        <group position={[0, WHEEL_DISTANCE, 0]}>
+        <group position={wheelPositions.y}>
           <group ref={wheelYSpinRef} scale={[WHEEL_SCALE, WHEEL_SCALE, WHEEL_SCALE]}>
             <primitive object={centeredWheelYScene} />
           </group>
         </group>
 
         {/* Z wheel: local Y -> body -Z, 위치는 -Z 방향 */}
-        <group position={[0, 0, -WHEEL_DISTANCE]}>
+        <group position={wheelPositions.z}>
           <group rotation={[Math.PI / 2, 0, 0]}>
             <group ref={wheelZSpinRef} scale={[WHEEL_SCALE, WHEEL_SCALE, WHEEL_SCALE]}>
               <primitive object={centeredWheelZScene} />
@@ -518,6 +560,9 @@ function CubliCanvas({
   livePacketRef,
   activeSourceType,
   axisLength,
+  frameDebug,
+  setFrameDebug,
+  showFrameDebug,
 }) {
   const cubliRef = useRef();
   const cameraTargetRef = useRef(new THREE.Vector3(0, 0, 0));
@@ -632,6 +677,9 @@ function CubliCanvas({
       </div>
 
       <ReferenceFrameOverlay isMobile={isMobile} />
+      {showFrameDebug ? (
+        <FrameDebugPanel value={frameDebug} onChange={setFrameDebug} isMobile={isMobile} />
+      ) : null}
 
       <div
         className="position-absolute p-1"
@@ -682,6 +730,7 @@ function CubliCanvas({
             livePacketRef={livePacketRef}
             activeSourceType={activeSourceType}
             axisLength={axisLength}
+            frameDebug={frameDebug}
           />
         </Suspense>
 
@@ -1161,14 +1210,18 @@ export default function CubliSimulator() {
     return Math.round(Math.min(680, Math.max(440, width * 0.36)));
   });
   const [axisLength, setAxisLength] = useState(34);
+  const [frameDebug, setFrameDebug] = useState(DEFAULT_FRAME_DEBUG_CONFIG);
 
   const panelDragActiveRef = useRef(false);
   const [isPanelDragging, setIsPanelDragging] = useState(false);
 
-  const serial = useEsp32Serial();
-  const ble = useEsp32Ble();
   const rawServerSync = useServerSync();
   const serverSync = rawServerSync ?? EMPTY_OBJECT;
+  const serial = useEsp32Serial({
+    imuEulerSequence: serverSync?.imuEulerSequence,
+    encoderEulerSequence: serverSync?.encoderEulerSequence,
+  });
+  const ble = useEsp32Ble();
   const {
     enqueueSample = () => false,
     publishLivePacket = async () => false,
@@ -1178,6 +1231,7 @@ export default function CubliSimulator() {
   const [showNameModal, setShowNameModal] = useState(!serverSync?.hasDisplayName);
   const serverSerial = serverSync?.serverSerial ?? EMPTY_OBJECT;
   const isAdmin = serverSync?.role === 'admin';
+  const showFrameDebug = isAdmin || process.env.NODE_ENV === 'development';
   const webSerialBridgeEnabled = Boolean(serverSync?.bridgeEnabled);
   const setWebSerialBridgeEnabled = serverSync?.setBridgeEnabled;
 
@@ -1550,7 +1604,10 @@ export default function CubliSimulator() {
         raw: 'phone-sensor',
         attitudeSource: 'phone_sensor',
         updatedAt: now,
-      }, 'phone');
+      }, 'phone', {
+        imuEulerSequence: serverSync?.imuEulerSequence,
+        encoderEulerSequence: serverSync?.encoderEulerSequence,
+      });
       if (!phonePacket?.ok) return;
       phonePacketMirrorRef.current = phonePacket;
       if (typeof window !== 'undefined') {
@@ -1561,7 +1618,7 @@ export default function CubliSimulator() {
     }, 250);
 
     return () => window.clearInterval(timer);
-  }, [activeSourceType, attitude, attitudeQuat, enqueueSample, isAdmin, isSensorActive, publishLivePacket]);
+  }, [activeSourceType, attitude, attitudeQuat, enqueueSample, isAdmin, isSensorActive, publishLivePacket, serverSync?.encoderEulerSequence, serverSync?.imuEulerSequence]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -2115,6 +2172,9 @@ export default function CubliSimulator() {
             livePacketRef={activeLivePacketRef}
             activeSourceType={activeSourceType}
             axisLength={axisLength}
+            frameDebug={frameDebug}
+            setFrameDebug={setFrameDebug}
+            showFrameDebug={showFrameDebug}
           />
         </section>
 
@@ -2314,6 +2374,7 @@ export default function CubliSimulator() {
                     webSerialConnected={serial.isConnected}
                     webSerialLatestPacketUpdatedAt={serial.latestPacket?.updatedAt}
                     onChangeDisplayName={handleOpenNameModal}
+                    isActive={activeTab === 'server'}
                   />
                 </Tab>
               </Tabs>
