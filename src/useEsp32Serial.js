@@ -6,7 +6,9 @@ const MAX_RECENT_PACKETS = 10;
 const MAX_CHART_POINTS = 90;
 const BAUD_RATE = 115200;
 const UI_FLUSH_INTERVAL_MS = 100;
-const READ_BUFFER_SIZE = 1024 * 1024;
+const ENCODER_SYNC_THRESHOLD_MS = 1000;
+const WEB_SERIAL_UNSUPPORTED_MESSAGE = 'Web Serial is supported only on Chrome/Edge desktop over HTTPS or localhost';
+const PORT_BUSY_MESSAGE = 'Port busy: close Arduino Serial Monitor or another app using the COM port';
 
 const DEFAULT_PACKET = {
   source: 'none',
@@ -115,13 +117,38 @@ function hasIncomingEncoderData(encoder = {}) {
     || Boolean(encoder?.encoder);
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, hasValidQuaternion, updatedAt, now }) {
+function encoderTimerDelta(timerX, timerY, timerZ) {
+  const timers = [timerX, timerY, timerZ].map(finiteOrNull);
+  if (!timers.every((value) => value !== null)) return null;
+  return Math.max(...timers) - Math.min(...timers);
+}
+
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, updatedAt, now }) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > 1000) return 'STALE';
+
   const explicit = String(explicitStatus || '').trim().toUpperCase();
-  if (explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
-  if (hasAllAxes && hasValidQuaternion) return 'LIVE';
-  return 'PARTIAL';
+  if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
+  if (!hasAllAxes) return 'PARTIAL';
+
+  const delta = encoderTimerDelta(timerX, timerY, timerZ);
+  if (delta !== null && delta > ENCODER_SYNC_THRESHOLD_MS) return 'MIXED';
+  return 'LIVE';
+}
+
+function serialErrorMessage(err) {
+  const message = String(err?.message || err || '').trim();
+  if (!message) return 'Serial port open failed';
+  if (/no port selected|user cancelled|user canceled|cancelled|canceled/i.test(message)) {
+    return 'Serial port selection was cancelled.';
+  }
+  if (/already open|failed to open serial port|busy|access denied|denied|in use|networkerror/i.test(message)) {
+    return PORT_BUSY_MESSAGE;
+  }
+  if (/not supported|navigator\.serial|web serial/i.test(message)) {
+    return WEB_SERIAL_UNSUPPORTED_MESSAGE;
+  }
+  return message;
 }
 
 function makeEncoderFields(input = {}, fallback = {}, options = {}) {
@@ -136,9 +163,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
       : null
   );
 
-  const encX = firstFiniteValue([input.enc_x_deg, input.encoderXDeg, input.encoder?.x], fallbackValue('enc_x_deg', 'encoderXDeg', 'x'));
-  const encY = firstFiniteValue([input.enc_y_deg, input.encoderYDeg, input.encoder?.y], fallbackValue('enc_y_deg', 'encoderYDeg', 'y'));
-  const encZ = firstFiniteValue([input.enc_z_deg, input.encoderZDeg, input.encoder?.z], fallbackValue('enc_z_deg', 'encoderZDeg', 'z'));
+  const incomingX = firstFiniteValue([input.enc_x_deg, input.encoderXDeg, input.encoder?.x], null);
+  const incomingY = firstFiniteValue([input.enc_y_deg, input.encoderYDeg, input.encoder?.y], null);
+  const incomingZ = firstFiniteValue([input.enc_z_deg, input.encoderZDeg, input.encoder?.z], null);
+  const encX = incomingX ?? fallbackValue('enc_x_deg', 'encoderXDeg', 'x');
+  const encY = incomingY ?? fallbackValue('enc_y_deg', 'encoderYDeg', 'y');
+  const encZ = incomingZ ?? fallbackValue('enc_z_deg', 'encoderZDeg', 'z');
   const rawQ0 = firstFiniteValue([input.enc_q0, input.encoderQ0, input.encoder?.q0], fallbackValue('enc_q0', 'encoderQ0', 'q0'));
   const rawQ1 = firstFiniteValue([input.enc_q1, input.encoderQ1, input.encoder?.q1], fallbackValue('enc_q1', 'encoderQ1', 'q1'));
   const rawQ2 = firstFiniteValue([input.enc_q2, input.encoderQ2, input.encoder?.q2], fallbackValue('enc_q2', 'encoderQ2', 'q2'));
@@ -155,15 +185,25 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const timerY = firstFiniteValue([input.enc_timer_y, input.encoderTimerY, input.encoder?.timerY, input.encoder?.timer_y], fallbackValue('enc_timer_y', 'encoderTimerY', 'timerY', 'timer_y'));
   const timerZ = firstFiniteValue([input.enc_timer_z, input.encoderTimerZ, input.encoder?.timerZ, input.encoder?.timer_z], fallbackValue('enc_timer_z', 'encoderTimerZ', 'timerZ', 'timer_z'));
   const updatedAt = firstFiniteValue([input.encoderUpdatedAt, input.encoder?.updatedAt], fallbackValue('encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt'));
-  const source = input.encoderSource || input.encoder?.source || (useFallback ? (fallback.encoderSource || fallback.encoder?.source || '') : '');
   const hasData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ].some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
   const hasValidQuaternion = Boolean(encoderQ);
+  const heldAxes = [];
+  if (useFallback && incomingX === null && encX !== null) heldAxes.push('X');
+  if (useFallback && incomingY === null && encY !== null) heldAxes.push('Y');
+  if (useFallback && incomingZ === null && encZ !== null) heldAxes.push('Z');
+  const sourceBase = input.encoderSource || input.encoder?.source || (useFallback ? (fallback.encoderSource || fallback.encoder?.source || '') : '');
+  const source = [
+    sourceBase || (hasData ? 'Gimbal Rotary Encoder packet' : ''),
+    heldAxes.length ? `hold last encoder axes ${heldAxes.join('/')}` : '',
+  ].filter(Boolean).join('; ');
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: input.encoderStatus || input.encoder?.status || (useFallback ? (fallback.encoderStatus || fallback.encoder?.status) : ''),
     hasData,
     hasAllAxes,
-    hasValidQuaternion,
+    timerX,
+    timerY,
+    timerZ,
     updatedAt,
     now,
   });
@@ -451,7 +491,7 @@ function parseTelCsvLine(line) {
         enc_y_deg: parseOptionalNumberToken(parts[encoderStart + 1]),
         enc_z_deg: parseOptionalNumberToken(parts[encoderStart + 2]),
         encoderUpdatedAt: Date.now(),
-        encoderSource: 'TEL packet',
+        encoderSource: 'Gimbal Rotary Encoder from TEL packet',
       };
       if (parts.length > encoderStart + 3) {
         encoderValues.enc_q0 = parseOptionalNumberToken(parts[encoderStart + 3]);
@@ -570,28 +610,61 @@ function parseEncCsvLine(line) {
     const text = String(status || '').trim().toUpperCase();
     return ['NONE', 'PARTIAL', 'LIVE', 'STALE', 'MIXED', 'HOLD_LAST'].includes(text) ? text : '';
   };
+  const axisFromToken = (token) => {
+    const text = String(token || '').trim().toUpperCase();
+    if (text === '1' || text === 'X') return 'x';
+    if (text === '2' || text === 'Y') return 'y';
+    if (text === '3' || text === 'Z') return 'z';
+    return '';
+  };
 
   try {
+    const now = Date.now();
+    const axis = axisFromToken(parts[1]);
     const encoderValues = {
-      enc_x_deg: optionalAt(1),
-      enc_y_deg: optionalAt(2),
-      enc_z_deg: optionalAt(3),
       encoderUpdatedAt: Date.now(),
-      encoderSource: 'encoder packet',
+      encoderSource: 'Gimbal Rotary Encoder packet',
     };
-    if (parts.length > 4) {
+
+    if (axis) {
+      const angle = optionalAt(2);
+      if (angle === null) throw new Error(`ENC ${axis.toUpperCase()} angle is not numeric`);
+      if (axis === 'x') {
+        encoderValues.enc_x_deg = angle;
+        encoderValues.enc_timer_x = optionalAt(3);
+      } else if (axis === 'y') {
+        encoderValues.enc_y_deg = angle;
+        encoderValues.enc_timer_y = optionalAt(3);
+      } else if (axis === 'z') {
+        encoderValues.enc_z_deg = angle;
+        encoderValues.enc_timer_z = optionalAt(3);
+      }
+      encoderValues.encoderSource = `Gimbal Rotary Encoder ${axis.toUpperCase()} packet`;
+      if (parts.length > 4) encoderValues.encoderStatus = normalizeStatus(parts[4]);
+    } else {
+      encoderValues.enc_x_deg = optionalAt(1);
+      encoderValues.enc_y_deg = optionalAt(2);
+      encoderValues.enc_z_deg = optionalAt(3);
+      encoderValues.encoderSource = 'Gimbal Rotary Encoder snapshot';
+    }
+
+    if (!axis && parts.length === 7) {
+      encoderValues.enc_timer_x = optionalAt(4);
+      encoderValues.enc_timer_y = optionalAt(5);
+      encoderValues.enc_timer_z = optionalAt(6);
+    } else if (!axis && parts.length >= 8) {
       encoderValues.enc_q0 = optionalAt(4);
       encoderValues.enc_q1 = optionalAt(5);
       encoderValues.enc_q2 = optionalAt(6);
       encoderValues.enc_q3 = optionalAt(7);
-    }
-    if (parts.length > 8) {
-      encoderValues.enc_timer_x = optionalAt(8);
-      encoderValues.enc_timer_y = optionalAt(9);
-      encoderValues.enc_timer_z = optionalAt(10);
-    }
-    if (parts.length > 11) {
-      encoderValues.encoderStatus = normalizeStatus(parts[11]);
+      if (parts.length > 8) {
+        encoderValues.enc_timer_x = optionalAt(8);
+        encoderValues.enc_timer_y = optionalAt(9);
+        encoderValues.enc_timer_z = optionalAt(10);
+      }
+      if (parts.length > 11) {
+        encoderValues.encoderStatus = normalizeStatus(parts[11]);
+      }
     }
 
     const hasAxisValue = [encoderValues.enc_x_deg, encoderValues.enc_y_deg, encoderValues.enc_z_deg]
@@ -604,7 +677,7 @@ function parseEncCsvLine(line) {
       cleanLine: clean,
       raw: clean,
       source: 'ENC_CSV',
-      ...makeEncoderFields(encoderValues, {}, { useFallback: false }),
+      ...makeEncoderFields({ ...encoderValues, encoderUpdatedAt: now }, {}, { useFallback: false, now }),
     };
   } catch (err) {
     return { ok: false, reason: err?.message || 'ENC CSV parse failed', cleanLine: clean };
@@ -711,38 +784,39 @@ export default function useEsp32Serial(options = {}) {
     if (parsed.encoderOnly) {
       const now = parsed.encoderUpdatedAt || Date.now();
       const encoderFields = makeEncoderFields(
-        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'encoder packet' },
-        {},
-        { useFallback: false, now, encoderEulerSequence }
+        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
+        latestEncoderRef.current,
+        { useFallback: true, now, encoderEulerSequence }
       );
       latestEncoderRef.current = encoderFields;
       encoderCountRef.current += 1;
       countersRef.current.valid += 1;
 
       const currentPacket = latestPacketRef.current || DEFAULT_PACKET;
-      const attitudePacketExists = Boolean(currentPacket?.updatedAt);
       latestPacketRef.current = mergeEncoderIntoPacket({
+        ...DEFAULT_PACKET,
         ...currentPacket,
+        source: currentPacket.source && currentPacket.source !== 'none' ? currentPacket.source : 'admin-web-serial',
+        sourceLabel: currentPacket.sourceLabel || 'Admin Web Serial Bridge',
+        pc_time_ms: currentPacket.pc_time_ms || currentPacket.pcTimeMs || now,
         raw: parsed.cleanLine || currentPacket.raw || '',
-        updatedAt: attitudePacketExists ? now : currentPacket.updatedAt,
+        updatedAt: now,
       }, encoderFields, { useFallback: false, now, encoderEulerSequence });
 
-      if (attitudePacketExists) {
-        recentPacketsRef.current = [latestPacketRef.current, ...recentPacketsRef.current.slice(1)].slice(0, MAX_RECENT_PACKETS);
-        const chartPoint = {
-          time: new Date(now).toLocaleTimeString('ko-KR', { hour12: false, minute: '2-digit', second: '2-digit' }),
-          roll: latestPacketRef.current.roll_deg,
-          pitch: latestPacketRef.current.pitch_deg,
-          yaw: latestPacketRef.current.yaw_deg,
-          encX: encoderFields.enc_x_deg,
-          encY: encoderFields.enc_y_deg,
-          encZ: encoderFields.enc_z_deg,
-          encoderRoll: encoderFields.encoderStatus === 'LIVE' ? encoderFields.encoderRollDeg : null,
-          encoderPitch: encoderFields.encoderStatus === 'LIVE' ? encoderFields.encoderPitchDeg : null,
-          encoderYaw: encoderFields.encoderStatus === 'LIVE' ? encoderFields.encoderYawDeg : null,
-        };
-        chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
-      }
+      recentPacketsRef.current = [latestPacketRef.current, ...recentPacketsRef.current.slice(1)].slice(0, MAX_RECENT_PACKETS);
+      const chartPoint = {
+        time: new Date(now).toLocaleTimeString('ko-KR', { hour12: false, minute: '2-digit', second: '2-digit' }),
+        roll: latestPacketRef.current.roll_deg,
+        pitch: latestPacketRef.current.pitch_deg,
+        yaw: latestPacketRef.current.yaw_deg,
+        encX: encoderFields.enc_x_deg,
+        encY: encoderFields.enc_y_deg,
+        encZ: encoderFields.enc_z_deg,
+        encoderRoll: encoderFields.encoderHasQuaternion ? encoderFields.encoderRollDeg : null,
+        encoderPitch: encoderFields.encoderHasQuaternion ? encoderFields.encoderPitchDeg : null,
+        encoderYaw: encoderFields.encoderHasQuaternion ? encoderFields.encoderYawDeg : null,
+      };
+      chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
 
       lastRawLineRef.current = parsed.cleanLine || '';
       lastReceivedAtRef.current = now;
@@ -888,18 +962,18 @@ export default function useEsp32Serial(options = {}) {
 
     recentPacketsRef.current = [commonPacket, ...recentPacketsRef.current].slice(0, MAX_RECENT_PACKETS);
 
-    const chartPoint = {
-      time: new Date(now).toLocaleTimeString('ko-KR', { hour12: false, minute: '2-digit', second: '2-digit' }),
-      roll: commonPacket.roll_deg,
-      pitch: commonPacket.pitch_deg,
-      yaw: commonPacket.yaw_deg,
-      encX: commonPacket.enc_x_deg ?? commonPacket.encoderXDeg,
-      encY: commonPacket.enc_y_deg ?? commonPacket.encoderYDeg,
-      encZ: commonPacket.enc_z_deg ?? commonPacket.encoderZDeg,
-      encoderRoll: commonPacket.encoderStatus === 'LIVE' ? commonPacket.encoderRollDeg : null,
-      encoderPitch: commonPacket.encoderStatus === 'LIVE' ? commonPacket.encoderPitchDeg : null,
-      encoderYaw: commonPacket.encoderStatus === 'LIVE' ? commonPacket.encoderYawDeg : null,
-    };
+      const chartPoint = {
+        time: new Date(now).toLocaleTimeString('ko-KR', { hour12: false, minute: '2-digit', second: '2-digit' }),
+        roll: commonPacket.roll_deg,
+        pitch: commonPacket.pitch_deg,
+        yaw: commonPacket.yaw_deg,
+        encX: commonPacket.enc_x_deg ?? commonPacket.encoderXDeg,
+        encY: commonPacket.enc_y_deg ?? commonPacket.encoderYDeg,
+        encZ: commonPacket.enc_z_deg ?? commonPacket.encoderZDeg,
+        encoderRoll: commonPacket.encoderHasQuaternion ? commonPacket.encoderRollDeg : null,
+        encoderPitch: commonPacket.encoderHasQuaternion ? commonPacket.encoderPitchDeg : null,
+        encoderYaw: commonPacket.encoderHasQuaternion ? commonPacket.encoderYawDeg : null,
+      };
     chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
 
     if (typeof window !== 'undefined') {
@@ -1004,7 +1078,7 @@ export default function useEsp32Serial(options = {}) {
           // wait briefly, and reacquire the new readable stream.
           await new Promise((resolve) => setTimeout(resolve, 25));
         } else {
-          setError(msg);
+          setError(serialErrorMessage(msg));
           break;
         }
       } finally {
@@ -1018,47 +1092,17 @@ export default function useEsp32Serial(options = {}) {
     }
   }, [markPendingUiFlush, processChunk]);
 
-  const connect = useCallback(async () => {
-    if (!isSupported) {
-      setError('이 브라우저는 Web Serial API를 지원하지 않습니다. Chrome 또는 Edge에서 실행해 주세요.');
-      return false;
-    }
-
-    try {
-      setError('');
-      const port = await navigator.serial.requestPort();
-      await port.open({
-        baudRate: BAUD_RATE,
-        dataBits: 8,
-        stopBits: 1,
-        parity: 'none',
-        flowControl: 'none',
-        bufferSize: READ_BUFFER_SIZE,
-      });
-
-      portRef.current = port;
-      setBaudRate(BAUD_RATE);
-      setIsConnected(true);
-      readLoop();
-      return true;
-    } catch (err) {
-      setError(err?.message || 'Serial port open failed');
-      try { if (portRef.current) await portRef.current.close(); } catch (_) {}
-      portRef.current = null;
-      setIsConnected(false);
-      return false;
-    }
-  }, [isSupported, readLoop]);
-
-  const disconnect = useCallback(async () => {
+  const closeCurrentPort = useCallback(async () => {
     keepReadingRef.current = false;
 
     try { if (readerRef.current) await readerRef.current.cancel(); } catch (_) {}
+    try { readerRef.current?.releaseLock?.(); } catch (_) {}
 
     try {
       if (portRef.current) await portRef.current.close();
-    } catch (err) {
-      setError(err?.message || 'Serial disconnect failed');
+    } catch (_) {
+      // A stale browser-side port can already be closed or busy. Connect will
+      // report the actionable OS-level COM handle error if one remains.
     } finally {
       portRef.current = null;
       readerRef.current = null;
@@ -1066,14 +1110,54 @@ export default function useEsp32Serial(options = {}) {
     }
   }, []);
 
+  const connect = useCallback(async () => {
+    if (!isSupported) {
+      setError(WEB_SERIAL_UNSUPPORTED_MESSAGE);
+      return false;
+    }
+
+    try {
+      await closeCurrentPort();
+      setError('');
+      bufferRef.current = '';
+      lastInvalidReasonRef.current = '';
+      lastRawLineRef.current = '';
+      lastReceivedAtRef.current = null;
+      markPendingUiFlush();
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: BAUD_RATE });
+
+      portRef.current = port;
+      setBaudRate(BAUD_RATE);
+      setIsConnected(true);
+      lastInvalidReasonRef.current = 'Port opened, waiting for telemetry... No IMU/TEL/ENC data yet';
+      markPendingUiFlush();
+      readLoop();
+      return true;
+    } catch (err) {
+      setError(serialErrorMessage(err));
+      await closeCurrentPort();
+      setIsConnected(false);
+      return false;
+    }
+  }, [closeCurrentPort, isSupported, markPendingUiFlush, readLoop]);
+
+  const disconnect = useCallback(async () => {
+    try {
+      await closeCurrentPort();
+    } catch (err) {
+      setError(serialErrorMessage(err) || 'Serial disconnect failed');
+    }
+  }, [closeCurrentPort]);
+
   const sendLine = useCallback(async (line) => {
     if (!portRef.current?.writable || !isConnected) {
-      setError('Serial receiver가 연결되어 있지 않습니다.');
+      setError('Serial receiver is not connected.');
       return false;
     }
 
     if (commandBusyRef.current) {
-      setError('명령 전송 중입니다. 잠시 후 다시 시도하세요.');
+      setError('Command send is already in progress. Try again shortly.');
       return false;
     }
 
@@ -1087,7 +1171,7 @@ export default function useEsp32Serial(options = {}) {
       setError('');
       return true;
     } catch (err) {
-      setError(err?.message || 'command send failed');
+      setError(serialErrorMessage(err) || 'command send failed');
       return false;
     } finally {
       try { writer?.releaseLock(); } catch (_) {}

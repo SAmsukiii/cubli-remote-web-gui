@@ -369,6 +369,15 @@ function legacyCommandToKey(command) {
   if (exact[upper]) return { commandKey: exact[upper], params: {} };
   const accFactor = upper.match(/^ACCF,\s*([-+0-9.]+)$/);
   if (accFactor) return { commandKey: 'accFactor', params: { factor: Number(accFactor[1]) } };
+  const rpmAxis = upper.match(/^RPM,\s*([XYZ123])\s*,\s*([-+0-9.]+)$/);
+  if (rpmAxis) {
+    const axis = rpmAxis[1];
+    const key = axis === '1' || axis === 'X' ? 'wheelRpmX' : (axis === '2' || axis === 'Y' ? 'wheelRpmY' : 'wheelRpmZ');
+    return { commandKey: key, params: { rpm: Number(rpmAxis[2]) } };
+  }
+  const rpmAll = upper.match(/^RPMALL,\s*([-+0-9.]+)\s*,\s*([-+0-9.]+)\s*,\s*([-+0-9.]+)$/);
+  if (rpmAll) return { commandKey: 'wheelRpmAll', params: { x: Number(rpmAll[1]), y: Number(rpmAll[2]), z: Number(rpmAll[3]) } };
+  if (upper === 'RPMSTOP' || upper === 'TESTSTOP') return { commandKey: 'wheelRpmStop', params: {} };
   return { commandKey: '', params: {} };
 }
 
@@ -1316,6 +1325,7 @@ export default function useServerSync() {
       'magOff', 'magOn', 'magAuto', 'gyro250', 'gyro500', 'gyro1000', 'gyro2000',
       'acc2g', 'acc4g', 'acc8g', 'acc16g', 'accFactor', 'status', 'macInfo',
       'attitudeKp', 'attitudeKd',
+      'wheelRpmX', 'wheelRpmY', 'wheelRpmZ', 'wheelRpmAll', 'wheelRpmStop',
     ]);
     const mapped = knownKeys.has(explicitKey)
       ? { commandKey: explicitKey, params: paramsOrMeta || {} }
@@ -1376,7 +1386,7 @@ export default function useServerSync() {
   const sendEncoderInitialize = useCallback(() => (
     sendServerSerialCommand('encoderInitialize', {}, {
       eventType: 'ENCODER_INITIALIZE',
-      label: 'Encoder Initialize',
+      label: 'Gimbal Encoder Initialize',
       detail: { firmwareCommand: 'TARE' },
     })
   ), [sendServerSerialCommand]);
@@ -1882,6 +1892,11 @@ export default function useServerSync() {
       sendAttitudeKp,
       sendAttitudeKd,
       sendAttitudeGains,
+      sendWheelRpmX: (rpm) => sendServerSerialCommand('wheelRpmX', { rpm }, { eventType: 'WHEEL_RPM_COMMAND', label: 'Wheel RPM X', detail: { rpm } }),
+      sendWheelRpmY: (rpm) => sendServerSerialCommand('wheelRpmY', { rpm }, { eventType: 'WHEEL_RPM_COMMAND', label: 'Wheel RPM Y', detail: { rpm } }),
+      sendWheelRpmZ: (rpm) => sendServerSerialCommand('wheelRpmZ', { rpm }, { eventType: 'WHEEL_RPM_COMMAND', label: 'Wheel RPM Z', detail: { rpm } }),
+      sendWheelRpmAll: (x, y, z) => sendServerSerialCommand('wheelRpmAll', { x, y, z }, { eventType: 'WHEEL_RPM_COMMAND', label: 'Wheel RPM All', detail: { x, y, z } }),
+      sendWheelRpmStop: () => sendServerSerialCommand('wheelRpmStop', {}, { eventType: 'WHEEL_RPM_STOP', label: 'Stop RPM Test' }),
       sendEbimuShortcut,
       sendStatus: () => sendServerSerialCommand('status', {}, { eventType: 'STATUS_REQUEST', label: 'Status' }),
       sendMacInfo: () => sendServerSerialCommand('macInfo', {}, { eventType: 'MAC_REQUEST', label: 'MAC Info' }),

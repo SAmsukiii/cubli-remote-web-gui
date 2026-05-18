@@ -30,10 +30,15 @@ const ATTITUDE_GAIN_DEFAULTS = {
 const ATTITUDE_GAIN_MIN = 0;
 const ATTITUDE_GAIN_MAX = 10;
 const ATTITUDE_GAIN_STEP = 0.001;
+const WHEEL_RPM_MIN = -800;
+const WHEEL_RPM_MAX = 800;
+const WHEEL_RPM_STEP = 10;
 const LOG_COLUMNS = [
+  'time_local',
   'pc_time_ms', 'published_at', 'source', 'source_label',
   'imu_euler_sequence', 'rpy_source',
   'q0', 'q1', 'q2', 'q3', 'norm',
+  'roll_deg', 'pitch_deg', 'yaw_deg',
   'Roll_deg', 'Pitch_deg', 'Yaw_deg',
   'desired_roll_deg', 'desired_pitch_deg', 'desired_yaw_deg',
   'qerr_deg',
@@ -81,6 +86,19 @@ function formatDuration(ms) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}.${String(Math.floor(value % 1000)).padStart(3, '0')}`;
+}
+
+function formatCsvFileTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    '_',
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join('');
 }
 
 function formatCommandParams(params) {
@@ -139,7 +157,8 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const hasAllAxes = [x, y, z].every((value) => value !== null);
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
-  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (hasAllAxes && hasQuaternion ? 'LIVE' : 'PARTIAL')));
+  const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 1000 ? 'MIXED' : 'LIVE'))));
   return {
     x,
     y,
@@ -167,10 +186,10 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
 function buildEncoderRows(packet = {}) {
   const encoder = getEncoderSnapshot(packet);
   const rows = [
-    { label: 'Encoder status', value: encoder.status },
-    { label: 'Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
-    { label: 'Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
-    { label: 'Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+    { label: 'Gimbal encoder status', value: encoder.status },
+    { label: 'Gimbal Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
+    { label: 'Gimbal Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
+    { label: 'Gimbal Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
   ];
   if ([encoder.q0, encoder.q1, encoder.q2, encoder.q3].some((value) => value !== null)) {
     rows.push(
@@ -181,23 +200,23 @@ function buildEncoderRows(packet = {}) {
     );
   }
   rows.push(
-    { label: `Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
-    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
-    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
-    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
-    { label: 'Encoder RPY source', value: encoder.rpySource || '-' },
+    { label: `Gimbal Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Gimbal Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
+    { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
     rows.push(
-      { label: 'Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
-      { label: 'Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
-      { label: 'Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
+      { label: 'Gimbal Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
+      { label: 'Gimbal Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
+      { label: 'Gimbal Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
     );
   }
   rows.push(
-    { label: 'Encoder source', value: encoder.source || '-' },
-    { label: 'Encoder updated', value: formatDateTime(encoder.updatedAt) },
-    { label: 'Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
+    { label: 'Gimbal Encoder source', value: encoder.source || '-' },
+    { label: 'Gimbal Encoder updated', value: formatDateTime(encoder.updatedAt) },
+    { label: 'Gimbal Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
   );
   return rows;
 }
@@ -212,6 +231,20 @@ function readGainTriplet(values = {}) {
   const x = parseGainValue(values.x);
   const y = parseGainValue(values.y);
   const z = parseGainValue(values.z);
+  if (x === null || y === null || z === null) return null;
+  return { x, y, z };
+}
+
+function parseWheelRpmValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < WHEEL_RPM_MIN || number > WHEEL_RPM_MAX) return null;
+  return Math.round(number);
+}
+
+function readWheelRpmTriplet(values = {}) {
+  const x = parseWheelRpmValue(values.x);
+  const y = parseWheelRpmValue(values.y);
+  const z = parseWheelRpmValue(values.z);
   if (x === null || y === null || z === null) return null;
   return { x, y, z };
 }
@@ -273,7 +306,9 @@ function downloadTextFile(filename, text) {
 
 function normalizePacketForLog(packet) {
   const source = packet || {};
+  const timeValue = source.publishedAt ?? source.serverReceivedAt ?? source.updatedAt ?? source.pc_time_ms ?? Date.now();
   return {
+    time_local: new Date(timeValue).toISOString(),
     pc_time_ms: source.pc_time_ms ?? source.pcTimeMs ?? source.updatedAt ?? Date.now(),
     published_at: source.publishedAt ?? source.serverReceivedAt ?? source.serverReceivedAtMs ?? '',
     source: source.source || 'server-serial',
@@ -285,6 +320,9 @@ function normalizePacketForLog(packet) {
     q2: source.q2,
     q3: source.q3,
     norm: source.norm,
+    roll_deg: source.roll_deg ?? source.Roll_deg ?? source.rollDeg,
+    pitch_deg: source.pitch_deg ?? source.Pitch_deg ?? source.pitchDeg,
+    yaw_deg: source.yaw_deg ?? source.Yaw_deg ?? source.yawDeg,
     Roll_deg: source.Roll_deg ?? source.roll_deg ?? source.rollDeg,
     Pitch_deg: source.Pitch_deg ?? source.pitch_deg ?? source.pitchDeg,
     Yaw_deg: source.Yaw_deg ?? source.yaw_deg ?? source.yawDeg,
@@ -640,7 +678,7 @@ function RpyConventionSection({ serverSync }) {
           </Form.Select>
         </Col>
         <Col xs={12} md={6}>
-          <Form.Label className="serial-mini-label">Encoder RPY Sequence</Form.Label>
+          <Form.Label className="serial-mini-label">Gimbal Encoder RPY Sequence</Form.Label>
           <Form.Select
             size="sm"
             value={encoderSequence}
@@ -781,6 +819,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const [kpGain, setKpGain] = useState(ATTITUDE_GAIN_DEFAULTS.kp);
   const [kdGain, setKdGain] = useState(ATTITUDE_GAIN_DEFAULTS.kd);
   const [gainStatus, setGainStatus] = useState('');
+  const [rpmCommand, setRpmCommand] = useState({ x: '0', y: '0', z: '0' });
+  const [rpmStatus, setRpmStatus] = useState('');
 
   const isAdmin = role === 'admin';
   const canViewCommand = isAdmin || isController;
@@ -793,6 +833,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const kpValues = readGainTriplet(kpGain);
   const kdValues = readGainTriplet(kdGain);
   const gainInputInvalid = !kpValues || !kdValues;
+  const rpmValues = readWheelRpmTriplet(rpmCommand);
+  const rpmInputInvalid = !rpmValues;
 
   if (!canViewCommand) return null;
 
@@ -846,6 +888,36 @@ function CommandSection({ serial, status, role, controllerClientId, isController
     const kdOk = await safeSerial.sendAttitudeKd?.(kd.x, kd.y, kd.z);
     setGainStatus(kdOk ? 'Queued Attitude Kp and Kd for Admin Web Serial Bridge.' : 'Attitude Kp queued, but Kd failed.');
   };
+  const updateRpmCommand = (axis, value) => {
+    setRpmCommand((prev) => ({ ...prev, [axis]: value }));
+    setRpmStatus('');
+  };
+  const sendWheelRpmAxis = async (axis) => {
+    const rpm = parseWheelRpmValue(rpmCommand[axis]);
+    if (rpm === null) {
+      setRpmStatus(`Wheel RPM must be between ${WHEEL_RPM_MIN} and ${WHEEL_RPM_MAX}.`);
+      return false;
+    }
+    const methodName = axis === 'x' ? 'sendWheelRpmX' : (axis === 'y' ? 'sendWheelRpmY' : 'sendWheelRpmZ');
+    const ok = await safeSerial[methodName]?.(rpm);
+    setRpmStatus(ok ? `Queued Wheel RPM ${axis.toUpperCase()} (${rpm}) for Admin Web Serial Bridge.` : `Failed to queue Wheel RPM ${axis.toUpperCase()}.`);
+    return Boolean(ok);
+  };
+  const sendWheelRpmAll = async () => {
+    const values = readWheelRpmTriplet(rpmCommand);
+    if (!values) {
+      setRpmStatus(`Wheel RPM must be between ${WHEEL_RPM_MIN} and ${WHEEL_RPM_MAX}.`);
+      return false;
+    }
+    const ok = await safeSerial.sendWheelRpmAll?.(values.x, values.y, values.z);
+    setRpmStatus(ok ? `Queued Wheel RPM All (${values.x}, ${values.y}, ${values.z}) for Admin Web Serial Bridge.` : 'Failed to queue Wheel RPM All.');
+    return Boolean(ok);
+  };
+  const stopWheelRpmTest = async () => {
+    const ok = await safeSerial.sendWheelRpmStop?.();
+    setRpmStatus(ok ? 'Queued Stop RPM Test for Admin Web Serial Bridge.' : 'Failed to queue Stop RPM Test.');
+    return Boolean(ok);
+  };
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
@@ -876,7 +948,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           </div>
           <CommandGroup>
             <CommandButton label="Cubli Initialize" onClick={safeSerial.sendCubliInitialize} disabled={!canSendCommand} />
-            <CommandButton label="Encoder Initialize" onClick={safeSerial.sendEncoderInitialize} disabled={!canSendCommand} />
+            <CommandButton label="Gimbal Encoder Initialize" onClick={safeSerial.sendEncoderInitialize} disabled={!canSendCommand} />
             <CommandButton label="Set Zero / Tare" onClick={safeSerial.sendTare} disabled={!canSendCommand} />
             <CommandButton label="Stop" onClick={safeSerial.sendStop} disabled={!canSendCommand} />
             <CommandButton label="Emergency Stop" onClick={safeSerial.sendEmergencyStop} disabled={!canSendCommand} />
@@ -908,6 +980,46 @@ function CommandSection({ serial, status, role, controllerClientId, isController
               </Button>
             </Col>
           </Row>
+        </CommandAccordionItem>
+
+        <CommandAccordionItem eventKey="wheel-rpm" title="Wheel RPM Command">
+          <div className="server-small-note mb-2">
+            Reaction wheel motor speed command. Gimbal rotary encoder data is displayed separately.
+          </div>
+          <Row className="g-2 align-items-end mb-3">
+            {[
+              ['x', 'RPM X'],
+              ['y', 'RPM Y'],
+              ['z', 'RPM Z'],
+            ].map(([axis, label]) => (
+              <Col xs={4} key={axis}>
+                <Form.Label className="serial-mini-label">{label}</Form.Label>
+                <Form.Control
+                  size="sm"
+                  type="number"
+                  min={WHEEL_RPM_MIN}
+                  max={WHEEL_RPM_MAX}
+                  step={WHEEL_RPM_STEP}
+                  value={rpmCommand[axis]}
+                  onChange={(event) => updateRpmCommand(axis, event.target.value)}
+                  isInvalid={parseWheelRpmValue(rpmCommand[axis]) === null}
+                />
+              </Col>
+            ))}
+          </Row>
+          {rpmInputInvalid ? (
+            <Alert variant="warning" className="py-2">
+              RPM command is limited to +/-800 until the firmware limit is published.
+            </Alert>
+          ) : null}
+          {rpmStatus ? <div className="server-small-note mb-2">{rpmStatus}</div> : null}
+          <CommandGroup>
+            <CommandButton label="Send RPM X" onClick={() => sendWheelRpmAxis('x')} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.x) === null} />
+            <CommandButton label="Send RPM Y" onClick={() => sendWheelRpmAxis('y')} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.y) === null} />
+            <CommandButton label="Send RPM Z" onClick={() => sendWheelRpmAxis('z')} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.z) === null} />
+            <CommandButton label="Send All RPM" onClick={sendWheelRpmAll} disabled={!canSendCommand || !rpmValues} />
+            <CommandButton label="Stop RPM Test" onClick={stopWheelRpmTest} disabled={!canSendCommand} />
+          </CommandGroup>
         </CommandAccordionItem>
 
         <CommandAccordionItem eventKey="attitude-gain" title="Attitude PID Gain">
@@ -1091,7 +1203,7 @@ function MonitoringSection({ status, isActive = true }) {
   const frameRows = useMemo(() => [
     { label: 'Attitude quaternion source', value: latest.attitudeSource || latest.sourceLabel || latest.source || '-' },
     { label: 'Current RPY source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
-    { label: 'Encoder RPY source', value: latest.encoderRpySource || '-' },
+    { label: 'Gimbal Encoder RPY source', value: latest.encoderRpySource || '-' },
     { label: '3D rendering', value: 'quaternion' },
     { label: 'Frame convention', value: 'current Cubli display mapping' },
   ], [latest]);
@@ -1214,7 +1326,7 @@ function MonitoringSection({ status, isActive = true }) {
           )}
         </Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Encoder Reference" rows={encoderRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title="Gimbal Rotary Encoder" rows={encoderRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Direction / Frame" rows={frameRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
@@ -1274,7 +1386,7 @@ function MonitoringSection({ status, isActive = true }) {
             </Col>
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
-                title="Encoder Reference Angle"
+                title="Gimbal Encoder Reference Angle"
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
@@ -1286,13 +1398,13 @@ function MonitoringSection({ status, isActive = true }) {
             </Col>
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
-                title={`Encoder RPY [${latest.encoderEulerSequence || 'ZYX'}]`}
+                title={`Gimbal Encoder RPY [${latest.encoderEulerSequence || 'ZYX'}]`}
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'encoderRoll', name: 'Encoder Roll', stroke: '#63e6be' },
-                  { key: 'encoderPitch', name: 'Encoder Pitch', stroke: '#ffd43b' },
-                  { key: 'encoderYaw', name: 'Encoder Yaw', stroke: '#ff8787' },
+                  { key: 'encoderRoll', name: 'Gimbal Encoder Roll', stroke: '#63e6be' },
+                  { key: 'encoderPitch', name: 'Gimbal Encoder Pitch', stroke: '#ffd43b' },
+                  { key: 'encoderYaw', name: 'Gimbal Encoder Yaw', stroke: '#ff8787' },
                 ]}
               />
             </Col>
@@ -1340,37 +1452,81 @@ function MonitoringSection({ status, isActive = true }) {
 }
 
 function DataLoggingSection({ latestPacket }) {
+  const [csvLogging, setCsvLogging] = useState(false);
+  const [csvStartedAt, setCsvStartedAt] = useState(null);
+  const [csvSampleCount, setCsvSampleCount] = useState(0);
+  const [csvElapsedMs, setCsvElapsedMs] = useState(0);
   const logRef = useRef([]);
   const lastLoggedPacketTimeRef = useRef(0);
 
   useEffect(() => {
+    if (!csvLogging) return;
     const packetTime = latestPacket?.publishedAt || latestPacket?.updatedAt;
     if (!packetTime) return;
     if (packetTime === lastLoggedPacketTimeRef.current) return;
     logRef.current.push({ ...latestPacket });
     lastLoggedPacketTimeRef.current = packetTime;
-    if (logRef.current.length > 2000) logRef.current.splice(0, logRef.current.length - 2000);
-  }, [latestPacket]);
+    setCsvSampleCount(logRef.current.length);
+  }, [csvLogging, latestPacket]);
 
-  const handleDownloadCsv = () => {
+  useEffect(() => {
+    if (!csvLogging || !csvStartedAt) return undefined;
+    const timer = window.setInterval(() => {
+      setCsvElapsedMs(Date.now() - csvStartedAt);
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [csvLogging, csvStartedAt]);
+
+  const startCsvLogging = () => {
+    logRef.current = [];
+    lastLoggedPacketTimeRef.current = 0;
+    const startedAt = Date.now();
+    setCsvStartedAt(startedAt);
+    setCsvElapsedMs(0);
+    setCsvSampleCount(0);
+    setCsvLogging(true);
+  };
+
+  const stopAndDownloadCsv = () => {
+    setCsvLogging(false);
     if (logRef.current.length === 0) {
-      alert('No shared live data has been logged yet.');
+      setCsvSampleCount(0);
+      setCsvElapsedMs(0);
+      setCsvStartedAt(null);
+      alert('No shared live data was logged in this CSV session.');
       return;
     }
     const csv = [LOG_COLUMNS.join(','), ...logRef.current.map(packetToCsvRow)].join('\n');
-    downloadTextFile(`Server_Serial_Log_${Date.now()}.csv`, `${csv}\n`);
+    downloadTextFile(`cubli_live_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
+    logRef.current = [];
+    lastLoggedPacketTimeRef.current = 0;
+    setCsvSampleCount(0);
+    setCsvElapsedMs(0);
+    setCsvStartedAt(null);
   };
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
       <div className="d-flex justify-content-between align-items-center mb-2">
         <div>
-          <div className="serial-section-title">CSV Download</div>
-          <div className="server-small-note">Recent shared live packets captured in this browser.</div>
+          <div className="serial-section-title">CSV Logging</div>
+          <div className="server-small-note">Parsed shared live samples captured only while logging is active.</div>
         </div>
-        <Badge bg="secondary">{logRef.current.length}</Badge>
+        <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
       </div>
-      <Button variant="outline-light" className="w-100" onClick={handleDownloadCsv}>Download CSV</Button>
+      <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
+      <Row className="g-2">
+        <Col xs={6}>
+          <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
+            Start CSV Logging
+          </Button>
+        </Col>
+        <Col xs={6}>
+          <Button variant="outline-light" className="w-100" onClick={stopAndDownloadCsv} disabled={!csvLogging && csvSampleCount === 0}>
+            Stop &amp; Download CSV
+          </Button>
+        </Col>
+      </Row>
     </div>
   );
 }

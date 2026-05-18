@@ -35,6 +35,8 @@ const MAX_CHART_POINTS = 240;
 const MAX_RAW_LINES = 60;
 const MAX_BRIDGE_COMMANDS = 80;
 const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY']);
+const ENCODER_SYNC_THRESHOLD_MS = 1000;
+const WHEEL_RPM_COMMAND_LIMIT = 800;
 
 const SOURCE_LABELS = {
   'server-serial': 'Server Remote Serial',
@@ -168,14 +170,23 @@ function normalizeEulerSequence(sequence, fallback = 'ZYX') {
   return EULER_SEQUENCES.includes(text) ? text : fallback;
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, hasValidQuaternion, updatedAt, now, freshMs }) {
+function encoderTimerDelta(timerX, timerY, timerZ) {
+  const timers = [timerX, timerY, timerZ].map((value) => strictFiniteNumber(value, null));
+  if (!timers.every((value) => value !== null)) return null;
+  return Math.max(...timers) - Math.min(...timers);
+}
+
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, updatedAt, now, freshMs }) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > freshMs) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
-  if (explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
-  if (hasAllAxes && hasValidQuaternion) return 'LIVE';
-  return 'PARTIAL';
+  if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
+  if (!hasAllAxes) return 'PARTIAL';
+
+  const delta = encoderTimerDelta(timerX, timerY, timerZ);
+  if (delta !== null && delta > ENCODER_SYNC_THRESHOLD_MS) return 'MIXED';
+  return 'LIVE';
 }
 
 function normalizeEncoderTelemetry(packet = {}, options = {}) {
@@ -210,12 +221,14 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     explicitStatus: packet.encoderStatus || nested.status,
     hasData: hasEncoderData,
     hasAllAxes,
-    hasValidQuaternion,
+    timerX,
+    timerY,
+    timerZ,
     updatedAt: encoderUpdatedAt,
     now,
     freshMs,
   });
-  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'encoder packet' : '');
+  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
   const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
 
   return {
@@ -1089,6 +1102,10 @@ function formatGain(value) {
   return assertRange(value, 'Attitude gain', 0, 10).toFixed(3);
 }
 
+function formatWheelRpm(value, label = 'Wheel RPM') {
+  return Math.round(assertRange(value, label, -WHEEL_RPM_COMMAND_LIMIT, WHEEL_RPM_COMMAND_LIMIT));
+}
+
 function buildSerialCommandFromKey(commandKey, params = {}) {
   const key = String(commandKey || '').trim();
   switch (key) {
@@ -1097,12 +1114,31 @@ function buildSerialCommandFromKey(commandKey, params = {}) {
     // lines can be swapped in later without changing the web/server contract.
     case 'cubliInitialize': return makeCommandDescriptor(key, 'Cubli Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
     case 'encoderInitialize':
-    case 'encoderTare': return makeCommandDescriptor(key, 'Encoder Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
+    case 'encoderTare': return makeCommandDescriptor(key, 'Gimbal Encoder Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
     case 'tare': return makeCommandDescriptor(key, 'Set Zero / Tare', 'TARE');
     case 'stop': return makeCommandDescriptor(key, 'Stop / Motor Stop', 'STOP');
     case 'emergencyStop': return makeCommandDescriptor(key, 'Emergency Stop', 'STOP');
     case 'status': return makeCommandDescriptor(key, 'Status', 'STATUS?');
     case 'macInfo': return makeCommandDescriptor(key, 'MAC Info', 'MAC?');
+    case 'wheelRpmX': {
+      const rpm = formatWheelRpm(params.rpm ?? params.value ?? params.x ?? params.target1, 'Wheel X RPM');
+      return makeCommandDescriptor(key, 'Wheel RPM X', `RPM,1,${rpm}`, { axis: 1, rpm });
+    }
+    case 'wheelRpmY': {
+      const rpm = formatWheelRpm(params.rpm ?? params.value ?? params.y ?? params.target1, 'Wheel Y RPM');
+      return makeCommandDescriptor(key, 'Wheel RPM Y', `RPM,2,${rpm}`, { axis: 2, rpm });
+    }
+    case 'wheelRpmZ': {
+      const rpm = formatWheelRpm(params.rpm ?? params.value ?? params.z ?? params.target1, 'Wheel Z RPM');
+      return makeCommandDescriptor(key, 'Wheel RPM Z', `RPM,3,${rpm}`, { axis: 3, rpm });
+    }
+    case 'wheelRpmAll': {
+      const x = formatWheelRpm(params.x ?? params.rpmX ?? params.r1 ?? params.target1 ?? params.rpm ?? 0, 'Wheel X RPM');
+      const y = formatWheelRpm(params.y ?? params.rpmY ?? params.r2 ?? params.target2 ?? params.rpm ?? 0, 'Wheel Y RPM');
+      const z = formatWheelRpm(params.z ?? params.rpmZ ?? params.r3 ?? params.target3 ?? params.rpm ?? 0, 'Wheel Z RPM');
+      return makeCommandDescriptor(key, 'Wheel RPM All', `RPMALL,${x},${y},${z}`, { x, y, z });
+    }
+    case 'wheelRpmStop': return makeCommandDescriptor(key, 'Stop RPM Test', 'RPMSTOP');
     case 'targetAttitude': {
       const roll = Number(params.roll ?? params.target1 ?? 0) || 0;
       const pitch = Number(params.pitch ?? params.target2 ?? 0) || 0;

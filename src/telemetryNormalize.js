@@ -8,6 +8,7 @@ const SOURCE_LABELS = {
 export const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY']);
 const DEFAULT_EULER_SEQUENCE = 'ZYX';
 const DEFAULT_ENCODER_FRESH_MS = 1000;
+const DEFAULT_ENCODER_SYNC_MS = 1000;
 
 function finiteNumber(value, fallback = null) {
   const number = Number(value);
@@ -307,14 +308,23 @@ function firstTelemetryNumber(values, fallback = null) {
   return fallback;
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, hasValidQuaternion, updatedAt, now, freshMs }) {
+function encoderTimerDelta(timerX, timerY, timerZ) {
+  const timers = [timerX, timerY, timerZ].map((value) => telemetryNumber(value));
+  if (!timers.every((value) => value !== null)) return null;
+  return Math.max(...timers) - Math.min(...timers);
+}
+
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, updatedAt, now, freshMs, syncMs }) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > freshMs) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
-  if (['HOLD_LAST', 'MIXED'].includes(explicit)) return explicit;
-  if (hasAllAxes && hasValidQuaternion) return 'LIVE';
-  return 'PARTIAL';
+  if (['STALE', 'HOLD_LAST', 'MIXED'].includes(explicit)) return explicit;
+  if (!hasAllAxes) return 'PARTIAL';
+
+  const delta = encoderTimerDelta(timerX, timerY, timerZ);
+  if (delta !== null && delta > syncMs) return 'MIXED';
+  return 'LIVE';
 }
 
 function normalizeEncoderTelemetry(packet = {}, options = {}) {
@@ -352,12 +362,15 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     explicitStatus: packet.encoderStatus || nested.status,
     hasData: hasEncoderData,
     hasAllAxes,
-    hasValidQuaternion,
+    timerX,
+    timerY,
+    timerZ,
     updatedAt: encoderUpdatedAt,
     now,
     freshMs,
+    syncMs: finiteNumber(options.encoderSyncMs, DEFAULT_ENCODER_SYNC_MS),
   });
-  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'encoder packet' : '');
+  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
   const encoderRpySource = encoderEuler
     ? `encoder quaternion ${encoderEulerSequence}`
     : '';
