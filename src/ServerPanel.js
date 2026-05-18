@@ -349,8 +349,8 @@ function packetToCsvRow(packet) {
 function ValueRow({ label, value }) {
   return (
     <div className="serial-value-row d-flex justify-content-between gap-2">
-      <span>{label}</span>
-      <strong>{value}</strong>
+      <span style={{ minWidth: 0 }}>{label}</span>
+      <strong style={{ minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word', textAlign: 'right' }}>{value}</strong>
     </div>
   );
 }
@@ -1375,11 +1375,43 @@ function DataLoggingSection({ latestPacket }) {
   );
 }
 
+function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
+  const safeServerSync = serverSync || {};
+  const bridgeEnabled = Boolean(safeServerSync.bridgeEnabled);
+  if (!isAdmin) return null;
+
+  return (
+    <div className="serial-control-card rounded p-3 mb-3">
+      <div className="d-flex justify-content-between align-items-start gap-3">
+        <div style={{ minWidth: 0 }}>
+          <div className="serial-section-title">Server Sharing</div>
+          <div className="server-small-note">
+            Share Admin Web Serial data with Viewer and Controller clients.
+          </div>
+          <div className="server-small-note">
+            Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
+          </div>
+        </div>
+        <Form.Check
+          type="switch"
+          id="server-sharing-enabled"
+          label={bridgeEnabled ? 'Sharing ON' : 'Enable Server Sharing'}
+          checked={bridgeEnabled}
+          onChange={(event) => safeServerSync.setBridgeEnabled?.(event.target.checked)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialConnected, webSerialLatestPacketUpdatedAt }) {
   const safeServerSync = serverSync || {};
   const safeStatus = status || {};
+  const [isOpen, setIsOpen] = useState(false);
   const latestSharedPacketAgeMs = safeServerSync.latestSharedPacketAgeMs ?? safeStatus.latestSharedPacketAgeMs;
   const bridgeEnabled = Boolean(safeServerSync.bridgeEnabled);
+  if (!isAdmin) return null;
+
   const rows = [
     { label: 'Current serverUrl', value: safeServerSync.serverUrl || '-' },
     { label: 'Publish endpoint full URL', value: safeServerSync.publishEndpointUrl || '-' },
@@ -1396,35 +1428,43 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
-      <div className="d-flex justify-content-between align-items-start gap-3 mb-2">
-        <div>
-          <div className="serial-section-title">Web Serial Bridge Publish Debug</div>
+      <div className="d-flex justify-content-between align-items-center gap-3">
+        <div style={{ minWidth: 0 }}>
+          <div className="serial-section-title">Bridge Publish Debug</div>
           <div className="server-small-note">
-            Admin Web Serial data must publish to the Node server endpoint, not the React dev server.
+            Admin Web Serial publish diagnostics are hidden during normal demos.
           </div>
         </div>
-        {isAdmin ? (
-          <Form.Check
-            type="switch"
-            id="server-panel-web-serial-bridge-enabled"
-            label={bridgeEnabled ? 'Disable Server Sharing' : 'Enable Server Sharing'}
-            checked={bridgeEnabled}
-            onChange={(event) => safeServerSync.setBridgeEnabled?.(event.target.checked)}
-          />
-        ) : null}
+        <Button
+          type="button"
+          variant="outline-secondary"
+          size="sm"
+          onClick={() => setIsOpen((prev) => !prev)}
+          aria-expanded={isOpen}
+          aria-controls="bridge-publish-debug-details"
+        >
+          {isOpen ? 'Hide' : 'Show'}
+        </Button>
       </div>
 
-      <ValueGrid title="Publish Status" rows={rows} />
+      {isOpen ? (
+        <div id="bridge-publish-debug-details" className="mt-3">
+          <div className="server-small-note mb-2">
+            Admin Web Serial data must publish to the Node server endpoint, not the React dev server.
+          </div>
+          <ValueGrid title="Publish Status" rows={rows} />
 
-      {safeServerSync.lastPublishError ? (
-        <Alert variant={safeServerSync.lastPublishHttpStatus === 404 ? 'danger' : 'warning'} className="py-2 mt-3 mb-0 text-break">
-          {safeServerSync.lastPublishError}
-        </Alert>
-      ) : null}
-      {safeServerSync.publishBackoffUntil && Date.now() < safeServerSync.publishBackoffUntil ? (
-        <Alert variant="warning" className="py-2 mt-3 mb-0">
-          Publish is in temporary backoff after repeated 404 responses. Local Web Serial and 3D rendering continue.
-        </Alert>
+          {safeServerSync.lastPublishError ? (
+            <Alert variant={safeServerSync.lastPublishHttpStatus === 404 ? 'danger' : 'warning'} className="py-2 mt-3 mb-0 text-break">
+              {safeServerSync.lastPublishError}
+            </Alert>
+          ) : null}
+          {safeServerSync.publishBackoffUntil && Date.now() < safeServerSync.publishBackoffUntil ? (
+            <Alert variant="warning" className="py-2 mt-3 mb-0">
+              Publish is in temporary backoff after repeated 404 responses. Local Web Serial and 3D rendering continue.
+            </Alert>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -1458,6 +1498,11 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
       <ServerConnectionSection serverSync={safeServerSync} />
       <RoleNotice role={isController ? 'controller' : role} />
       <RpyConventionSection serverSync={safeServerSync} />
+      <ServerSharingSection
+        serverSync={safeServerSync}
+        isAdmin={isAdmin}
+        webSerialConnected={webSerialConnected}
+      />
       {isAdmin ? (
         <WebSerialBridgeDebugSection
           serverSync={safeServerSync}

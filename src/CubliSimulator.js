@@ -159,18 +159,6 @@ function formatElapsedTime(ms) {
   return `${mm}:${ss}.${tenths}`;
 }
 
-function formatBridgeTime(msOrIso) {
-  if (!msOrIso) return '-';
-  const date = typeof msOrIso === 'number' ? new Date(msOrIso) : new Date(msOrIso);
-  if (Number.isNaN(date.getTime())) return '-';
-  return `${date.toLocaleTimeString('ko-KR', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })}.${String(date.getMilliseconds()).padStart(3, '0')}`;
-}
-
 function normalizeDeg180(value) {
   let v = Number(value) || 0;
   while (v > 180) v -= 360;
@@ -1105,80 +1093,6 @@ function PhoneSensorPanel({
   );
 }
 
-function WebSerialBridgePanel({
-  enabled,
-  onEnabledChange,
-  serialConnected,
-  lastPublishAt,
-  publishRateHz,
-  lastError,
-  publishCount,
-  publishFailedCount,
-  lastPublishHttpStatus,
-  publishEndpointUrl,
-  publishBackoffUntil,
-  latestSharedPacketAgeMs,
-  lastCommandStatus,
-  sharedSourceLabel,
-}) {
-  const bridgeStatusText = enabled ? 'ON' : 'OFF';
-
-  return (
-    <div className="serial-control-card rounded p-3 mb-3">
-      <div className="d-flex justify-content-between align-items-start gap-3 mb-2">
-        <div>
-          <div className="serial-section-title">Web Serial Bridge</div>
-          <div className="server-small-note">
-            Web Serial Bridge shares the Admin browser's ESP32 data through the server so viewers can see the same Cubli state.
-          </div>
-          <div className="server-small-note text-info">Patch v11 active: 100 Hz fast publish + SSE stream. Viewer polling is skipped while the stream is connected.</div>
-        </div>
-        <Form.Check
-          type="switch"
-          id="admin-web-serial-bridge-enabled"
-          label={enabled ? 'Disable Server Sharing' : 'Enable Server Sharing'}
-          checked={Boolean(enabled)}
-          onChange={(event) => onEnabledChange(event.target.checked)}
-        />
-      </div>
-
-      <Row className="g-2 mt-2">
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Bridge status</div><strong>{bridgeStatusText}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Web Serial connected</div><strong>{serialConnected ? 'yes' : 'no'}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Last publish time</div><strong>{formatBridgeTime(lastPublishAt)}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Publish rate</div><strong>{publishRateHz} Hz max ({Math.round(1000 / Math.max(publishRateHz, 1))} ms, fast stream)</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Publish count</div><strong>{publishCount ?? 0}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Failed publish count</div><strong>{publishFailedCount ?? 0}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">Last publish HTTP status</div><strong>{lastPublishHttpStatus ?? '-'}</strong></div></Col>
-        <Col xs={6}><div className="serial-value-card rounded p-2"><div className="server-small-note">latestSharedPacket age</div><strong>{latestSharedPacketAgeMs != null ? `${Math.round(latestSharedPacketAgeMs)} ms` : '-'}</strong></div></Col>
-        <Col xs={12}><div className="serial-value-card rounded p-2"><div className="server-small-note">Shared source</div><strong>{sharedSourceLabel || 'Admin Web Serial Bridge'}</strong></div></Col>
-        <Col xs={12}><div className="serial-value-card rounded p-2"><div className="server-small-note">Publish endpoint</div><strong className="text-break">{publishEndpointUrl || '-'}</strong></div></Col>
-      </Row>
-
-      {!serialConnected ? (
-        <Alert variant="secondary" className="py-2 mt-3 mb-0">
-          Connect Web Serial in the Admin browser before sharing live Cubli data.
-        </Alert>
-      ) : null}
-      {lastCommandStatus ? (
-        <Alert variant="info" className="py-2 mt-3 mb-0">
-          {lastCommandStatus}
-        </Alert>
-      ) : null}
-      {publishBackoffUntil && Date.now() < publishBackoffUntil ? (
-        <Alert variant="warning" className="py-2 mt-3 mb-0">
-          Publish is paused until {formatBridgeTime(publishBackoffUntil)} after repeated 404 responses.
-        </Alert>
-      ) : null}
-      {lastError ? (
-        <Alert variant="warning" className="py-2 mt-3 mb-0 text-break">
-          Last publish error: {lastError}
-        </Alert>
-      ) : null}
-    </div>
-  );
-}
-
 function NameEntryModal({
   show,
   required,
@@ -1262,9 +1176,6 @@ export default function CubliSimulator() {
   const [isSensorActive, setIsSensorActive] = useState(false);
   const [useSerialImu, setUseSerialImu] = useState(false);
   const [useBleImu, setUseBleImu] = useState(false);
-  const [bridgeLastPublishAt, setBridgeLastPublishAt] = useState(null);
-  const [bridgeLastPublishError, setBridgeLastPublishError] = useState('');
-  const [bridgeLastCommandStatus, setBridgeLastCommandStatus] = useState('');
   const phoneZeroRef = useRef(null);
   const bridgePublishRef = useRef({ lastAt: 0, busy: false, lastPacketUpdatedAt: 0 });
   const bridgeCommandBusyRef = useRef(false);
@@ -1549,20 +1460,14 @@ export default function CubliSimulator() {
       publishLivePacket(packet, 'admin-web-serial', { force: true, minIntervalMs: 0, fast: true })
         .then((ok) => {
           if (ok) {
-            setBridgeLastPublishAt(Date.now());
-            setBridgeLastPublishError('');
             enqueueSample(packet, 'admin-web-serial', {
               validCount: serial.validCount,
               invalidCount: serial.invalidCount,
               warningCount: serial.warningCount,
             });
-          } else {
-            setBridgeLastPublishError(serverSync?.lastError || 'Live publish failed or packet was skipped.');
           }
         })
-        .catch((error) => {
-          setBridgeLastPublishError(error?.message || 'Live publish failed.');
-        })
+        .catch(() => {})
         .finally(() => {
           bridgePublishRef.current.inFlight = Math.max(0, bridgePublishRef.current.inFlight - 1);
         });
@@ -1582,7 +1487,6 @@ export default function CubliSimulator() {
     serial.warningCount,
     enqueueSample,
     publishLivePacket,
-    serverSync?.lastError,
   ]);
 
   useEffect(() => {
@@ -1600,20 +1504,16 @@ export default function CubliSimulator() {
           const serialLine = String(command.serialLine || '').trim();
           if (!serialLine) {
             await ackBridgeCommand(command.commandId, false, '', 'Bridge command is missing a serial line.');
-            setBridgeLastCommandStatus('Bridge command failed: missing serial line.');
             continue;
           }
 
           try {
-            setBridgeLastCommandStatus(`Relaying ${command.label || command.commandKey} through Web Serial...`);
             const sent = await serial.sendLine(serialLine);
             if (!sent) throw new Error(serial.error || 'Web Serial send failed.');
             await ackBridgeCommand(command.commandId, true, serialLine, '');
-            setBridgeLastCommandStatus(`Relayed ${command.label || command.commandKey} through Web Serial.`);
           } catch (error) {
             const message = error?.message || 'Web Serial send failed.';
             await ackBridgeCommand(command.commandId, false, '', message);
-            setBridgeLastCommandStatus(`Bridge command failed: ${message}`);
           }
         }
       } finally {
@@ -2389,25 +2289,6 @@ export default function CubliSimulator() {
                   </Button>
                 </div>
               )}
-
-              {isAdmin ? (
-                <WebSerialBridgePanel
-                  enabled={webSerialBridgeEnabled}
-                  onEnabledChange={setWebSerialBridgeEnabled}
-                  serialConnected={serial.isConnected}
-                  lastPublishAt={serverSync?.lastPublishAt || bridgeLastPublishAt}
-                  publishRateHz={Math.round(1000 / WEB_SERIAL_BRIDGE_PUBLISH_INTERVAL_MS)}
-                  lastError={serverSync?.lastPublishError || bridgeLastPublishError}
-                  publishCount={serverSync?.publishCount}
-                  publishFailedCount={serverSync?.publishFailedCount}
-                  lastPublishHttpStatus={serverSync?.lastPublishHttpStatus}
-                  publishEndpointUrl={serverSync?.publishEndpointUrl}
-                  publishBackoffUntil={serverSync?.publishBackoffUntil}
-                  latestSharedPacketAgeMs={serverSync?.latestSharedPacketAgeMs}
-                  lastCommandStatus={bridgeLastCommandStatus}
-                  sharedSourceLabel="Admin Web Serial Bridge"
-                />
-              ) : null}
 
               <Tabs
                 defaultActiveKey="serial"
