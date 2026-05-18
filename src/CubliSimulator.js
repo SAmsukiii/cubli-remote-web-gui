@@ -17,8 +17,9 @@ import {
   FrameAxisDebugHelpers,
   FrameDebugPanel,
   WheelLayoutDebugHelpers,
-  mapFrameDebugVector,
-  resolveFrameArrowPreset,
+  getStoredFrameDebugConfig,
+  mapWheelMirrorVector,
+  normalizeFrameDebugConfig,
 } from './CubliFrameDebug';
 
 // LOCAL 3D DEBUG ONLY: Cubli wheel/frame mapping presets are for local visual inspection only.
@@ -58,15 +59,8 @@ const IDENTITY_LIVE_PACKET = Object.freeze({
 // It must not change telemetry quaternion interpretation.
 // 3D attitude still uses q0,q1,q2,q3 from IMU/TEL.
 const CUBLI_VISUAL_TRANSFORM = Object.freeze({
-  mirrorWheelX: true,
-  mirrorWheelZ: true,
   flipVisualVertical: true,
   alignAxesToReferenceFrame: true,
-});
-const WHEEL_VISUAL_FIX = Object.freeze({
-  xWheel: Object.freeze({ mirrorX: CUBLI_VISUAL_TRANSFORM.mirrorWheelX }),
-  yWheel: Object.freeze({}),
-  zWheel: Object.freeze({ mirrorZ: CUBLI_VISUAL_TRANSFORM.mirrorWheelZ }),
 });
 const BODY_VISUAL_FIX = Object.freeze({
   flipVertical: CUBLI_VISUAL_TRANSFORM.flipVisualVertical,
@@ -334,32 +328,24 @@ function CubliModel({
   const centeredWheelXScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
   const centeredWheelYScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
   const centeredWheelZScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
-  const debugConfig = frameDebug || DEFAULT_FRAME_DEBUG_CONFIG;
-  const wheelPreset = debugConfig.wheelPreset || DEFAULT_FRAME_DEBUG_CONFIG.wheelPreset;
-  const arrowPreset = resolveFrameArrowPreset(
-    debugConfig.arrowPreset || DEFAULT_FRAME_DEBUG_CONFIG.arrowPreset,
-    wheelPreset
-  );
+  const debugConfig = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
   const wheelPositionScale = Number.isFinite(Number(debugConfig.wheelPositionScale))
     ? Number(debugConfig.wheelPositionScale)
     : DEFAULT_FRAME_DEBUG_CONFIG.wheelPositionScale;
   const showFrameHelpers = Boolean(debugConfig.showHelpers);
 
   const wheelPositions = useMemo(() => {
-    const xSign = WHEEL_VISUAL_FIX.xWheel.mirrorX ? -1 : 1;
-    const zSign = WHEEL_VISUAL_FIX.zWheel.mirrorZ ? 1 : -1;
-
     return {
-      x: mapFrameDebugVector([xSign * WHEEL_DISTANCE, 0, 0], wheelPreset, wheelPositionScale),
-      y: mapFrameDebugVector([0, WHEEL_DISTANCE, 0], wheelPreset, wheelPositionScale),
-      z: mapFrameDebugVector([0, 0, zSign * WHEEL_DISTANCE], wheelPreset, wheelPositionScale),
+      x: mapWheelMirrorVector([WHEEL_DISTANCE, 0, 0], debugConfig, wheelPositionScale),
+      y: mapWheelMirrorVector([0, WHEEL_DISTANCE, 0], debugConfig, wheelPositionScale),
+      z: mapWheelMirrorVector([0, 0, -WHEEL_DISTANCE], debugConfig, wheelPositionScale),
     };
-  }, [wheelPreset, wheelPositionScale]);
+  }, [debugConfig, wheelPositionScale]);
 
   const wheelVisualRotations = useMemo(() => ({
-    x: [0, 0, WHEEL_VISUAL_FIX.xWheel.mirrorX ? Math.PI / 2 : -Math.PI / 2],
+    x: [0, 0, Math.PI / 2],
     y: [0, 0, 0],
-    z: [WHEEL_VISUAL_FIX.zWheel.mirrorZ ? -Math.PI / 2 : Math.PI / 2, 0, 0],
+    z: [-Math.PI / 2, 0, 0],
   }), []);
 
   const visualRootScale = BODY_VISUAL_FIX.flipVertical ? [1, -1, 1] : [1, 1, 1];
@@ -374,11 +360,11 @@ function CubliModel({
         };
 
     return {
-      x: mapFrameDebugVector(baseDirections.x, arrowPreset, 1),
-      y: mapFrameDebugVector(baseDirections.y, arrowPreset, 1),
-      z: mapFrameDebugVector(baseDirections.z, arrowPreset, 1),
+      x: baseDirections.x,
+      y: baseDirections.y,
+      z: baseDirections.z,
     };
-  }, [arrowPreset]);
+  }, []);
 
   useFrame((state, delta) => {
     // wheel mesh의 기본 회전축을 local Y로 가정
@@ -1300,7 +1286,7 @@ export default function CubliSimulator() {
     return Math.round(Math.min(680, Math.max(440, width * 0.36)));
   });
   const [axisLength, setAxisLength] = useState(34);
-  const [frameDebug, setFrameDebug] = useState(DEFAULT_FRAME_DEBUG_CONFIG);
+  const [frameDebug, setFrameDebug] = useState(() => getStoredFrameDebugConfig());
 
   const panelDragActiveRef = useRef(false);
   const [isPanelDragging, setIsPanelDragging] = useState(false);
@@ -1321,7 +1307,7 @@ export default function CubliSimulator() {
   const [showNameModal, setShowNameModal] = useState(!serverSync?.hasDisplayName);
   const serverSerial = serverSync?.serverSerial ?? EMPTY_OBJECT;
   const isAdmin = serverSync?.role === 'admin';
-  const showFrameDebug = isAdmin || process.env.NODE_ENV === 'development';
+  const showFrameDebug = true;
   const webSerialBridgeEnabled = Boolean(serverSync?.bridgeEnabled);
   const setWebSerialBridgeEnabled = serverSync?.setBridgeEnabled;
 
