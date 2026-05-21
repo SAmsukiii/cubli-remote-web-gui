@@ -39,6 +39,20 @@ const ENCODER_SYNC_THRESHOLD_MS = 1000;
 const WHEEL_RPM_COMMAND_LIMIT = 800;
 const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
 const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
+const VISUAL_MIRROR_PRESETS = Object.freeze(['current', 'mirrorX', 'mirrorY', 'mirrorZ', 'mirrorXY', 'mirrorXZ', 'mirrorYZ', 'mirrorXYZ']);
+const DEFAULT_VISUAL_SETTINGS = Object.freeze({
+  wheelMirrorX: false,
+  wheelMirrorY: false,
+  wheelMirrorZ: false,
+  referenceFrameMirror: 'current',
+  bodyFrameMirror: 'current',
+  flipCubliVertical: true,
+  showFrameHelpers: false,
+  bodyAxisLength: 34,
+  wheelPositionScale: 1,
+  updatedAt: null,
+  updatedBy: '',
+});
 
 const SOURCE_LABELS = {
   'server-serial': 'Server Remote Serial',
@@ -79,6 +93,7 @@ const sharedState = {
   rawLines: [],
   previousRatePacket: null,
   omegaEstimate: null,
+  visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
 };
 
 const serialState = {
@@ -179,6 +194,77 @@ function normalizeSign(value, fallback = 1) {
   return fallback === -1 ? -1 : 1;
 }
 
+function boolValue(value, fallback = false) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeVisualMirrorPreset(value, fallback = 'current') {
+  const text = String(value || '').trim();
+  return VISUAL_MIRROR_PRESETS.includes(text) ? text : fallback;
+}
+
+function visualMirrorFlagsToPreset(source = {}) {
+  const x = boolValue(source.wheelMirrorX, boolValue(source.mirrorX, false));
+  const y = boolValue(source.wheelMirrorY, boolValue(source.mirrorY, false));
+  const z = boolValue(source.wheelMirrorZ, boolValue(source.mirrorZ, false));
+  if (x && y && z) return 'mirrorXYZ';
+  if (x && y) return 'mirrorXY';
+  if (x && z) return 'mirrorXZ';
+  if (y && z) return 'mirrorYZ';
+  if (x) return 'mirrorX';
+  if (y) return 'mirrorY';
+  if (z) return 'mirrorZ';
+  return 'current';
+}
+
+function visualMirrorFlagsFromPreset(preset) {
+  const key = normalizeVisualMirrorPreset(preset);
+  return {
+    wheelMirrorX: key.includes('X'),
+    wheelMirrorY: key.includes('Y'),
+    wheelMirrorZ: key.includes('Z'),
+  };
+}
+
+function normalizeVisualSettings(value = {}, meta = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const hasWheelFlags = ['wheelMirrorX', 'wheelMirrorY', 'wheelMirrorZ']
+    .some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const wheelMirrorPreset = hasWheelFlags
+    ? visualMirrorFlagsToPreset(source)
+    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, visualMirrorFlagsToPreset(source));
+  const wheelFlags = visualMirrorFlagsFromPreset(wheelMirrorPreset);
+  const bodyAxisLength = strictFiniteNumber(source.bodyAxisLength, DEFAULT_VISUAL_SETTINGS.bodyAxisLength);
+  const wheelPositionScale = strictFiniteNumber(source.wheelPositionScale, DEFAULT_VISUAL_SETTINGS.wheelPositionScale);
+  const updatedAt = strictFiniteNumber(meta.updatedAt, strictFiniteNumber(source.updatedAt, DEFAULT_VISUAL_SETTINGS.updatedAt));
+  const updatedBy = sanitizeClientName(meta.updatedBy || source.updatedBy || DEFAULT_VISUAL_SETTINGS.updatedBy);
+
+  return {
+    ...wheelFlags,
+    referenceFrameMirror: normalizeVisualMirrorPreset(
+      source.referenceFrameMirror ?? source.referenceFrameArrowMirrorPreset,
+      DEFAULT_VISUAL_SETTINGS.referenceFrameMirror
+    ),
+    bodyFrameMirror: normalizeVisualMirrorPreset(
+      source.bodyFrameMirror ?? source.bodyFrameArrowMirrorPreset,
+      DEFAULT_VISUAL_SETTINGS.bodyFrameMirror
+    ),
+    flipCubliVertical: boolValue(source.flipCubliVertical, DEFAULT_VISUAL_SETTINGS.flipCubliVertical),
+    showFrameHelpers: boolValue(
+      source.showFrameHelpers,
+      boolValue(source.showHelpers, DEFAULT_VISUAL_SETTINGS.showFrameHelpers)
+    ),
+    bodyAxisLength: clamp(bodyAxisLength, 10, 90),
+    wheelPositionScale: clamp(wheelPositionScale, 0.65, 1.35),
+    updatedAt,
+    updatedBy,
+  };
+}
+
+function publicVisualSettings() {
+  return normalizeVisualSettings(sharedState.visualSettings || DEFAULT_VISUAL_SETTINGS);
+}
+
 function normalizeRpySigns(source = {}, fallback = DEFAULT_RPY_DISPLAY_SIGNS) {
   return {
     roll: normalizeSign(source.roll ?? source.rollSign, fallback.roll),
@@ -267,7 +353,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     freshMs,
   });
   const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
-  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}, display signs ${signsLabel(encoderDisplaySigns)}` : '';
+  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
 
   return {
     enc_x_deg: encX,
@@ -663,7 +749,7 @@ function normalizePublishedPacket(packet, source, identity) {
     imuDisplayRollSign: imuDisplaySigns.roll,
     imuDisplayPitchSign: imuDisplaySigns.pitch,
     imuDisplayYawSign: imuDisplaySigns.yaw,
-    rpySource: `quaternion ${imuEulerSequence}, display signs ${signsLabel(imuDisplaySigns)}`,
+    rpySource: `IMU/TEL quaternion ${imuEulerSequence}`,
     remoteRollDeg: firstFinite([packet.remoteRollDeg, packet.Roll_deg, packet.rollDeg, packet.roll_deg, packet.roll], null),
     remotePitchDeg: firstFinite([packet.remotePitchDeg, packet.Pitch_deg, packet.pitchDeg, packet.pitch_deg, packet.pitch], null),
     remoteYawDeg: firstFinite([packet.remoteYawDeg, packet.Yaw_deg, packet.yawDeg, packet.yaw_deg, packet.yaw], null),
@@ -1134,6 +1220,7 @@ function sanitizeSharedState() {
     liveStatus: !packet ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
     chartData: sharedState.chartData,
     rawLines: sharedState.rawLines,
+    visualSettings: publicVisualSettings(),
   };
 }
 
@@ -1177,6 +1264,7 @@ function sanitizeSerialStatus(clientId = '') {
     ageMs: shared.ageMs,
     latestDesiredAttitude: shared.latestDesiredAttitude,
     lastCommandInfo: shared.lastCommandInfo,
+    visualSettings: shared.visualSettings,
     recentPackets: serialState.recentPackets,
     chartData: shared.chartData.length ? shared.chartData : serialState.chartData,
     rawLines: shared.rawLines.length ? shared.rawLines : serialState.rawLines,
@@ -1410,6 +1498,7 @@ function statePayload(clientId = '') {
     publisherRole: shared.publisherRole,
     publishedAt: shared.publishedAt,
     liveStatus: shared.liveStatus,
+    visualSettings: shared.visualSettings,
     bridge: bridgeStatus(),
     serialStatus: serialState.isConnected ? 'connected' : serialState.isOpening ? 'opening' : 'disconnected',
     serial: sanitizeSerialStatus(clientId),
@@ -1421,12 +1510,13 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     service: 'cubli-server-sync',
-    apiVersion: 'web-serial-bridge-v4',
+    apiVersion: 'web-serial-bridge-v5-visual-settings',
     endpoints: {
       health: true,
       livePublish: true,
       liveLatest: true,
       state: true,
+      visualSettings: true,
       adminLogin: true,
     },
     time: new Date().toISOString(),
@@ -1439,6 +1529,7 @@ app.get('/api/health', (req, res) => {
       error: serialState.lastError || serialportLoadError || '',
       diagnostics: serialDiagnostics(),
     },
+    visualSettings: publicVisualSettings(),
     access: publicAccessState(identity.clientId),
   });
 });
@@ -1447,6 +1538,44 @@ app.get('/api/state', (req, res) => {
   res.set('Cache-Control', 'no-store');
   const identity = readIdentity(req);
   res.json(statePayload(identity.clientId));
+});
+
+app.get('/api/visual-settings', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const identity = readIdentity(req);
+  res.json({
+    ok: true,
+    visualSettings: publicVisualSettings(),
+    access: publicAccessState(identity.clientId),
+  });
+});
+
+app.post('/api/visual-settings', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const identity = requireAdmin(req, res);
+  if (!identity) return;
+  const nextSettings = normalizeVisualSettings(req.body?.visualSettings, {
+    updatedAt: Date.now(),
+    updatedBy: identity.displayName || identity.clientId,
+  });
+  sharedState.visualSettings = nextSettings;
+  appendAccessLog({
+    type: 'VISUAL_SETTINGS_UPDATED',
+    adminClientId: identity.clientId,
+    adminDisplayName: identity.displayName,
+    adminClientName: identity.displayName,
+    visualSettings: nextSettings,
+  });
+  broadcastLiveStream('state', {
+    ok: true,
+    ...sanitizeSharedState(),
+    bridge: bridgeStatus(),
+  });
+  res.json({
+    ok: true,
+    visualSettings: publicVisualSettings(),
+    access: publicAccessState(identity.clientId),
+  });
 });
 
 app.get('/api/live/stream', (req, res) => {
@@ -1492,6 +1621,7 @@ app.get('/api/live/latest', (req, res) => {
     publishedAt: shared.publishedAt,
     liveStatus: shared.liveStatus,
     latestDesiredAttitude: shared.latestDesiredAttitude,
+    visualSettings: shared.visualSettings,
     bridge: bridgeStatus(),
     access: publicAccessState(identity.clientId),
   });

@@ -168,14 +168,6 @@ function formatStatusToken(value) {
   return String(value);
 }
 
-function signText(value) {
-  return Number(value) === -1 ? '-' : '+';
-}
-
-function signsText(rollSign, pitchSign, yawSign) {
-  return `[${signText(rollSign)},${signText(pitchSign)},${signText(yawSign)}]`;
-}
-
 function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
   const value = packet?.[snakeKey] ?? packet?.[camelKey] ?? packet?.encoder?.[nestedKey];
   if (value === null || value === undefined || value === '') return null;
@@ -262,7 +254,6 @@ function buildEncoderRows(packet = {}) {
     { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Yaw Sign', value: signText(encoder.displayYawSign ?? -1) },
     { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
@@ -622,8 +613,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       { label: 'Yaw', value: `${formatNumber(latest.yaw_deg, 2)} deg` },
       { label: 'Raw Yaw', value: latest.rawYawDeg != null ? `${formatNumber(latest.rawYawDeg, 2)} deg` : '-' },
       { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
-      { label: 'Display signs', value: signsText(latest.imuDisplayRollSign ?? 1, latest.imuDisplayPitchSign ?? 1, latest.imuDisplayYawSign ?? -1) },
-      { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
+      { label: 'Source', value: 'IMU/TEL quaternion' },
     ];
   }, [attitudeRows, latest]);
 
@@ -637,7 +627,6 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'wy (rad/s)', value: latest.wy != null ? formatNumber(latest.wy, 4) : '-' },
     { label: 'wz raw (rad/s)', value: latest.wzRaw != null || latest.wz != null ? formatNumber(latest.wzRaw ?? latest.wz, 4) : '-' },
     { label: 'wz display (rad/s)', value: latest.wzDisplay != null ? formatNumber(latest.wzDisplay, 4) : '-' },
-    { label: 'wz display sign', value: signText(latest.bodyRateWzDisplaySign ?? 1) },
     { label: 'source', value: formatSourceLabel(latest.angularRateSource) },
   ], [latest]);
 
@@ -891,12 +880,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
       <Row className="g-2 mb-3">
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}, yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`} rows={displayAttitudeRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={displayAttitudeRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Angular Rate" rows={rateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Telemetry Status" rows={telemetryStatusRows} /></Col>
-        <Col xs={12}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}, yaw sign ${signText(latest.encoderDisplayYawSign ?? -1)}]`} rows={encoderRows} /></Col>
+        <Col xs={12}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}]`} rows={encoderRows} /></Col>
         <Col xs={12}><ValueGrid title="Receiver" rows={statusRows} /></Col>
       </Row>
 

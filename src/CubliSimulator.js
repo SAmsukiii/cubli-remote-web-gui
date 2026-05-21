@@ -26,7 +26,7 @@ import {
   resolveReferenceFrameArrowMirrorPresetKey,
 } from './CubliFrameDebug';
 
-// LOCAL 3D DEBUG ONLY: Cubli wheel/frame mapping presets are for local visual inspection only.
+// 3D visual settings are rendering-only. They never change telemetry q0~q3.
 
 /* =========================
    Camera / Layout settings
@@ -59,15 +59,43 @@ const IDENTITY_LIVE_PACKET = Object.freeze({
   updatedAt: 0,
 });
 
+const TUTORIAL_STEPS = Object.freeze([
+  {
+    title: 'Open Web App',
+    body: 'Open the Render link, then enter a display name so the server can identify your browser.',
+  },
+  {
+    title: 'Admin / Viewer Role',
+    body: 'Viewer can monitor only. Admin login is required for Web Serial, Server Sharing, and control.',
+  },
+  {
+    title: 'Web Serial Connect',
+    body: 'On the Admin PC, connect the ESP32 Remote MCU by USB, then click Connect Receiver.',
+  },
+  {
+    title: 'Enable Server Sharing',
+    body: 'Admin Web Serial data is published to the Node server so Viewer and Controller clients see the same live data.',
+  },
+  {
+    title: '3D Cubli / RPY / Encoder',
+    body: '3D attitude uses quaternion q0~q3. RPY is display-only. The gimbal rotary encoder is reference data.',
+  },
+  {
+    title: 'Commands',
+    body: 'Admin or an authorized Controller can send PID Gain, RPM, Cubli Initialize, and Encoder Initialize commands.',
+  },
+  {
+    title: 'CSV Logging',
+    body: 'Use Start CSV Logging, then Stop & Download CSV to save samples from the moment logging started.',
+  },
+]);
+
 // This transform fixes the displayed Cubli model layout only.
 // It must not change telemetry quaternion interpretation.
 // 3D attitude still uses q0,q1,q2,q3 from IMU/TEL.
 const CUBLI_VISUAL_TRANSFORM = Object.freeze({
   flipVisualVertical: true,
   alignAxesToReferenceFrame: true,
-});
-const BODY_VISUAL_FIX = Object.freeze({
-  flipVertical: CUBLI_VISUAL_TRANSFORM.flipVisualVertical,
 });
 const FRAME_ARROW_VISUAL_FIX = Object.freeze({
   alignToReferenceFrame: CUBLI_VISUAL_TRANSFORM.alignAxesToReferenceFrame,
@@ -320,6 +348,34 @@ function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
   return targetQuat;
 }
 
+function TutorialModal({ show, onHide }) {
+  return (
+    <Modal show={show} onHide={onHide} centered size="lg" contentClassName="tutorial-modal">
+      <Modal.Header closeButton className="border-secondary">
+        <Modal.Title className="h5 fw-bold">Cubli Web GUI Tutorial</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {/* screenshot can be added later */}
+        <div className="tutorial-step-grid">
+          {TUTORIAL_STEPS.map((step, index) => (
+            <div key={step.title} className="tutorial-step-card">
+              <div className="tutorial-step-index">Step {index + 1}</div>
+              <div className="tutorial-step-title">{step.title}</div>
+              <div className="tutorial-step-body">{step.body}</div>
+            </div>
+          ))}
+        </div>
+        <div className="tutorial-note mt-3">
+          Admin visual settings are shared to viewers. RPY sequence changes displayed Euler angles only.
+        </div>
+      </Modal.Body>
+      <Modal.Footer className="border-secondary">
+        <Button variant="outline-light" size="sm" onClick={onHide}>Close</Button>
+      </Modal.Footer>
+    </Modal>
+  );
+}
+
 
 /* =========================
    1. Sub Components
@@ -418,7 +474,7 @@ function CubliModel({
   const wheelPositionScale = Number.isFinite(Number(debugConfig.wheelPositionScale))
     ? Number(debugConfig.wheelPositionScale)
     : DEFAULT_FRAME_DEBUG_CONFIG.wheelPositionScale;
-  const showFrameHelpers = Boolean(debugConfig.showHelpers);
+  const showFrameHelpers = Boolean(debugConfig.showFrameHelpers);
 
   const wheelPositions = useMemo(() => {
     return {
@@ -434,7 +490,7 @@ function CubliModel({
     z: [-Math.PI / 2, 0, 0],
   }), []);
 
-  const visualRootScale = BODY_VISUAL_FIX.flipVertical ? [1, -1, 1] : [1, 1, 1];
+  const visualRootScale = debugConfig.flipCubliVertical ? [1, -1, 1] : [1, 1, 1];
 
   const bodyFrameArrowMirrorPresetKey = resolveBodyFrameArrowMirrorPresetKey(debugConfig);
   const frameAxisDirections = useMemo(
@@ -705,6 +761,7 @@ function CubliCanvas({
   frameDebug,
   setFrameDebug,
   showFrameDebug,
+  onResetView,
   liveStatusText,
 }) {
   const cubliRef = useRef();
@@ -774,7 +831,7 @@ function CubliCanvas({
       <div
         className="position-absolute"
         style={{
-          top: isMobile ? '0.45rem' : '0.65rem',
+          top: isMobile ? '2.55rem' : '2.7rem',
           left: isMobile ? '0.65rem' : '0.9rem',
           zIndex: 1050,
           pointerEvents: 'none',
@@ -783,7 +840,7 @@ function CubliCanvas({
       >
         <h1
           className={isMobile ? 'h4 fw-bold m-0' : 'h2 fw-bold m-0'}
-          style={{ letterSpacing: '-0.05em', color: '#fff' }}
+          style={{ letterSpacing: 0, color: '#fff' }}
         >
           ADCS Cubli Simulator
         </h1>
@@ -831,7 +888,12 @@ function CubliCanvas({
 
       <ReferenceFrameOverlay isMobile={isMobile} frameDebug={frameDebug} />
       {showFrameDebug ? (
-        <FrameDebugPanel value={frameDebug} onChange={setFrameDebug} isMobile={isMobile} />
+        <FrameDebugPanel
+          value={frameDebug}
+          onChange={setFrameDebug}
+          onResetView={onResetView}
+          isMobile={isMobile}
+        />
       ) : null}
 
       <div
@@ -1285,7 +1347,7 @@ export default function CubliSimulator() {
     const width = typeof window !== 'undefined' ? window.innerWidth : 1200;
     return Math.round(Math.min(680, Math.max(440, width * 0.36)));
   });
-  const [axisLength, setAxisLength] = useState(34);
+  const [showTutorial, setShowTutorial] = useState(false);
   const [frameDebug, setFrameDebug] = useState(() => getStoredFrameDebugConfig());
 
   const panelDragActiveRef = useRef(false);
@@ -1314,13 +1376,63 @@ export default function CubliSimulator() {
   const [showNameModal, setShowNameModal] = useState(!serverSync?.hasDisplayName);
   const serverSerial = serverSync?.serverSerial ?? EMPTY_OBJECT;
   const isAdmin = serverSync?.role === 'admin';
-  const showFrameDebug = true;
+  const showFrameDebug = isAdmin;
+  const normalizedFrameDebug = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
+  const axisLength = normalizedFrameDebug.bodyAxisLength;
   const webSerialBridgeEnabled = Boolean(serverSync?.bridgeEnabled);
   const setWebSerialBridgeEnabled = serverSync?.setBridgeEnabled;
 
   const suggestedDisplayName = useMemo(() => (
     serverSync?.getSuggestedDisplayName?.(isAdmin ? 'Admin' : 'Viewer') || ''
   ), [isAdmin, serverSync]);
+
+  const serverVisualSettingsKey = useMemo(() => (
+    serverSync?.visualSettings
+      ? JSON.stringify(normalizeFrameDebugConfig(serverSync.visualSettings))
+      : ''
+  ), [serverSync?.visualSettings]);
+
+  useEffect(() => {
+    if (!serverSync?.visualSettings || !serverVisualSettingsKey) return;
+    const nextConfig = normalizeFrameDebugConfig(serverSync.visualSettings);
+    setFrameDebug((prev) => {
+      const prevKey = JSON.stringify(normalizeFrameDebugConfig(prev));
+      const nextKey = JSON.stringify(nextConfig);
+      return prevKey === nextKey ? prev : nextConfig;
+    });
+  }, [serverSync?.visualSettings, serverVisualSettingsKey]);
+
+  const handleFrameDebugChange = React.useCallback((nextValue) => {
+    const nextConfig = normalizeFrameDebugConfig(nextValue);
+    setFrameDebug(nextConfig);
+    if (isAdmin) {
+      serverSync?.updateVisualSettings?.(nextConfig);
+    }
+  }, [isAdmin, serverSync]);
+
+  const setAxisLength = React.useCallback((value) => {
+    if (!isAdmin) return;
+    const next = Number(value);
+    if (!Number.isFinite(next)) return;
+    handleFrameDebugChange({
+      ...frameDebug,
+      bodyAxisLength: next,
+    });
+  }, [frameDebug, handleFrameDebugChange, isAdmin]);
+
+  const handleResetViewCamera = React.useCallback(() => {
+    setViewResetKey((prev) => prev + 1);
+  }, []);
+
+  const handleResetWebView = React.useCallback(() => {
+    const defaults = normalizeFrameDebugConfig({ ...DEFAULT_FRAME_DEBUG_CONFIG });
+    handleFrameDebugChange(defaults);
+    handleResetViewCamera();
+    recordEvent(
+      { source: 'ui', eventType: 'RESET_WEB_VIEW', label: 'Reset Web View', detail: { visualSettings: defaults } },
+      'ui'
+    );
+  }, [handleFrameDebugChange, handleResetViewCamera, recordEvent]);
 
   const handleOpenNameModal = React.useCallback(() => {
     setShowNameModal(true);
@@ -2125,35 +2237,6 @@ export default function CubliSimulator() {
     console.log(`[통신] Command Sent: ${commandType}`, payload);
   };
 
-  const resetAll = () => {
-    recordCommandEvent({ eventType: 'RESET_VIEW', label: 'Reset All' });
-    setUseSerialImu(false);
-    setUseBleImu(false);
-    setIsSensorActive(false);
-    phoneZeroRef.current = null;
-    setSensorMode('quaternion');
-    setAttitude({ pitch: 0, yaw: 0, roll: 0 });
-    setAttitudeQuat(new THREE.Quaternion());
-    setTorque({ x: 0, y: 0, z: 0 });
-
-    setIsLogging(false);
-    setLoggingStartTime(null);
-    setElapsedMs(0);
-    fullDataLog.current = [];
-    setViewResetKey((prev) => prev + 1);
-
-
-    if (serial.isConnected) {
-      serial.clearStats();
-    }
-
-    if (ble.isConnected) {
-      ble.clearStats();
-    }
-
-    sendCommandToHardware('RESET_ATTITUDE', { flag: true });
-  };
-
   const handleStartLogging = () => {
     fullDataLog.current = [];
     setElapsedMs(0);
@@ -2252,6 +2335,25 @@ export default function CubliSimulator() {
         overflowY: isMobile ? 'auto' : 'hidden',
       }}
     >
+      <div className="app-top-actions" aria-label="Web app actions">
+        <button
+          type="button"
+          className="app-reload-button"
+          title="Reload Web App"
+          onClick={() => window.location.reload()}
+        >
+          Reload
+        </button>
+        <button
+          type="button"
+          className="app-tutorial-button"
+          title="Open Tutorial"
+          onClick={() => setShowTutorial(true)}
+        >
+          Tutorial
+        </button>
+      </div>
+
       <div
         className={isMobile ? 'cubli-layout-mobile' : 'cubli-layout-desktop'}
         style={
@@ -2284,8 +2386,9 @@ export default function CubliSimulator() {
             activeSourceType={activeSourceType}
             axisLength={axisLength}
             frameDebug={frameDebug}
-            setFrameDebug={setFrameDebug}
+            setFrameDebug={handleFrameDebugChange}
             showFrameDebug={showFrameDebug}
+            onResetView={handleResetViewCamera}
             liveStatusText={cubliLiveStatusText}
           />
         </section>
@@ -2323,13 +2426,15 @@ export default function CubliSimulator() {
                     <div className="quick-control-title">Quick Control</div>
                     <div className="quick-control-subtitle">Active Source: {activeSourceLabel}</div>
                   </div>
-                  <Button
-                    variant="outline-danger"
-                    onClick={resetAll}
-                    className="fw-bold shadow-sm quick-reset-button"
-                  >
-                    🛰 Reset
-                  </Button>
+                  {isAdmin ? (
+                    <Button
+                      variant="outline-danger"
+                      onClick={handleResetWebView}
+                      className="fw-bold shadow-sm quick-reset-button"
+                    >
+                      Reset Web View
+                    </Button>
+                  ) : null}
                 </div>
 
                 {multipleSourcesActive ? (
@@ -2338,7 +2443,7 @@ export default function CubliSimulator() {
                   </Alert>
                 ) : null}
 
-                <div className="axis-length-control mt-3">
+                <div className="axis-length-control mt-3" style={{ display: 'none' }}>
                   <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
                     <div>
                       <div className="axis-length-title">Body Axis Length</div>
@@ -2477,6 +2582,8 @@ export default function CubliSimulator() {
           </Card>
         </aside>
       </div>
+
+      <TutorialModal show={showTutorial} onHide={() => setShowTutorial(false)} />
 
       <NameEntryModal
         show={showNameModal || !serverSync?.hasDisplayName}

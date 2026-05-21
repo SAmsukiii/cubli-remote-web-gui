@@ -214,7 +214,6 @@ function buildEncoderRows(packet = {}) {
     { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
     { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Yaw Sign', value: signText(encoder.displayYawSign ?? -1) },
     { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
@@ -735,13 +734,6 @@ function RpyConventionSection({ serverSync }) {
   const safeServerSync = serverSync || {};
   const imuSequence = safeServerSync.imuEulerSequence || 'ZYX';
   const encoderSequence = safeServerSync.encoderEulerSequence || 'ZYX';
-  const imuRollSign = normalizeSign(safeServerSync.imuDisplayRollSign, 1);
-  const imuPitchSign = normalizeSign(safeServerSync.imuDisplayPitchSign, 1);
-  const imuYawSign = normalizeSign(safeServerSync.imuDisplayYawSign, -1);
-  const encoderRollSign = normalizeSign(safeServerSync.encoderDisplayRollSign, 1);
-  const encoderPitchSign = normalizeSign(safeServerSync.encoderDisplayPitchSign, 1);
-  const encoderYawSign = normalizeSign(safeServerSync.encoderDisplayYawSign, -1);
-  const wzSign = normalizeSign(safeServerSync.bodyRateWzDisplaySign, 1);
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
@@ -774,35 +766,56 @@ function RpyConventionSection({ serverSync }) {
             ))}
           </Form.Select>
         </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="IMU Display Roll Sign" value={imuRollSign} onChange={safeServerSync.setImuDisplayRollSign} />
-        </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="IMU Display Pitch Sign" value={imuPitchSign} onChange={safeServerSync.setImuDisplayPitchSign} />
-        </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="IMU Display Yaw Sign" value={imuYawSign} onChange={safeServerSync.setImuDisplayYawSign} />
-        </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="Encoder Display Roll Sign" value={encoderRollSign} onChange={safeServerSync.setEncoderDisplayRollSign} />
-        </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="Encoder Display Pitch Sign" value={encoderPitchSign} onChange={safeServerSync.setEncoderDisplayPitchSign} />
-        </Col>
-        <Col xs={4} md={2}>
-          <SignSelect label="Encoder Display Yaw Sign" value={encoderYawSign} onChange={safeServerSync.setEncoderDisplayYawSign} />
-        </Col>
-        <Col xs={12} md={4}>
-          <SignSelect label="Body Rate wz Display Sign" value={wzSign} onChange={safeServerSync.setBodyRateWzDisplaySign} />
-        </Col>
-        <Col xs={12} md={8} className="d-flex align-items-end">
-          <Button variant="outline-light" className="w-100" onClick={safeServerSync.resetRpySignsToDefault}>
-            Reset RPY Signs to Default
-          </Button>
-        </Col>
       </Row>
       <div className="server-small-note mt-2">
-        Current RPY [{imuSequence}, yaw sign {signText(imuYawSign)}] / Encoder RPY [{encoderSequence}, yaw sign {signText(encoderYawSign)}].
+        Current RPY [{imuSequence}] · Source: IMU/TEL quaternion · 3D source: quaternion q0~q3 · Encoder source: Gimbal rotary encoder [{encoderSequence}].
+      </div>
+    </div>
+  );
+}
+
+const VISUAL_MIRROR_LABELS = {
+  current: 'Current',
+  mirrorX: 'Mirror X',
+  mirrorY: 'Mirror Y',
+  mirrorZ: 'Mirror Z',
+  mirrorXY: 'Mirror XY',
+  mirrorXZ: 'Mirror XZ',
+  mirrorYZ: 'Mirror YZ',
+  mirrorXYZ: 'Mirror XYZ',
+};
+
+function mirrorLabel(value) {
+  return VISUAL_MIRROR_LABELS[value] || 'Current';
+}
+
+function yesNo(value) {
+  return value ? 'Yes' : 'No';
+}
+
+function VisualSettingsSummary({ serverSync }) {
+  const safeServerSync = serverSync || {};
+  const settings = safeServerSync.visualSettings || {};
+  const wheelMirrors = ['X', 'Y', 'Z']
+    .filter((axis) => settings[`wheelMirror${axis}`])
+    .join(', ') || 'None';
+  const rows = [
+    { label: 'Shared by server', value: 'Admin visual settings' },
+    { label: 'Wheel mirror', value: wheelMirrors },
+    { label: 'Reference frame arrows', value: mirrorLabel(settings.referenceFrameMirror) },
+    { label: 'Cubli body frame arrows', value: mirrorLabel(settings.bodyFrameMirror) },
+    { label: 'Cubli vertical flip', value: yesNo(settings.flipCubliVertical) },
+    { label: 'Frame helpers', value: yesNo(settings.showFrameHelpers) },
+    { label: 'Body axis length', value: settings.bodyAxisLength != null ? Math.round(settings.bodyAxisLength) : '-' },
+    { label: 'Updated by', value: settings.updatedBy || '-' },
+    { label: 'Updated at', value: formatDateTime(settings.updatedAt) },
+  ];
+
+  return (
+    <div className="serial-control-card rounded p-3 mb-3">
+      <ValueGrid title="Visual Settings" rows={rows} />
+      <div className="server-small-note mt-2">
+        Rendering-only transform. Telemetry q0~q3, RPY calculation, RPM, and commands are unchanged.
       </div>
     </div>
   );
@@ -960,7 +973,6 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   );
   const latestPacket = safeStatus.latestPacket || safeStatus.latestSharedPacket || {};
   const currentRawYaw = latestPacket.rawYawDeg ?? latestPacket.yawRawDeg ?? latestPacket.remoteYawDeg;
-  const currentDisplayYaw = latestPacket.yawDeg ?? latestPacket.yaw_deg ?? latestPacket.Yaw_deg;
   const qdPreviewText = targetPreview.qd.map((value) => formatNumber(value, 6)).join(', ');
 
   if (!canViewCommand) return null;
@@ -1109,7 +1121,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             </Col>
           </Row>
           <div className="server-small-note mb-2">
-            Target command uses: {targetPreview.sequence}, signs {signsText(targetRollSign, targetPitchSign, targetYawSign)}. Display RPY signs do not affect target command.
+            Target command uses: {targetPreview.sequence}, signs {signsText(targetRollSign, targetPitchSign, targetYawSign)}. Display RPY sequence does not affect target command.
           </div>
           <Row className="g-2 align-items-end">
             <Col xs={4}>
@@ -1291,18 +1303,19 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           </CommandGroup>
         </CommandAccordionItem>
 
-        <CommandAccordionItem eventKey="yaw-diagnostic" title="Yaw Sign Diagnostic">
+        <CommandAccordionItem eventKey="source-diagnostic" title="RPY / Quaternion Source">
           <ValueGrid
-            title="Yaw Sign Diagnostic"
+            title="RPY / Quaternion Source"
             rows={[
-              { label: 'Current Display Yaw Sign', value: signText(latestPacket.imuDisplayYawSign ?? safeSerial.imuDisplayYawSign ?? -1) },
+              { label: 'Current RPY sequence', value: latestPacket.imuEulerSequence || safeSerial.targetRpySequence || 'ZYX' },
+              { label: 'Source', value: 'IMU/TEL quaternion' },
+              { label: '3D source', value: 'quaternion q0~q3' },
+              { label: 'Encoder source', value: latestPacket.encoderSource || 'Gimbal rotary encoder' },
+              { label: 'Current yaw from quaternion', value: currentRawYaw != null ? `${formatNumber(currentRawYaw, 2)} deg` : '-' },
               { label: 'Target Command Yaw Sign', value: signText(targetYawSign) },
-              { label: 'Current yaw from quaternion before sign', value: currentRawYaw != null ? `${formatNumber(currentRawYaw, 2)} deg` : '-' },
-              { label: 'Current yaw after display sign', value: currentDisplayYaw != null ? `${formatNumber(currentDisplayYaw, 2)} deg` : '-' },
               { label: 'Target input yaw', value: `${formatNumber(targetPreview.inputYaw, 2)} deg` },
               { label: 'Target yaw after command sign', value: `${formatNumber(targetPreview.commandYaw, 2)} deg` },
               { label: 'qd preview', value: qdPreviewText },
-              { label: 'wz sign setting', value: signText(safeSerial.bodyRateWzDisplaySign ?? latestPacket.bodyRateWzDisplaySign ?? 1) },
             ]}
           />
         </CommandAccordionItem>
@@ -1342,8 +1355,7 @@ function MonitoringSection({ status, isActive = true }) {
     { label: 'Yaw', value: `${formatNumber(latest.yaw_deg ?? latest.yawDeg, 2)} deg` },
     { label: 'Raw Yaw', value: latest.rawYawDeg != null ? `${formatNumber(latest.rawYawDeg, 2)} deg` : '-' },
     { label: 'Sequence', value: latest.imuEulerSequence || 'ZYX' },
-    { label: 'Display signs', value: signsText(latest.imuDisplayRollSign ?? 1, latest.imuDisplayPitchSign ?? 1, latest.imuDisplayYawSign ?? -1) },
-    { label: 'Source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
+    { label: 'Source', value: 'IMU/TEL quaternion' },
   ], [latest]);
 
   const commandStateRows = useMemo(() => [
@@ -1362,7 +1374,6 @@ function MonitoringSection({ status, isActive = true }) {
     { label: 'wy (rad/s)', value: latest.wy != null ? formatNumber(latest.wy, 4) : '-' },
     { label: 'wz raw (rad/s)', value: latest.wzRaw != null || latest.wz != null ? formatNumber(latest.wzRaw ?? latest.wz, 4) : '-' },
     { label: 'wz display (rad/s)', value: latest.wzDisplay != null ? formatNumber(latest.wzDisplay, 4) : '-' },
-    { label: 'wz display sign', value: signText(latest.bodyRateWzDisplaySign ?? 1) },
     { label: 'source', value: formatSourceLabel(latest.angularRateSource) },
   ], [latest]);
 
@@ -1384,11 +1395,11 @@ function MonitoringSection({ status, isActive = true }) {
   const encoderRows = useMemo(() => buildEncoderRows(latest), [latest]);
 
   const frameRows = useMemo(() => [
-    { label: 'Attitude quaternion source', value: latest.attitudeSource || latest.sourceLabel || latest.source || '-' },
-    { label: 'Current RPY source', value: latest.rpySource || `quaternion ${latest.imuEulerSequence || 'ZYX'}` },
-    { label: 'Gimbal Encoder RPY source', value: latest.encoderRpySource || '-' },
-    { label: '3D rendering', value: 'quaternion' },
-    { label: 'Frame convention', value: 'current Cubli display mapping' },
+    { label: `Current RPY [${latest.imuEulerSequence || 'ZYX'}]`, value: 'Display-only Euler angles' },
+    { label: 'Source', value: 'IMU/TEL quaternion' },
+    { label: '3D source', value: 'quaternion q0~q3' },
+    { label: 'Encoder source', value: latest.encoderSource || 'Gimbal rotary encoder' },
+    { label: 'Visual frame setting', value: 'Shared server rendering transform' },
   ], [latest]);
 
   const debugRows = useMemo(() => [
@@ -1497,7 +1508,7 @@ function MonitoringSection({ status, isActive = true }) {
       <Row className="g-2 mb-3">
         <Col xs={12}><ValueGrid title="Shared Live Data" rows={sharedRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}, yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`} rows={rpyRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={rpyRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Desired RPY (last command)" rows={commandStateRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
         <Col xs={12} xl={6}>
@@ -1509,7 +1520,7 @@ function MonitoringSection({ status, isActive = true }) {
           )}
         </Col>
         <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}, yaw sign ${signText(latest.encoderDisplayYawSign ?? -1)}]`} rows={encoderRows} /></Col>
+        <Col xs={12} xl={6}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}]`} rows={encoderRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Direction / Frame" rows={frameRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
         <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
@@ -1557,7 +1568,7 @@ function MonitoringSection({ status, isActive = true }) {
           <Row className="g-2">
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
-                title={`Current RPY [yaw sign ${signText(latest.imuDisplayYawSign ?? -1)}]`}
+                title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`}
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
@@ -1837,6 +1848,7 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
       <ServerConnectionSection serverSync={safeServerSync} />
       <RoleNotice role={isController ? 'controller' : role} />
       <RpyConventionSection serverSync={safeServerSync} />
+      <VisualSettingsSummary serverSync={safeServerSync} />
       <ServerSharingSection
         serverSync={safeServerSync}
         isAdmin={isAdmin}

@@ -466,7 +466,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   });
   const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
   const encoderRpySource = encoderEuler
-    ? `encoder quaternion ${encoderEulerSequence}, display signs ${signsLabel(encoderDisplaySigns)}`
+    ? `encoder quaternion ${encoderEulerSequence}`
     : '';
 
   return {
@@ -646,7 +646,7 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     imuDisplayRollSign: imuDisplaySigns.roll,
     imuDisplayPitchSign: imuDisplaySigns.pitch,
     imuDisplayYawSign: imuDisplaySigns.yaw,
-    rpySource: `quaternion ${imuEulerSequence}, display signs ${signsLabel(imuDisplaySigns)}`,
+    rpySource: `IMU/TEL quaternion ${imuEulerSequence}`,
     attitudeSource: resolvedSource === 'phone' ? 'phone_sensor' : 'computed_from_quaternion',
     remoteRollDeg: firstFinite([packet.remoteRollDeg, packet.Roll_deg, packet.rollDeg, packet.roll_deg, packet.roll], null),
     remotePitchDeg: firstFinite([packet.remotePitchDeg, packet.Pitch_deg, packet.pitchDeg, packet.pitch_deg, packet.pitch], null),

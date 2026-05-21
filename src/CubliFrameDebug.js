@@ -6,10 +6,9 @@ import * as THREE from 'three';
 
 const WHEEL_MIRROR_DEFAULT_KEY = 'cubliWheelMirrorDefault';
 const WHEEL_MIRROR_DEFAULT_VERSION_KEY = 'cubliWheelMirrorDefaultVersion';
-const WHEEL_MIRROR_DEFAULT_VERSION = 'frame-arrow-mirror-presets-v1';
-const SAME_AS_WHEEL_KEY = 'sameAsWheel';
-const SAME_AS_REFERENCE_FRAME_KEY = 'sameAsReferenceFrame';
+const WHEEL_MIRROR_DEFAULT_VERSION = 'shared-visual-settings-v1';
 const EMPTY_OBJECT = Object.freeze({});
+const DEFAULT_BODY_AXIS_LENGTH = 34;
 
 const MIRROR_PRESET_KEY_ORDER = Object.freeze([
   'current',
@@ -40,19 +39,19 @@ export const FRAME_ARROW_MIRROR_PRESETS = Object.freeze({
     map: ([x, y, z]) => [x, y, -z],
   },
   mirrorXY: {
-    label: 'Mirror X/Y',
+    label: 'Mirror XY',
     map: ([x, y, z]) => [-x, -y, z],
   },
   mirrorXZ: {
-    label: 'Mirror X/Z',
+    label: 'Mirror XZ',
     map: ([x, y, z]) => [-x, y, -z],
   },
   mirrorYZ: {
-    label: 'Mirror Y/Z',
+    label: 'Mirror YZ',
     map: ([x, y, z]) => [x, -y, -z],
   },
   mirrorXYZ: {
-    label: 'Mirror X/Y/Z',
+    label: 'Mirror XYZ',
     map: ([x, y, z]) => [-x, -y, -z],
   },
 });
@@ -65,9 +64,16 @@ export const FRAME_ARROW_MIRROR_PRESET_OPTIONS = Object.freeze(
 );
 
 export const DEFAULT_FRAME_DEBUG_CONFIG = Object.freeze({
-  wheelMirrorPreset: 'current',
-  referenceFrameArrowMirrorPreset: 'current',
-  bodyFrameArrowMirrorPreset: 'current',
+  wheelMirrorX: false,
+  wheelMirrorY: false,
+  wheelMirrorZ: false,
+  referenceFrameMirror: 'current',
+  bodyFrameMirror: 'current',
+  flipCubliVertical: true,
+  showFrameHelpers: false,
+  updatedAt: null,
+  updatedBy: '',
+  bodyAxisLength: DEFAULT_BODY_AXIS_LENGTH,
   mirrorX: false,
   mirrorY: false,
   mirrorZ: false,
@@ -85,23 +91,10 @@ function normalizeBaseMirrorPresetKey(value, fallback = 'current') {
     : fallback;
 }
 
-function normalizeReferenceMirrorPresetKey(value, fallback = 'current') {
-  return value === SAME_AS_WHEEL_KEY
-    ? SAME_AS_WHEEL_KEY
-    : normalizeBaseMirrorPresetKey(value, fallback);
-}
-
-function normalizeBodyMirrorPresetKey(value, fallback = 'current') {
-  if (value === SAME_AS_WHEEL_KEY || value === SAME_AS_REFERENCE_FRAME_KEY) {
-    return value;
-  }
-  return normalizeBaseMirrorPresetKey(value, fallback);
-}
-
 function mirrorFlagsToPresetKey(source = EMPTY_OBJECT) {
-  const mirrorX = boolValue(source.mirrorX, false);
-  const mirrorY = boolValue(source.mirrorY, false);
-  const mirrorZ = boolValue(source.mirrorZ, false);
+  const mirrorX = boolValue(source.wheelMirrorX, boolValue(source.mirrorX, false));
+  const mirrorY = boolValue(source.wheelMirrorY, boolValue(source.mirrorY, false));
+  const mirrorZ = boolValue(source.wheelMirrorZ, boolValue(source.mirrorZ, false));
 
   if (mirrorX && mirrorY && mirrorZ) return 'mirrorXYZ';
   if (mirrorX && mirrorY) return 'mirrorXY';
@@ -125,27 +118,47 @@ function mirrorFlagsFromPresetKey(presetKey) {
 export function normalizeFrameDebugConfig(value = DEFAULT_FRAME_DEBUG_CONFIG) {
   const source = value && typeof value === 'object' ? value : DEFAULT_FRAME_DEBUG_CONFIG;
   const wheelPositionScale = Number(source.wheelPositionScale);
+  const bodyAxisLength = Number(source.bodyAxisLength);
+  const hasExplicitWheelFlags = ['wheelMirrorX', 'wheelMirrorY', 'wheelMirrorZ']
+    .some((key) => Object.prototype.hasOwnProperty.call(source, key));
   const legacyWheelPreset = mirrorFlagsToPresetKey(source);
-  const wheelMirrorPreset = normalizeBaseMirrorPresetKey(
-    source.wheelMirrorPreset,
-    legacyWheelPreset
-  );
+  const wheelMirrorPreset = hasExplicitWheelFlags
+    ? legacyWheelPreset
+    : normalizeBaseMirrorPresetKey(source.wheelMirrorPreset, legacyWheelPreset);
   const wheelMirrorFlags = mirrorFlagsFromPresetKey(wheelMirrorPreset);
+  const referenceFrameMirror = normalizeBaseMirrorPresetKey(
+    source.referenceFrameMirror ?? source.referenceFrameArrowMirrorPreset,
+    DEFAULT_FRAME_DEBUG_CONFIG.referenceFrameMirror
+  );
+  const bodyFrameMirror = normalizeBaseMirrorPresetKey(
+    source.bodyFrameMirror ?? source.bodyFrameArrowMirrorPreset,
+    DEFAULT_FRAME_DEBUG_CONFIG.bodyFrameMirror
+  );
+  const showFrameHelpers = boolValue(
+    source.showFrameHelpers,
+    boolValue(source.showHelpers, DEFAULT_FRAME_DEBUG_CONFIG.showFrameHelpers)
+  );
 
   return {
+    wheelMirrorX: wheelMirrorFlags.mirrorX,
+    wheelMirrorY: wheelMirrorFlags.mirrorY,
+    wheelMirrorZ: wheelMirrorFlags.mirrorZ,
+    referenceFrameMirror,
+    bodyFrameMirror,
+    flipCubliVertical: boolValue(source.flipCubliVertical, DEFAULT_FRAME_DEBUG_CONFIG.flipCubliVertical),
+    showFrameHelpers,
+    updatedAt: Number.isFinite(Number(source.updatedAt)) ? Number(source.updatedAt) : null,
+    updatedBy: String(source.updatedBy || '').slice(0, 60),
+    bodyAxisLength: Number.isFinite(bodyAxisLength)
+      ? Math.max(10, Math.min(90, bodyAxisLength))
+      : DEFAULT_BODY_AXIS_LENGTH,
     wheelMirrorPreset,
-    referenceFrameArrowMirrorPreset: normalizeReferenceMirrorPresetKey(
-      source.referenceFrameArrowMirrorPreset,
-      DEFAULT_FRAME_DEBUG_CONFIG.referenceFrameArrowMirrorPreset
-    ),
-    bodyFrameArrowMirrorPreset: normalizeBodyMirrorPresetKey(
-      source.bodyFrameArrowMirrorPreset,
-      DEFAULT_FRAME_DEBUG_CONFIG.bodyFrameArrowMirrorPreset
-    ),
+    referenceFrameArrowMirrorPreset: referenceFrameMirror,
+    bodyFrameArrowMirrorPreset: bodyFrameMirror,
     mirrorX: wheelMirrorFlags.mirrorX,
     mirrorY: wheelMirrorFlags.mirrorY,
     mirrorZ: wheelMirrorFlags.mirrorZ,
-    showHelpers: boolValue(source.showHelpers, DEFAULT_FRAME_DEBUG_CONFIG.showHelpers),
+    showHelpers: showFrameHelpers,
     wheelPositionScale: Number.isFinite(wheelPositionScale)
       ? Math.max(0.65, Math.min(1.35, wheelPositionScale))
       : DEFAULT_FRAME_DEBUG_CONFIG.wheelPositionScale,
@@ -215,22 +228,11 @@ export function resolveWheelMirrorPresetKey(config) {
 }
 
 export function resolveReferenceFrameArrowMirrorPresetKey(config) {
-  const safeConfig = normalizeFrameDebugConfig(config);
-  if (safeConfig.referenceFrameArrowMirrorPreset === SAME_AS_WHEEL_KEY) {
-    return resolveWheelMirrorPresetKey(safeConfig);
-  }
-  return normalizeBaseMirrorPresetKey(safeConfig.referenceFrameArrowMirrorPreset);
+  return normalizeBaseMirrorPresetKey(normalizeFrameDebugConfig(config).referenceFrameMirror);
 }
 
 export function resolveBodyFrameArrowMirrorPresetKey(config) {
-  const safeConfig = normalizeFrameDebugConfig(config);
-  if (safeConfig.bodyFrameArrowMirrorPreset === SAME_AS_WHEEL_KEY) {
-    return resolveWheelMirrorPresetKey(safeConfig);
-  }
-  if (safeConfig.bodyFrameArrowMirrorPreset === SAME_AS_REFERENCE_FRAME_KEY) {
-    return resolveReferenceFrameArrowMirrorPresetKey(safeConfig);
-  }
-  return normalizeBaseMirrorPresetKey(safeConfig.bodyFrameArrowMirrorPreset);
+  return normalizeBaseMirrorPresetKey(normalizeFrameDebugConfig(config).bodyFrameMirror);
 }
 
 export function mapWheelMirrorVector(vector, config, scale = 1) {
@@ -361,18 +363,9 @@ function MirrorSelect({ id, label, value, options, onChange }) {
   );
 }
 
-export function FrameDebugPanel({ value, onChange, isMobile }) {
+export function FrameDebugPanel({ value, onChange, onResetView, isMobile }) {
   const [isOpen, setIsOpen] = useState(false);
   const config = normalizeFrameDebugConfig(value);
-  const referenceMirrorOptions = useMemo(() => ([
-    { value: SAME_AS_WHEEL_KEY, label: 'Same as Wheel' },
-    ...FRAME_ARROW_MIRROR_PRESET_OPTIONS,
-  ]), []);
-  const bodyMirrorOptions = useMemo(() => ([
-    { value: SAME_AS_WHEEL_KEY, label: 'Same as Wheel' },
-    { value: SAME_AS_REFERENCE_FRAME_KEY, label: 'Same as Reference Frame' },
-    ...FRAME_ARROW_MIRROR_PRESET_OPTIONS,
-  ]), []);
 
   const update = (patch) => {
     onChange?.(normalizeFrameDebugConfig({
@@ -385,9 +378,13 @@ export function FrameDebugPanel({ value, onChange, isMobile }) {
     saveFrameDebugDefaultConfig(config);
   };
 
-  const resetToCurrent = () => {
-    clearStoredFrameDebugConfig();
+  const applySavedDefault = () => {
+    onChange?.(getStoredFrameDebugConfig());
+  };
+
+  const resetWebView = () => {
     onChange?.(normalizeFrameDebugConfig({ ...DEFAULT_FRAME_DEBUG_CONFIG }));
+    onResetView?.();
   };
 
   return (
@@ -397,7 +394,7 @@ export function FrameDebugPanel({ value, onChange, isMobile }) {
         right: isMobile ? '0.65rem' : '1rem',
         bottom: isMobile ? '0.6rem' : '1rem',
         zIndex: 1065,
-        width: isMobile ? 238 : 286,
+        width: isMobile ? 248 : 300,
         color: '#e5e5e5',
         fontSize: '0.76rem',
       }}
@@ -419,43 +416,85 @@ export function FrameDebugPanel({ value, onChange, isMobile }) {
           style={{ color: '#f2f2f2', background: 'rgba(40, 40, 40, 0.72)' }}
           onClick={() => setIsOpen((prev) => !prev)}
         >
-          <span>3D Frame Debug</span>
+          <span>3D Visual Settings</span>
           <span>{isOpen ? '-' : '+'}</span>
         </Button>
 
         {isOpen ? (
           <div className="p-2 d-grid gap-2">
-            <MirrorSelect
-              id="cubli-wheel-mirror"
-              label="Wheel Mirror"
-              value={config.wheelMirrorPreset}
-              options={FRAME_ARROW_MIRROR_PRESET_OPTIONS}
-              onChange={(wheelMirrorPreset) => update({ wheelMirrorPreset })}
-            />
+            <div>
+              <div className="mb-1" style={{ color: '#cfd4da', fontWeight: 700 }}>Internal Wheel Mirror</div>
+              <div className="d-flex flex-wrap gap-2">
+                <Form.Check
+                  type="switch"
+                  id="cubli-wheel-mirror-x"
+                  label="X"
+                  checked={config.wheelMirrorX}
+                  onChange={(event) => update({ wheelMirrorX: event.target.checked })}
+                />
+                <Form.Check
+                  type="switch"
+                  id="cubli-wheel-mirror-y"
+                  label="Y"
+                  checked={config.wheelMirrorY}
+                  onChange={(event) => update({ wheelMirrorY: event.target.checked })}
+                />
+                <Form.Check
+                  type="switch"
+                  id="cubli-wheel-mirror-z"
+                  label="Z"
+                  checked={config.wheelMirrorZ}
+                  onChange={(event) => update({ wheelMirrorZ: event.target.checked })}
+                />
+              </div>
+            </div>
 
             <MirrorSelect
               id="cubli-reference-frame-arrow-mirror"
               label="Reference Frame Arrow Mirror"
-              value={config.referenceFrameArrowMirrorPreset}
-              options={referenceMirrorOptions}
-              onChange={(referenceFrameArrowMirrorPreset) => update({ referenceFrameArrowMirrorPreset })}
+              value={config.referenceFrameMirror}
+              options={FRAME_ARROW_MIRROR_PRESET_OPTIONS}
+              onChange={(referenceFrameMirror) => update({ referenceFrameMirror })}
             />
 
             <MirrorSelect
               id="cubli-body-frame-arrow-mirror"
               label="Cubli Body Frame Arrow Mirror"
-              value={config.bodyFrameArrowMirrorPreset}
-              options={bodyMirrorOptions}
-              onChange={(bodyFrameArrowMirrorPreset) => update({ bodyFrameArrowMirrorPreset })}
+              value={config.bodyFrameMirror}
+              options={FRAME_ARROW_MIRROR_PRESET_OPTIONS}
+              onChange={(bodyFrameMirror) => update({ bodyFrameMirror })}
+            />
+
+            <Form.Check
+              type="switch"
+              id="cubli-visual-flip-vertical"
+              label="Flip Cubli Vertical"
+              checked={config.flipCubliVertical}
+              onChange={(event) => update({ flipCubliVertical: event.target.checked })}
             />
 
             <Form.Check
               type="switch"
               id="cubli-frame-debug-helpers"
               label="Show Frame Helpers"
-              checked={config.showHelpers}
-              onChange={(event) => update({ showHelpers: event.target.checked })}
+              checked={config.showFrameHelpers}
+              onChange={(event) => update({ showFrameHelpers: event.target.checked })}
             />
+
+            <Form.Group>
+              <div className="d-flex justify-content-between gap-2">
+                <Form.Label className="mb-1">Body Axis Length</Form.Label>
+                <span>{Math.round(config.bodyAxisLength)}</span>
+              </div>
+              <Form.Range
+                min="10"
+                max="90"
+                step="2"
+                value={config.bodyAxisLength}
+                onChange={(event) => update({ bodyAxisLength: Number(event.target.value) })}
+                className="custom-range"
+              />
+            </Form.Group>
 
             <Form.Group>
               <div className="d-flex justify-content-between gap-2">
@@ -472,14 +511,23 @@ export function FrameDebugPanel({ value, onChange, isMobile }) {
               />
             </Form.Group>
 
+            <div className="server-small-note">
+              Active visual settings are stored on the server and shared to Viewer/Controller clients.
+              {config.updatedBy ? ` Last update: ${config.updatedBy}` : ''}
+            </div>
+
             <div className="d-flex gap-2">
               <Button type="button" variant="outline-light" size="sm" className="flex-fill" onClick={setAsDefault}>
-                Set Default
+                Save Preset
               </Button>
-              <Button type="button" variant="outline-secondary" size="sm" className="flex-fill" onClick={resetToCurrent}>
-                Reset to Current
+              <Button type="button" variant="outline-secondary" size="sm" className="flex-fill" onClick={applySavedDefault}>
+                Apply Preset
               </Button>
             </div>
+
+            <Button type="button" variant="outline-danger" size="sm" onClick={resetWebView}>
+              Reset Web View
+            </Button>
           </div>
         ) : null}
       </div>

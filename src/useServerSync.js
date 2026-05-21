@@ -6,21 +6,28 @@ const DISPLAY_NAME_KEY = 'cubliDisplayName';
 const SERVER_URL_KEY = 'cubliServerUrl';
 const IMU_EULER_SEQUENCE_KEY = 'cubliImuEulerSequence';
 const ENCODER_EULER_SEQUENCE_KEY = 'cubliEncoderEulerSequence';
-const IMU_DISPLAY_ROLL_SIGN_KEY = 'cubliImuDisplayRollSign';
-const IMU_DISPLAY_PITCH_SIGN_KEY = 'cubliImuDisplayPitchSign';
-const IMU_DISPLAY_YAW_SIGN_KEY = 'cubliImuDisplayYawSign';
-const ENCODER_DISPLAY_ROLL_SIGN_KEY = 'cubliEncoderDisplayRollSign';
-const ENCODER_DISPLAY_PITCH_SIGN_KEY = 'cubliEncoderDisplayPitchSign';
-const ENCODER_DISPLAY_YAW_SIGN_KEY = 'cubliEncoderDisplayYawSign';
 const TARGET_RPY_SEQUENCE_KEY = 'cubliTargetRpySequence';
 const TARGET_ROLL_SIGN_KEY = 'cubliTargetRollSign';
 const TARGET_PITCH_SIGN_KEY = 'cubliTargetPitchSign';
 const TARGET_YAW_SIGN_KEY = 'cubliTargetYawSign';
-const BODY_RATE_WZ_DISPLAY_SIGN_KEY = 'cubliBodyRateWzDisplaySign';
 const DEFAULT_ROLL_SIGN = 1;
 const DEFAULT_PITCH_SIGN = 1;
 const DEFAULT_YAW_SIGN = -1;
 const DEFAULT_WZ_DISPLAY_SIGN = 1;
+const VISUAL_MIRROR_PRESETS = Object.freeze(['current', 'mirrorX', 'mirrorY', 'mirrorZ', 'mirrorXY', 'mirrorXZ', 'mirrorYZ', 'mirrorXYZ']);
+const DEFAULT_VISUAL_SETTINGS = Object.freeze({
+  wheelMirrorX: false,
+  wheelMirrorY: false,
+  wheelMirrorZ: false,
+  referenceFrameMirror: 'current',
+  bodyFrameMirror: 'current',
+  flipCubliVertical: true,
+  showFrameHelpers: false,
+  bodyAxisLength: 34,
+  wheelPositionScale: 1,
+  updatedAt: null,
+  updatedBy: '',
+});
 const FALLBACK_SERVER_URL = 'http://localhost:5050';
 const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 const MAX_SAMPLE_QUEUE = 1200;
@@ -108,6 +115,73 @@ function getStoredEulerSequence(key) {
 function getStoredSign(key, fallback = 1) {
   if (typeof window === 'undefined') return normalizeSign(fallback, 1);
   return normalizeSign(getLocalStorageValue(key), fallback);
+}
+
+function boolValue(value, fallback = false) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeVisualMirrorPreset(value, fallback = 'current') {
+  const text = String(value || '').trim();
+  return VISUAL_MIRROR_PRESETS.includes(text) ? text : fallback;
+}
+
+function mirrorFlagsToPreset(source = {}) {
+  const x = boolValue(source.wheelMirrorX, boolValue(source.mirrorX, false));
+  const y = boolValue(source.wheelMirrorY, boolValue(source.mirrorY, false));
+  const z = boolValue(source.wheelMirrorZ, boolValue(source.mirrorZ, false));
+  if (x && y && z) return 'mirrorXYZ';
+  if (x && y) return 'mirrorXY';
+  if (x && z) return 'mirrorXZ';
+  if (y && z) return 'mirrorYZ';
+  if (x) return 'mirrorX';
+  if (y) return 'mirrorY';
+  if (z) return 'mirrorZ';
+  return 'current';
+}
+
+function mirrorFlagsFromPreset(preset) {
+  const key = normalizeVisualMirrorPreset(preset);
+  return {
+    wheelMirrorX: key.includes('X'),
+    wheelMirrorY: key.includes('Y'),
+    wheelMirrorZ: key.includes('Z'),
+  };
+}
+
+function normalizeVisualSettings(value = DEFAULT_VISUAL_SETTINGS) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : DEFAULT_VISUAL_SETTINGS;
+  const hasWheelFlags = ['wheelMirrorX', 'wheelMirrorY', 'wheelMirrorZ']
+    .some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const wheelMirrorPreset = hasWheelFlags
+    ? mirrorFlagsToPreset(source)
+    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, mirrorFlagsToPreset(source));
+  const wheelFlags = mirrorFlagsFromPreset(wheelMirrorPreset);
+  const bodyAxisLength = Number(source.bodyAxisLength);
+  const wheelPositionScale = Number(source.wheelPositionScale);
+  const updatedAt = Number(source.updatedAt);
+
+  return {
+    ...wheelFlags,
+    referenceFrameMirror: normalizeVisualMirrorPreset(
+      source.referenceFrameMirror ?? source.referenceFrameArrowMirrorPreset,
+      DEFAULT_VISUAL_SETTINGS.referenceFrameMirror
+    ),
+    bodyFrameMirror: normalizeVisualMirrorPreset(
+      source.bodyFrameMirror ?? source.bodyFrameArrowMirrorPreset,
+      DEFAULT_VISUAL_SETTINGS.bodyFrameMirror
+    ),
+    flipCubliVertical: boolValue(source.flipCubliVertical, DEFAULT_VISUAL_SETTINGS.flipCubliVertical),
+    showFrameHelpers: boolValue(source.showFrameHelpers, boolValue(source.showHelpers, DEFAULT_VISUAL_SETTINGS.showFrameHelpers)),
+    bodyAxisLength: Number.isFinite(bodyAxisLength)
+      ? Math.max(10, Math.min(90, bodyAxisLength))
+      : DEFAULT_VISUAL_SETTINGS.bodyAxisLength,
+    wheelPositionScale: Number.isFinite(wheelPositionScale)
+      ? Math.max(0.65, Math.min(1.35, wheelPositionScale))
+      : DEFAULT_VISUAL_SETTINGS.wheelPositionScale,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : null,
+    updatedBy: String(source.updatedBy || '').slice(0, 60),
+  };
 }
 
 function makeSuggestedDisplayName(role = 'Viewer', clientId = '') {
@@ -589,17 +663,18 @@ export default function useServerSync() {
   const [serverUrl, setServerUrlState] = useState(DEFAULT_SERVER_URL);
   const [imuEulerSequence, setImuEulerSequenceState] = useState(() => getStoredEulerSequence(IMU_EULER_SEQUENCE_KEY));
   const [encoderEulerSequence, setEncoderEulerSequenceState] = useState(() => getStoredEulerSequence(ENCODER_EULER_SEQUENCE_KEY));
-  const [imuDisplayRollSign, setImuDisplayRollSignState] = useState(() => getStoredSign(IMU_DISPLAY_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
-  const [imuDisplayPitchSign, setImuDisplayPitchSignState] = useState(() => getStoredSign(IMU_DISPLAY_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
-  const [imuDisplayYawSign, setImuDisplayYawSignState] = useState(() => getStoredSign(IMU_DISPLAY_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
-  const [encoderDisplayRollSign, setEncoderDisplayRollSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
-  const [encoderDisplayPitchSign, setEncoderDisplayPitchSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
-  const [encoderDisplayYawSign, setEncoderDisplayYawSignState] = useState(() => getStoredSign(ENCODER_DISPLAY_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
+  const imuDisplayRollSign = DEFAULT_ROLL_SIGN;
+  const imuDisplayPitchSign = DEFAULT_PITCH_SIGN;
+  const imuDisplayYawSign = DEFAULT_YAW_SIGN;
+  const encoderDisplayRollSign = DEFAULT_ROLL_SIGN;
+  const encoderDisplayPitchSign = DEFAULT_PITCH_SIGN;
+  const encoderDisplayYawSign = DEFAULT_YAW_SIGN;
   const [targetRpySequence, setTargetRpySequenceState] = useState(() => getStoredEulerSequence(TARGET_RPY_SEQUENCE_KEY));
   const [targetRollSign, setTargetRollSignState] = useState(() => getStoredSign(TARGET_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
   const [targetPitchSign, setTargetPitchSignState] = useState(() => getStoredSign(TARGET_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
   const [targetYawSign, setTargetYawSignState] = useState(() => getStoredSign(TARGET_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
-  const [bodyRateWzDisplaySign, setBodyRateWzDisplaySignState] = useState(() => getStoredSign(BODY_RATE_WZ_DISPLAY_SIGN_KEY, DEFAULT_WZ_DISPLAY_SIGN));
+  const bodyRateWzDisplaySign = DEFAULT_WZ_DISPLAY_SIGN;
+  const [visualSettings, setVisualSettingsState] = useState(() => normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS));
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastError, setLastError] = useState('');
   const [sessionId, setSessionId] = useState('');
@@ -647,6 +722,7 @@ export default function useServerSync() {
     publishedAt: null,
     latestSharedPacketAgeMs: null,
     liveStatus: 'NONE',
+    visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
     bridge: {
       enabledByServer: true,
       source: 'admin-web-serial',
@@ -750,32 +826,6 @@ export default function useServerSync() {
     return next;
   }, []);
 
-  const setImuDisplayRollSign = useCallback((value) => setStoredSign(IMU_DISPLAY_ROLL_SIGN_KEY, setImuDisplayRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
-  const setImuDisplayPitchSign = useCallback((value) => setStoredSign(IMU_DISPLAY_PITCH_SIGN_KEY, setImuDisplayPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
-  const setImuDisplayYawSign = useCallback((value) => setStoredSign(IMU_DISPLAY_YAW_SIGN_KEY, setImuDisplayYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
-  const setEncoderDisplayRollSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_ROLL_SIGN_KEY, setEncoderDisplayRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
-  const setEncoderDisplayPitchSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_PITCH_SIGN_KEY, setEncoderDisplayPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
-  const setEncoderDisplayYawSign = useCallback((value) => setStoredSign(ENCODER_DISPLAY_YAW_SIGN_KEY, setEncoderDisplayYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
-  const setBodyRateWzDisplaySign = useCallback((value) => setStoredSign(BODY_RATE_WZ_DISPLAY_SIGN_KEY, setBodyRateWzDisplaySignState, value, DEFAULT_WZ_DISPLAY_SIGN), [setStoredSign]);
-
-  const resetRpySignsToDefault = useCallback(() => {
-    setImuDisplayRollSign(DEFAULT_ROLL_SIGN);
-    setImuDisplayPitchSign(DEFAULT_PITCH_SIGN);
-    setImuDisplayYawSign(DEFAULT_YAW_SIGN);
-    setEncoderDisplayRollSign(DEFAULT_ROLL_SIGN);
-    setEncoderDisplayPitchSign(DEFAULT_PITCH_SIGN);
-    setEncoderDisplayYawSign(DEFAULT_YAW_SIGN);
-    setBodyRateWzDisplaySign(DEFAULT_WZ_DISPLAY_SIGN);
-  }, [
-    setBodyRateWzDisplaySign,
-    setEncoderDisplayPitchSign,
-    setEncoderDisplayRollSign,
-    setEncoderDisplayYawSign,
-    setImuDisplayPitchSign,
-    setImuDisplayRollSign,
-    setImuDisplayYawSign,
-  ]);
-
   const setTargetRpySequence = useCallback((value) => {
     const next = normalizeEulerSequence(value, 'ZYX');
     setTargetRpySequenceState(next);
@@ -806,8 +856,18 @@ export default function useServerSync() {
     });
   }, [clientId, safeDisplayName]);
 
+  const applyVisualSettings = useCallback((nextSettings) => {
+    if (!nextSettings || typeof nextSettings !== 'object') return null;
+    const normalized = normalizeVisualSettings(nextSettings);
+    setVisualSettingsState((prev) => (
+      JSON.stringify(prev) === JSON.stringify(normalized) ? prev : normalized
+    ));
+    return normalized;
+  }, []);
+
   const applyHealthData = useCallback((data) => {
     if (!data?.serial && !data?.access && !data?.serverInfo) return;
+    applyVisualSettings(data.visualSettings);
     setServerSerialStatus((prev) => ({
       ...prev,
       access: data.access || prev.access,
@@ -817,7 +877,38 @@ export default function useServerSync() {
       diagnostics: data.serial?.diagnostics || prev.diagnostics,
       lastError: '',
     }));
-  }, []);
+  }, [applyVisualSettings]);
+
+  const updateVisualSettings = useCallback(async (nextValue) => {
+    const nextSettings = normalizeVisualSettings(nextValue);
+    applyVisualSettings(nextSettings);
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
+    try {
+      const data = await requestJson(`${baseUrl}/api/visual-settings`, {
+        method: 'POST',
+        body: JSON.stringify({ visualSettings: nextSettings }),
+      });
+      const saved = applyVisualSettings(data.visualSettings || nextSettings) || nextSettings;
+      setServerSerialStatus((prev) => ({
+        ...prev,
+        visualSettings: saved,
+        access: data.access || prev.access,
+        lastError: '',
+      }));
+      setConnectionStatus('connected');
+      setLastError('');
+      return saved;
+    } catch (err) {
+      setConnectionStatus('error');
+      setLastError(err?.message || 'Visual settings update failed');
+      setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Visual settings update failed' }));
+      return null;
+    }
+  }, [applyVisualSettings, requestJson]);
+
+  const resetVisualSettings = useCallback(() => (
+    updateVisualSettings(DEFAULT_VISUAL_SETTINGS)
+  ), [updateVisualSettings]);
 
   const discoverServerUrl = useCallback(async (preferredUrl = serverUrlRef.current) => {
     if (!hasDisplayName) return '';
@@ -1392,7 +1483,12 @@ export default function useServerSync() {
 
   const updateServerSerialStatusState = useCallback((data) => {
     if (!data) return data;
-    setServerSerialStatus((prev) => ({ ...prev, ...data }));
+    const nextVisualSettings = applyVisualSettings(data.visualSettings);
+    setServerSerialStatus((prev) => ({
+      ...prev,
+      ...data,
+      visualSettings: nextVisualSettings || data.visualSettings || prev.visualSettings,
+    }));
     if (data.latestPacket?.updatedAt) {
       latestServerSerialPacketRef.current = data.latestPacket;
     }
@@ -1402,7 +1498,7 @@ export default function useServerSync() {
     if (data.path) setServerSerialPath(data.path);
     if (data.baudRate) setServerSerialBaudRateState(data.baudRate);
     return data;
-  }, []);
+  }, [applyVisualSettings]);
 
   const refreshServerSerialStatus = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
@@ -1650,9 +1746,11 @@ export default function useServerSync() {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/state`, { method: 'GET' });
+      const nextVisualSettings = applyVisualSettings(data.visualSettings || data.serial?.visualSettings);
       setServerSerialStatus((prev) => ({
         ...prev,
         ...(data.serial || {}),
+        visualSettings: nextVisualSettings || data.serial?.visualSettings || prev.visualSettings,
         latestSharedPacket: data.latestSharedPacket || data.serial?.latestSharedPacket || prev.latestSharedPacket,
         latestPacket: data.serial?.latestPacket || data.latestSharedPacket || prev.latestPacket,
         activeSharedSource: data.activeSharedSource || data.serial?.activeSharedSource || prev.activeSharedSource,
@@ -1678,10 +1776,11 @@ export default function useServerSync() {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Access state refresh failed' }));
       return null;
     }
-  }, [requestJson]);
+  }, [applyVisualSettings, requestJson]);
 
   const applyLivePayload = useCallback((data, { updateState = true } = {}) => {
     if (!data || typeof data !== 'object') return null;
+    const nextVisualSettings = applyVisualSettings(data.visualSettings);
 
     const packet = data.latestSharedPacket || data.packet || null;
     if (packet?.updatedAt || packet?.publishedAt) {
@@ -1705,6 +1804,7 @@ export default function useServerSync() {
       latestSharedPacketAgeMs: data.latestSharedPacketAgeMs ?? data.ageMs ?? prev.latestSharedPacketAgeMs,
       liveStatus: data.liveStatus || prev.liveStatus,
       bridge: data.bridge || prev.bridge,
+      visualSettings: nextVisualSettings || prev.visualSettings,
       lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
       latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
       access: data.access || prev.access,
@@ -1712,7 +1812,7 @@ export default function useServerSync() {
     }));
 
     return packet;
-  }, []);
+  }, [applyVisualSettings]);
 
   const scheduleLiveStateFlush = useCallback((data) => {
     applyLivePayload(data, { updateState: false });
@@ -1981,18 +2081,13 @@ export default function useServerSync() {
     imuDisplayRollSign,
     imuDisplayPitchSign,
     imuDisplayYawSign,
-    setImuDisplayRollSign,
-    setImuDisplayPitchSign,
-    setImuDisplayYawSign,
     encoderDisplayRollSign,
     encoderDisplayPitchSign,
     encoderDisplayYawSign,
-    setEncoderDisplayRollSign,
-    setEncoderDisplayPitchSign,
-    setEncoderDisplayYawSign,
     bodyRateWzDisplaySign,
-    setBodyRateWzDisplaySign,
-    resetRpySignsToDefault,
+    visualSettings,
+    updateVisualSettings,
+    resetVisualSettings,
     targetRpySequence,
     setTargetRpySequence,
     targetRollSign,

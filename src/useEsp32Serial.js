@@ -6,7 +6,6 @@ import {
   normalizeRpySigns,
   normalizeSign,
   quaternionToEulerDeg,
-  signsLabel,
 } from './telemetryNormalize';
 
 const MAX_BUFFER_LENGTH = 262144;
@@ -237,7 +236,7 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   });
   const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
-  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}, display signs ${signsLabel(encoderDisplaySigns)}` : '';
+  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
 
   return {
     enc_x_deg: encX,

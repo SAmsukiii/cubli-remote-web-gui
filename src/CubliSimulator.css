@@ -122,6 +122,80 @@
   font-size: 0.96rem;
 }
 
+.app-top-actions {
+  position: fixed;
+  top: 0.45rem;
+  left: 0.55rem;
+  z-index: 1085;
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.app-reload-button,
+.app-tutorial-button {
+  border: 1px solid rgba(210, 220, 230, 0.35);
+  background: rgba(8, 10, 12, 0.82);
+  color: #f1f3f5;
+  border-radius: 0.35rem;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1;
+  min-height: 28px;
+  padding: 0.35rem 0.55rem;
+  box-shadow: 0 0.25rem 0.8rem rgba(0, 0, 0, 0.28);
+}
+
+.app-reload-button:hover,
+.app-tutorial-button:hover,
+.app-reload-button:focus,
+.app-tutorial-button:focus {
+  background: rgba(27, 31, 36, 0.94);
+  border-color: rgba(110, 231, 255, 0.55);
+}
+
+.tutorial-modal {
+  background: #111418 !important;
+  color: #eef2f6 !important;
+  border: 1px solid #2a3138 !important;
+}
+
+.tutorial-step-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.7rem;
+}
+
+.tutorial-step-card {
+  background: #171d24;
+  border: 1px solid #2f3944;
+  border-radius: 0.5rem;
+  padding: 0.85rem;
+  min-height: 132px;
+}
+
+.tutorial-step-index {
+  color: #6ee7ff;
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.tutorial-step-title {
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 850;
+  margin-top: 0.25rem;
+}
+
+.tutorial-step-body,
+.tutorial-note {
+  color: #c7d0da;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 .cubli-layout-desktop {
   display: grid;
   gap: 0;
@@ -384,6 +458,19 @@
 }
 
 @media (max-width: 767.98px) {
+  .app-top-actions {
+    top: 0.35rem;
+    left: 0.4rem;
+    gap: 0.28rem;
+  }
+
+  .app-reload-button,
+  .app-tutorial-button {
+    min-height: 26px;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.7rem;
+  }
+
   .cubli-control-pane {
     padding-left: 0;
   }
