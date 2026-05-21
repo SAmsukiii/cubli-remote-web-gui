@@ -1,7 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Accordion, Alert, Badge, Button, Col, Form, Row } from 'react-bootstrap';
+import {
+  CSV_LOG_METADATA_COLUMNS,
+  CSV_LOG_NOTE,
+  appendCsvLogSample,
+  csvRowFromPacket,
+  finalizeCsvLogRows,
+} from './csvLogUtils';
 
 const CSV_COLUMNS = [
+  ...CSV_LOG_METADATA_COLUMNS,
   'time_local',
   'pc_time_ms',
   'published_at',
@@ -294,66 +302,8 @@ function gainLine(prefix, values) {
   return `${prefix},${formatGainValue(values.x)},${formatGainValue(values.y)},${formatGainValue(values.z)}`;
 }
 
-function csvEscape(value) {
-  const text = String(value ?? '');
-  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
-
 function packetToCsvRow(packet) {
-  const timeValue = packet.publishedAt ?? packet.updatedAt ?? packet.pc_time_ms ?? Date.now();
-  const row = {
-    ...packet,
-    time_local: new Date(timeValue).toISOString(),
-    pc_time_ms: packet.pc_time_ms ?? packet.pcTimeMs ?? packet.updatedAt,
-    published_at: packet.publishedAt,
-    source_label: packet.sourceLabel,
-    imu_euler_sequence: packet.imuEulerSequence,
-    rpy_source: packet.rpySource,
-    raw_roll_deg: packet.rawRollDeg,
-    raw_pitch_deg: packet.rawPitchDeg,
-    raw_yaw_deg: packet.rawYawDeg,
-    roll_deg: packet.roll_deg ?? packet.Roll_deg ?? packet.rollDeg,
-    pitch_deg: packet.pitch_deg ?? packet.Pitch_deg ?? packet.pitchDeg,
-    yaw_deg: packet.yaw_deg ?? packet.Yaw_deg ?? packet.yawDeg,
-    imu_display_roll_sign: packet.imuDisplayRollSign,
-    imu_display_pitch_sign: packet.imuDisplayPitchSign,
-    imu_display_yaw_sign: packet.imuDisplayYawSign,
-    Roll_deg: packet.Roll_deg ?? packet.roll_deg ?? packet.rollDeg,
-    Pitch_deg: packet.Pitch_deg ?? packet.pitch_deg ?? packet.pitchDeg,
-    Yaw_deg: packet.Yaw_deg ?? packet.yaw_deg ?? packet.yawDeg,
-    qerr_source: packet.qerrSource,
-    angular_rate_source: packet.angularRateSource,
-    wz_raw: packet.wzRaw ?? packet.wz_raw ?? packet.wz,
-    wz_display: packet.wzDisplay ?? packet.wz_display,
-    body_rate_wz_display_sign: packet.bodyRateWzDisplaySign,
-    timestamp: packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs,
-    enc_x_deg: packet.enc_x_deg ?? packet.encoderXDeg ?? packet.encoder?.x,
-    enc_y_deg: packet.enc_y_deg ?? packet.encoderYDeg ?? packet.encoder?.y,
-    enc_z_deg: packet.enc_z_deg ?? packet.encoderZDeg ?? packet.encoder?.z,
-    enc_q0: packet.enc_q0 ?? packet.encoderQ0 ?? packet.encoder?.q0,
-    enc_q1: packet.enc_q1 ?? packet.encoderQ1 ?? packet.encoder?.q1,
-    enc_q2: packet.enc_q2 ?? packet.encoderQ2 ?? packet.encoder?.q2,
-    enc_q3: packet.enc_q3 ?? packet.encoderQ3 ?? packet.encoder?.q3,
-    encoder_roll_deg: packet.encoderRollDeg ?? packet.encoder?.rollDeg,
-    encoder_pitch_deg: packet.encoderPitchDeg ?? packet.encoder?.pitchDeg,
-    encoder_yaw_deg: packet.encoderYawDeg ?? packet.encoder?.yawDeg,
-    encoder_raw_roll_deg: packet.encoderRawRollDeg ?? packet.encoder?.rawRollDeg,
-    encoder_raw_pitch_deg: packet.encoderRawPitchDeg ?? packet.encoder?.rawPitchDeg,
-    encoder_raw_yaw_deg: packet.encoderRawYawDeg ?? packet.encoder?.rawYawDeg,
-    encoder_display_roll_sign: packet.encoderDisplayRollSign ?? packet.encoder?.displayRollSign,
-    encoder_display_pitch_sign: packet.encoderDisplayPitchSign ?? packet.encoder?.displayPitchSign,
-    encoder_display_yaw_sign: packet.encoderDisplayYawSign ?? packet.encoder?.displayYawSign,
-    encoder_euler_sequence: packet.encoderEulerSequence ?? packet.encoder?.eulerSequence,
-    encoder_rpy_source: packet.encoderRpySource ?? packet.encoder?.rpySource,
-    encoder_status: packet.encoderStatus ?? packet.encoder?.status,
-    enc_timer_x: packet.enc_timer_x ?? packet.encoderTimerX ?? packet.encoder?.timerX ?? packet.encoder?.timer_x,
-    enc_timer_y: packet.enc_timer_y ?? packet.encoderTimerY ?? packet.encoder?.timerY ?? packet.encoder?.timer_y,
-    enc_timer_z: packet.enc_timer_z ?? packet.encoderTimerZ ?? packet.encoder?.timerZ ?? packet.encoder?.timer_z,
-    encoder_source: packet.encoderSource || packet.encoder?.source,
-    encoder_updated_at: packet.encoderUpdatedAt ?? packet.encoder?.updatedAt,
-  };
-  return CSV_COLUMNS.map((column) => csvEscape(row[column])).join(',');
+  return csvRowFromPacket(packet, CSV_COLUMNS);
 }
 
 function downloadTextFile(filename, text) {
@@ -422,9 +372,13 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const [csvSampleCount, setCsvSampleCount] = useState(0);
   const [csvElapsedMs, setCsvElapsedMs] = useState(0);
   const logRef = useRef([]);
-  const lastLoggedPacketTimeRef = useRef(0);
+  const seenCsvPacketKeysRef = useRef(new Set());
+  const nextCsvLogIndexRef = useRef(0);
 
   const latest = useMemo(() => serial.latestPacket || {}, [serial.latestPacket]);
+  const latestCsvPacket = useMemo(() => serial.latestCsvPacket || serial.latestPacket || {}, [serial.latestCsvPacket, serial.latestPacket]);
+  const csvLogVersion = serial.csvLogVersion || 0;
+  const drainCsvLogSamples = serial.drainCsvLogSamples;
   const waitingForTelemetry = Boolean(serial.isConnected && !serial.lastReceivedAt);
   const stale = serial.lastReceivedAt ? Date.now() - serial.lastReceivedAt > 500 : false;
   const statusVariant = !serial.isConnected ? 'secondary' : waitingForTelemetry ? 'info' : stale ? 'warning' : 'success';
@@ -451,12 +405,19 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
   useEffect(() => {
     if (!csvLogging) return;
-    if (!latest?.updatedAt) return;
-    if (latest.updatedAt === lastLoggedPacketTimeRef.current) return;
-    logRef.current.push({ ...latest });
-    lastLoggedPacketTimeRef.current = latest.updatedAt;
-    setCsvSampleCount(logRef.current.length);
-  }, [csvLogging, latest]);
+    const samples = typeof drainCsvLogSamples === 'function'
+      ? drainCsvLogSamples()
+      : [latestCsvPacket];
+    let appendedAny = false;
+    samples.forEach((sample) => {
+      if (!sample?.updatedAt && !sample?.raw && !sample?.cleanLine) return;
+      const appended = appendCsvLogSample(logRef, seenCsvPacketKeysRef, sample, {
+        nextLogIndexRef: nextCsvLogIndexRef,
+      });
+      appendedAny = appendedAny || appended;
+    });
+    if (appendedAny) setCsvSampleCount(logRef.current.length);
+  }, [csvLogging, csvLogVersion, drainCsvLogSamples, latestCsvPacket]);
 
   useEffect(() => {
     if (!csvLogging || !csvStartedAt) return undefined;
@@ -662,7 +623,9 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
   const startCsvLogging = () => {
     logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
+    seenCsvPacketKeysRef.current = new Set();
+    nextCsvLogIndexRef.current = 0;
+    if (typeof drainCsvLogSamples === 'function') drainCsvLogSamples();
     const startedAt = Date.now();
     setCsvStartedAt(startedAt);
     setCsvElapsedMs(0);
@@ -679,10 +642,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       alert('No Web Serial data was logged in this CSV session.');
       return;
     }
-    const csv = [CSV_COLUMNS.join(','), ...logRef.current.map(packetToCsvRow)].join('\n');
+    const sortedRows = finalizeCsvLogRows(logRef.current);
+    const csv = [CSV_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
     downloadTextFile(`cubli_live_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
     logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
+    seenCsvPacketKeysRef.current = new Set();
+    nextCsvLogIndexRef.current = 0;
     setCsvSampleCount(0);
     setCsvElapsedMs(0);
     setCsvStartedAt(null);
@@ -891,11 +856,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">
-          <div>
-            <div className="serial-section-title">CSV Logging</div>
-            <div className="server-small-note">Parsed live samples captured only while logging is active.</div>
-          </div>
-          <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
+            <div>
+              <div className="serial-section-title">CSV Logging</div>
+              <div className="server-small-note">Parsed live samples captured only while logging is active.</div>
+              <div className="server-small-note">{CSV_LOG_NOTE}</div>
+            </div>
+            <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
         </div>
         <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
         <Row className="g-2">

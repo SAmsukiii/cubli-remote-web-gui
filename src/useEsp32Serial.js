@@ -11,6 +11,7 @@ import {
 const MAX_BUFFER_LENGTH = 262144;
 const MAX_RECENT_PACKETS = 10;
 const MAX_CHART_POINTS = 90;
+const MAX_CSV_LOG_QUEUE = 5000;
 const BAUD_RATE = 115200;
 const UI_FLUSH_INTERVAL_MS = 100;
 const ENCODER_SYNC_THRESHOLD_MS = 1000;
@@ -394,6 +395,11 @@ function parseImuCsvLine(line) {
     return {
       ok: true,
       cleanLine: clean,
+      raw: clean,
+      rawPrefix: 'IMU',
+      raw_prefix: 'IMU',
+      sample_type: 'IMU',
+      sampleType: 'IMU',
       source: 'Remote_ESPNOW_IMU',
       q: [q0, q1, q2, q3],
       roll_deg: roll,
@@ -492,6 +498,11 @@ function parseTelCsvLine(line) {
     const packet = {
       ok: true,
       cleanLine: clean,
+      raw: clean,
+      rawPrefix: 'TEL',
+      raw_prefix: 'TEL',
+      sample_type: 'TEL',
+      sampleType: 'TEL',
       source: 'Remote_ESPNOW_TEL',
       q: [q0, q1, q2, q3],
       qerrDeg,
@@ -716,6 +727,10 @@ function parseEncCsvLine(line) {
       encoderOnly: true,
       cleanLine: clean,
       raw: clean,
+      rawPrefix: 'ENC',
+      raw_prefix: 'ENC',
+      sample_type: 'ENC',
+      sampleType: 'ENC',
       source: 'ENC_CSV',
       ...makeEncoderFields({ ...encoderValues, encoderUpdatedAt: now }, {}, { useFallback: false, now }),
     };
@@ -771,6 +786,8 @@ export default function useEsp32Serial(options = {}) {
   const [lastInvalidReason, setLastInvalidReason] = useState('');
   const [lastReceivedAt, setLastReceivedAt] = useState(null);
   const [latestPacket, setLatestPacket] = useState(DEFAULT_PACKET);
+  const [latestCsvPacket, setLatestCsvPacket] = useState(null);
+  const [csvLogVersion, setCsvLogVersion] = useState(0);
   const [recentPackets, setRecentPackets] = useState([]);
   const [chartData, setChartData] = useState([]);
   const [validCount, setValidCount] = useState(0);
@@ -791,6 +808,8 @@ export default function useEsp32Serial(options = {}) {
   const commandBusyRef = useRef(false);
 
   const latestPacketRef = useRef(DEFAULT_PACKET);
+  const latestCsvPacketRef = useRef(null);
+  const csvLogQueueRef = useRef([]);
   const recentPacketsRef = useRef([]);
   const chartDataRef = useRef([]);
   const countersRef = useRef({ valid: 0, invalid: 0, ignored: 0, warning: 0 });
@@ -810,12 +829,28 @@ export default function useEsp32Serial(options = {}) {
     pendingUiFlushRef.current = true;
   }, []);
 
+  const pushCsvLogPacket = useCallback((packet) => {
+    if (!packet) return;
+    latestCsvPacketRef.current = packet;
+    csvLogQueueRef.current = [...csvLogQueueRef.current, packet].slice(-MAX_CSV_LOG_QUEUE);
+  }, []);
+
+  const drainCsvLogSamples = useCallback(() => {
+    const samples = csvLogQueueRef.current;
+    csvLogQueueRef.current = [];
+    return samples;
+  }, []);
+
   useEffect(() => {
     const timer = setInterval(() => {
       if (!pendingUiFlushRef.current) return;
       pendingUiFlushRef.current = false;
 
       setLatestPacket(latestPacketRef.current);
+      setLatestCsvPacket(latestCsvPacketRef.current);
+      if (csvLogQueueRef.current.length > 0) {
+        setCsvLogVersion((version) => version + 1);
+      }
       setRecentPackets([...recentPacketsRef.current]);
       setChartData([...chartDataRef.current]);
       setValidCount(countersRef.current.valid);
@@ -849,6 +884,36 @@ export default function useEsp32Serial(options = {}) {
       latestEncoderRef.current = encoderFields;
       encoderCountRef.current += 1;
       countersRef.current.valid += 1;
+      const encoderLogFields = makeEncoderFields(
+        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
+        {},
+        {
+          useFallback: false,
+          now,
+          encoderEulerSequence,
+          encoderDisplayRollSign: encoderDisplaySigns.roll,
+          encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+          encoderDisplayYawSign: encoderDisplaySigns.yaw,
+        }
+      );
+      pushCsvLogPacket({
+        ...encoderLogFields,
+        ok: true,
+        encoderOnly: true,
+        source: 'ENC_CSV',
+        sourceLabel: encoderLogFields.encoderSource || parsed.encoderSource || 'Gimbal Rotary Encoder',
+        sample_type: 'ENC',
+        sampleType: 'ENC',
+        rawPrefix: 'ENC',
+        raw_prefix: 'ENC',
+        raw: parsed.cleanLine || parsed.raw || '',
+        cleanLine: parsed.cleanLine || parsed.raw || '',
+        pc_time_ms: parsed.pc_time_ms ?? parsed.pcTimeMs ?? '',
+        pcTimeMs: parsed.pcTimeMs ?? parsed.pc_time_ms ?? '',
+        timestamp: Number.isFinite(parsed.timestamp) ? parsed.timestamp : undefined,
+        seq: Number.isFinite(parsed.seq) ? parsed.seq : undefined,
+        updatedAt: now,
+      });
 
       const currentPacket = latestPacketRef.current || DEFAULT_PACKET;
       latestPacketRef.current = mergeEncoderIntoPacket({
@@ -1044,10 +1109,15 @@ export default function useEsp32Serial(options = {}) {
       encoderRpySource: normalizedPacket.encoderRpySource,
       encoder: normalizedPacket.encoder,
       raw: packet.raw,
+      rawPrefix: parsed.rawPrefix || parsed.raw_prefix || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
+      raw_prefix: parsed.raw_prefix || parsed.rawPrefix || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
+      sample_type: parsed.sample_type || parsed.sampleType || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
+      sampleType: parsed.sampleType || parsed.sample_type || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
       updatedAt: now,
     };
 
     latestPacketRef.current = commonPacket;
+    pushCsvLogPacket(commonPacket);
     lastReceivedAtRef.current = now;
     lastRawLineRef.current = commonPacket.raw;
     lastInvalidReasonRef.current = '';
@@ -1085,6 +1155,7 @@ export default function useEsp32Serial(options = {}) {
     imuDisplaySigns.yaw,
     imuEulerSequence,
     markPendingUiFlush,
+    pushCsvLogPacket,
   ]);
 
   const registerInvalidLineRefOnly = useCallback((parsed) => {
@@ -1310,6 +1381,8 @@ export default function useEsp32Serial(options = {}) {
     prevQRef.current = [1, 0, 0, 0];
     latestEncoderRef.current = makeInitialEncoder(encoderEulerSequence);
     latestPacketRef.current = DEFAULT_PACKET;
+    latestCsvPacketRef.current = null;
+    csvLogQueueRef.current = [];
     recentPacketsRef.current = [];
     chartDataRef.current = [];
     countersRef.current = { valid: 0, invalid: 0, ignored: 0, warning: 0 };
@@ -1324,6 +1397,8 @@ export default function useEsp32Serial(options = {}) {
     setLastInvalidReason('');
     setLastReceivedAt(null);
     setLatestPacket(DEFAULT_PACKET);
+    setLatestCsvPacket(null);
+    setCsvLogVersion(0);
     setRecentPackets([]);
     setChartData([]);
     setValidCount(0);
@@ -1346,6 +1421,7 @@ export default function useEsp32Serial(options = {}) {
     // 최신 packet을 React state 갱신 주기와 분리해서 3D render loop가 직접 읽을 수 있게 한다.
     // 이 ref는 packet이 들어오는 즉시 바뀌므로, 3D 자세는 UI flush(100ms)에 묶이지 않는다.
     latestPacketRef,
+    latestCsvPacketRef,
     isSupported,
     isConnected,
     baudRate,
@@ -1354,6 +1430,8 @@ export default function useEsp32Serial(options = {}) {
     lastInvalidReason,
     lastReceivedAt,
     latestPacket,
+    latestCsvPacket,
+    csvLogVersion,
     recentPackets,
     chartData,
     validCount,
@@ -1372,5 +1450,6 @@ export default function useEsp32Serial(options = {}) {
     sendStop,
     sendTarget,
     clearStats,
+    drainCsvLogSamples,
   };
 }

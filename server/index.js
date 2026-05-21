@@ -715,6 +715,13 @@ function normalizePublishedPacket(packet, source, identity) {
     encoderDisplayPitchSign: packet.encoderDisplayPitchSign,
     encoderDisplayYawSign: packet.encoderDisplayYawSign,
   });
+  const rawText = typeof packet.raw === 'string' ? packet.raw.trim() : '';
+  const rawToken = rawText ? String(rawText.split(/[,\s]+/)[0] || '').trim().toUpperCase() : '';
+  const rawPrefix = String(packet.rawPrefix || packet.raw_prefix || rawToken || '').trim().toUpperCase();
+  const sampleType = String(
+    packet.sample_type || packet.sampleType
+      || (rawPrefix === 'IMU' ? 'IMU' : rawPrefix === 'ENC' ? 'ENC' : 'TEL')
+  ).trim().toUpperCase();
 
   const publishedAt = now;
   const normalized = {
@@ -726,6 +733,10 @@ function normalizePublishedPacket(packet, source, identity) {
     serverReceivedAtMs: publishedAt,
     source: 'admin-web-serial',
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
+    sample_type: sampleType,
+    sampleType,
+    rawPrefix,
+    raw_prefix: rawPrefix,
     publisherClientId: identity.clientId || packet.publisherClientId || '',
     publisherDisplayName: identity.displayName || identity.clientName || packet.publisherDisplayName || '',
     publisherRole: identity.role || packet.publisherRole || '',

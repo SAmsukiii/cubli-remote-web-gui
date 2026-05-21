@@ -613,6 +613,13 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const angularRateSource = hasTelemetryRate
     ? (packet.angularRateSource || 'satellite body rate')
     : (rateEstimate.valid ? 'computed from quaternion' : '');
+  const rawText = typeof packet.raw === 'string' ? packet.raw.trim() : '';
+  const rawToken = rawText ? String(rawText.split(/[,\s]+/)[0] || '').trim().toUpperCase() : '';
+  const rawPrefix = String(packet.rawPrefix || packet.raw_prefix || rawToken || '').trim().toUpperCase();
+  const sampleType = String(
+    packet.sample_type || packet.sampleType
+      || (rawPrefix === 'IMU' ? 'IMU' : rawPrefix === 'ENC' ? 'ENC' : 'TEL')
+  ).trim().toUpperCase();
 
   const common = {
     ok: true,
@@ -622,6 +629,10 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     updatedAt: pcTimeMs,
     source: resolvedSource,
     sourceLabel,
+    sample_type: sampleType,
+    sampleType,
+    rawPrefix,
+    raw_prefix: rawPrefix,
 
     q0: q[0],
     q1: q[1],

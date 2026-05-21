@@ -1,6 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Accordion, Alert, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import {
+  CSV_LOG_METADATA_COLUMNS,
+  CSV_LOG_NOTE,
+  appendCsvLogSample,
+  csvRowFromPacket,
+  finalizeCsvLogRows,
+} from './csvLogUtils';
 import { eulerDegToQuat, normalizeEulerSequence, normalizeSign } from './telemetryNormalize';
 
 const MAG_OPTIONS = [
@@ -35,6 +42,7 @@ const WHEEL_RPM_MIN = -800;
 const WHEEL_RPM_MAX = 800;
 const WHEEL_RPM_STEP = 10;
 const LOG_COLUMNS = [
+  ...CSV_LOG_METADATA_COLUMNS,
   'time_local',
   'pc_time_ms', 'published_at', 'source', 'source_label',
   'imu_euler_sequence', 'rpy_source',
@@ -336,12 +344,6 @@ function findClient(access = {}, clientId = '') {
   return clients.find((client) => client?.clientId === targetClientId) || null;
 }
 
-function csvEscape(value) {
-  const text = String(value ?? '');
-  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
-
 function downloadTextFile(filename, text) {
   const blob = new Blob([text], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -354,99 +356,8 @@ function downloadTextFile(filename, text) {
   URL.revokeObjectURL(url);
 }
 
-function normalizePacketForLog(packet) {
-  const source = packet || {};
-  const timeValue = source.publishedAt ?? source.serverReceivedAt ?? source.updatedAt ?? source.pc_time_ms ?? Date.now();
-  return {
-    time_local: new Date(timeValue).toISOString(),
-    pc_time_ms: source.pc_time_ms ?? source.pcTimeMs ?? source.updatedAt ?? Date.now(),
-    published_at: source.publishedAt ?? source.serverReceivedAt ?? source.serverReceivedAtMs ?? '',
-    source: source.source || 'server-serial',
-    source_label: source.sourceLabel || '',
-    imu_euler_sequence: source.imuEulerSequence || '',
-    rpy_source: source.rpySource || '',
-    q0: source.q0,
-    q1: source.q1,
-    q2: source.q2,
-    q3: source.q3,
-    norm: source.norm,
-    raw_roll_deg: source.rawRollDeg,
-    raw_pitch_deg: source.rawPitchDeg,
-    raw_yaw_deg: source.rawYawDeg,
-    roll_deg: source.roll_deg ?? source.Roll_deg ?? source.rollDeg,
-    pitch_deg: source.pitch_deg ?? source.Pitch_deg ?? source.pitchDeg,
-    yaw_deg: source.yaw_deg ?? source.Yaw_deg ?? source.yawDeg,
-    imu_display_roll_sign: source.imuDisplayRollSign,
-    imu_display_pitch_sign: source.imuDisplayPitchSign,
-    imu_display_yaw_sign: source.imuDisplayYawSign,
-    Roll_deg: source.Roll_deg ?? source.roll_deg ?? source.rollDeg,
-    Pitch_deg: source.Pitch_deg ?? source.pitch_deg ?? source.pitchDeg,
-    Yaw_deg: source.Yaw_deg ?? source.yaw_deg ?? source.yawDeg,
-    desired_roll_deg: source.desired_roll_deg ?? source.desiredRollDeg,
-    desired_pitch_deg: source.desired_pitch_deg ?? source.desiredPitchDeg,
-    desired_yaw_deg: source.desired_yaw_deg ?? source.desiredYawDeg,
-    qerr_deg: source.qerr_deg ?? source.qerrDeg,
-    qerr_source: source.qerrSource,
-    wx: source.wx,
-    wy: source.wy,
-    wz: source.wz,
-    wz_raw: source.wzRaw ?? source.wz_raw ?? source.wz,
-    wz_display: source.wzDisplay ?? source.wz_display,
-    body_rate_wz_display_sign: source.bodyRateWzDisplaySign,
-    angular_rate_source: source.angularRateSource,
-    RPM1: source.RPM1,
-    RPM2: source.RPM2,
-    RPM3: source.RPM3,
-    RPMcmd1: source.RPMcmd1,
-    RPMcmd2: source.RPMcmd2,
-    RPMcmd3: source.RPMcmd3,
-    PWM1: source.PWM1,
-    PWM2: source.PWM2,
-    PWM3: source.PWM3,
-    Tbodycmd_x_Nm: source.Tbodycmd_x_Nm,
-    Tbodycmd_y_Nm: source.Tbodycmd_y_Nm,
-    Tbodycmd_z_Nm: source.Tbodycmd_z_Nm,
-    Tmotor1_Nm: source.Tmotor1_Nm,
-    Tmotor2_Nm: source.Tmotor2_Nm,
-    Tmotor3_Nm: source.Tmotor3_Nm,
-    control_mode: source.control_mode,
-    EBIMU_status: source.EBIMU_status,
-    logging_status: source.logging_status,
-    timestamp: source.timestamp ?? source.ebimu_timestamp_ms,
-    seq: source.seq,
-    enc_x_deg: source.enc_x_deg ?? source.encoderXDeg ?? source.encoder?.x,
-    enc_y_deg: source.enc_y_deg ?? source.encoderYDeg ?? source.encoder?.y,
-    enc_z_deg: source.enc_z_deg ?? source.encoderZDeg ?? source.encoder?.z,
-    enc_q0: source.enc_q0 ?? source.encoderQ0 ?? source.encoder?.q0,
-    enc_q1: source.enc_q1 ?? source.encoderQ1 ?? source.encoder?.q1,
-    enc_q2: source.enc_q2 ?? source.encoderQ2 ?? source.encoder?.q2,
-    enc_q3: source.enc_q3 ?? source.encoderQ3 ?? source.encoder?.q3,
-    encoder_roll_deg: source.encoderRollDeg ?? source.encoder?.rollDeg,
-    encoder_pitch_deg: source.encoderPitchDeg ?? source.encoder?.pitchDeg,
-    encoder_yaw_deg: source.encoderYawDeg ?? source.encoder?.yawDeg,
-    encoder_raw_roll_deg: source.encoderRawRollDeg ?? source.encoder?.rawRollDeg,
-    encoder_raw_pitch_deg: source.encoderRawPitchDeg ?? source.encoder?.rawPitchDeg,
-    encoder_raw_yaw_deg: source.encoderRawYawDeg ?? source.encoder?.rawYawDeg,
-    encoder_display_roll_sign: source.encoderDisplayRollSign ?? source.encoder?.displayRollSign,
-    encoder_display_pitch_sign: source.encoderDisplayPitchSign ?? source.encoder?.displayPitchSign,
-    encoder_display_yaw_sign: source.encoderDisplayYawSign ?? source.encoder?.displayYawSign,
-    encoder_euler_sequence: source.encoderEulerSequence ?? source.encoder?.eulerSequence,
-    encoder_rpy_source: source.encoderRpySource ?? source.encoder?.rpySource,
-    encoder_status: source.encoderStatus ?? source.encoder?.status,
-    enc_timer_x: source.enc_timer_x ?? source.encoderTimerX ?? source.encoder?.timerX ?? source.encoder?.timer_x,
-    enc_timer_y: source.enc_timer_y ?? source.encoderTimerY ?? source.encoder?.timerY ?? source.encoder?.timer_y,
-    enc_timer_z: source.enc_timer_z ?? source.encoderTimerZ ?? source.encoder?.timerZ ?? source.encoder?.timer_z,
-    encoder_source: source.encoderSource || source.encoder?.source,
-    encoder_updated_at: source.encoderUpdatedAt ?? source.encoder?.updatedAt,
-    lastCommandKey: source.lastCommandKey,
-    lastCommandLabel: source.lastCommandLabel,
-    raw: source.raw || '',
-  };
-}
-
 function packetToCsvRow(packet) {
-  const row = normalizePacketForLog(packet);
-  return LOG_COLUMNS.map((column) => csvEscape(row[column])).join(',');
+  return csvRowFromPacket(packet, LOG_COLUMNS);
 }
 
 function ValueRow({ label, value }) {
@@ -1651,16 +1562,16 @@ function DataLoggingSection({ latestPacket }) {
   const [csvSampleCount, setCsvSampleCount] = useState(0);
   const [csvElapsedMs, setCsvElapsedMs] = useState(0);
   const logRef = useRef([]);
-  const lastLoggedPacketTimeRef = useRef(0);
+  const seenCsvPacketKeysRef = useRef(new Set());
+  const nextCsvLogIndexRef = useRef(0);
 
   useEffect(() => {
     if (!csvLogging) return;
-    const packetTime = latestPacket?.publishedAt || latestPacket?.updatedAt;
-    if (!packetTime) return;
-    if (packetTime === lastLoggedPacketTimeRef.current) return;
-    logRef.current.push({ ...latestPacket });
-    lastLoggedPacketTimeRef.current = packetTime;
-    setCsvSampleCount(logRef.current.length);
+    if (!latestPacket?.publishedAt && !latestPacket?.updatedAt && !latestPacket?.raw) return;
+    const appended = appendCsvLogSample(logRef, seenCsvPacketKeysRef, latestPacket, {
+      nextLogIndexRef: nextCsvLogIndexRef,
+    });
+    if (appended) setCsvSampleCount(logRef.current.length);
   }, [csvLogging, latestPacket]);
 
   useEffect(() => {
@@ -1673,7 +1584,8 @@ function DataLoggingSection({ latestPacket }) {
 
   const startCsvLogging = () => {
     logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
+    seenCsvPacketKeysRef.current = new Set();
+    nextCsvLogIndexRef.current = 0;
     const startedAt = Date.now();
     setCsvStartedAt(startedAt);
     setCsvElapsedMs(0);
@@ -1690,10 +1602,12 @@ function DataLoggingSection({ latestPacket }) {
       alert('No shared live data was logged in this CSV session.');
       return;
     }
-    const csv = [LOG_COLUMNS.join(','), ...logRef.current.map(packetToCsvRow)].join('\n');
+    const sortedRows = finalizeCsvLogRows(logRef.current);
+    const csv = [LOG_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
     downloadTextFile(`cubli_live_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
     logRef.current = [];
-    lastLoggedPacketTimeRef.current = 0;
+    seenCsvPacketKeysRef.current = new Set();
+    nextCsvLogIndexRef.current = 0;
     setCsvSampleCount(0);
     setCsvElapsedMs(0);
     setCsvStartedAt(null);
@@ -1702,10 +1616,11 @@ function DataLoggingSection({ latestPacket }) {
   return (
     <div className="serial-control-card rounded p-3 mb-3">
       <div className="d-flex justify-content-between align-items-center mb-2">
-        <div>
-          <div className="serial-section-title">CSV Logging</div>
-          <div className="server-small-note">Parsed shared live samples captured only while logging is active.</div>
-        </div>
+          <div>
+            <div className="serial-section-title">CSV Logging</div>
+            <div className="server-small-note">Parsed shared live samples captured only while logging is active.</div>
+            <div className="server-small-note">{CSV_LOG_NOTE}</div>
+          </div>
         <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
       </div>
       <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
