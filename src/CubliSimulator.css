@@ -986,3 +986,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.telemetry-data-view .serial-value-row strong {
+  max-width: 58%;
+}
+
+.telemetry-data-card {
+  min-height: 100%;
+}
+
+.telemetry-compact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.45rem;
+}
+
+.telemetry-compact-item {
+  min-width: 0;
+  background: #0b0f14;
+  border: 1px solid #26313a;
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.telemetry-compact-item span {
+  display: block;
+  color: #aab2bf;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.telemetry-compact-item strong {
+  display: block;
+  color: #f8fafc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}

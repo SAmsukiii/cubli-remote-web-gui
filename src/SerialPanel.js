@@ -7,6 +7,7 @@ import {
   csvRowFromPacket,
   finalizeCsvLogRows,
 } from './csvLogUtils';
+import TelemetryDataView from './TelemetryDataView';
 
 const CSV_COLUMNS = [
   ...CSV_LOG_METADATA_COLUMNS,
@@ -88,6 +89,9 @@ const CSV_COLUMNS = [
   'enc_timer_x',
   'enc_timer_y',
   'enc_timer_z',
+  'enc_age_x',
+  'enc_age_y',
+  'enc_age_z',
   'encoder_source',
   'encoder_updated_at',
   'lastCommandKey',
@@ -198,6 +202,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const timerX = encoderNumber(packet, 'enc_timer_x', 'encoderTimerX', 'timerX');
   const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
   const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
+  const ageX = encoderNumber(packet, 'enc_age_x', 'encoderAgeX', 'ageX');
+  const ageY = encoderNumber(packet, 'enc_age_y', 'encoderAgeY', 'ageY');
+  const ageZ = encoderNumber(packet, 'enc_age_z', 'encoderAgeZ', 'ageZ');
   const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
   const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
   const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
@@ -225,6 +232,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     timerX,
     timerY,
     timerZ,
+    ageX,
+    ageY,
+    ageZ,
     rollDeg,
     pitchDeg,
     yawDeg,
@@ -269,6 +279,13 @@ function buildEncoderRows(packet = {}) {
       { label: 'Gimbal Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
       { label: 'Gimbal Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
       { label: 'Gimbal Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
+    );
+  }
+  if ([encoder.ageX, encoder.ageY, encoder.ageZ].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Gimbal Encoder age X', value: encoder.ageX !== null ? `${formatNumber(encoder.ageX, 0)} ms` : '-' },
+      { label: 'Gimbal Encoder age Y', value: encoder.ageY !== null ? `${formatNumber(encoder.ageY, 0)} ms` : '-' },
+      { label: 'Gimbal Encoder age Z', value: encoder.ageZ !== null ? `${formatNumber(encoder.ageZ, 0)} ms` : '-' },
     );
   }
   rows.push(
@@ -843,16 +860,16 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       </div>
       ) : null}
 
-      <Row className="g-2 mb-3">
-        <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={displayAttitudeRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Angular Rate" rows={rateRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Telemetry Status" rows={telemetryStatusRows} /></Col>
-        <Col xs={12}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}]`} rows={encoderRows} /></Col>
-        <Col xs={12}><ValueGrid title="Receiver" rows={statusRows} /></Col>
-      </Row>
+      <TelemetryDataView
+        latest={latest}
+        status={{
+          ...serial,
+          latestPacket: latest,
+          lastCommand: serial.lastCommand,
+        }}
+        isAdmin={isAdmin}
+        storageKey="cubliAdminSerialDataView"
+      />
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">

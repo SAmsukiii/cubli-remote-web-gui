@@ -402,9 +402,11 @@ function encoderTimerDelta(timerX, timerY, timerZ) {
   return Math.max(...timers) - Math.min(...timers);
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, updatedAt, now, freshMs, syncMs }) {
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, ageX, ageY, ageZ, updatedAt, now, freshMs, syncMs }) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > freshMs) return 'STALE';
+  const ages = [ageX, ageY, ageZ].map((value) => telemetryNumber(value)).filter((value) => value !== null);
+  if (ages.length > 0 && Math.max(...ages) > freshMs) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
   if (['STALE', 'HOLD_LAST', 'MIXED'].includes(explicit)) return explicit;
@@ -447,8 +449,11 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const timerX = firstTelemetryNumber([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
   const timerY = firstTelemetryNumber([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
   const timerZ = firstTelemetryNumber([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
+  const ageX = firstTelemetryNumber([packet.enc_age_x, packet.encoderAgeX, nested.ageX, nested.age_x], null);
+  const ageY = firstTelemetryNumber([packet.enc_age_y, packet.encoderAgeY, nested.ageY, nested.age_y], null);
+  const ageZ = firstTelemetryNumber([packet.enc_age_z, packet.encoderAgeZ, nested.ageZ, nested.age_z], null);
   const encoderUpdatedAt = firstTelemetryNumber([packet.encoderUpdatedAt, nested.updatedAt], null);
-  const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ]
+  const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ]
     .some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
   const hasValidQuaternion = Boolean(encoderQ);
@@ -459,6 +464,9 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     timerX,
     timerY,
     timerZ,
+    ageX,
+    ageY,
+    ageZ,
     updatedAt: encoderUpdatedAt,
     now,
     freshMs,
@@ -487,9 +495,15 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     enc_timer_x: timerX,
     enc_timer_y: timerY,
     enc_timer_z: timerZ,
+    enc_age_x: ageX,
+    enc_age_y: ageY,
+    enc_age_z: ageZ,
     encoderTimerX: timerX,
     encoderTimerY: timerY,
     encoderTimerZ: timerZ,
+    encoderAgeX: ageX,
+    encoderAgeY: ageY,
+    encoderAgeZ: ageZ,
     encoderUpdatedAt,
     encoderSource,
     encoderStatus,
@@ -517,6 +531,9 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
       timerX,
       timerY,
       timerZ,
+      ageX,
+      ageY,
+      ageZ,
       updatedAt: encoderUpdatedAt,
       source: encoderSource,
       status: encoderStatus,

@@ -9,6 +9,7 @@ import {
   finalizeCsvLogRows,
 } from './csvLogUtils';
 import { eulerDegToQuat, normalizeEulerSequence, normalizeSign } from './telemetryNormalize';
+import TelemetryDataView from './TelemetryDataView';
 
 const MAG_OPTIONS = [
   { label: 'Mag Off', commandKey: 'magOff' },
@@ -68,6 +69,7 @@ const LOG_COLUMNS = [
   'encoder_display_roll_sign', 'encoder_display_pitch_sign', 'encoder_display_yaw_sign',
   'encoder_euler_sequence', 'encoder_rpy_source', 'encoder_status',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
+  'enc_age_x', 'enc_age_y', 'enc_age_z',
   'encoder_source', 'encoder_updated_at',
   'lastCommandKey', 'lastCommandLabel',
   'raw',
@@ -158,6 +160,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const timerX = encoderNumber(packet, 'enc_timer_x', 'encoderTimerX', 'timerX');
   const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
   const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
+  const ageX = encoderNumber(packet, 'enc_age_x', 'encoderAgeX', 'ageX');
+  const ageY = encoderNumber(packet, 'enc_age_y', 'encoderAgeY', 'ageY');
+  const ageZ = encoderNumber(packet, 'enc_age_z', 'encoderAgeZ', 'ageZ');
   const updatedAt = encoderNumber(packet, 'encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt');
   const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
   const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
@@ -185,6 +190,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     timerX,
     timerY,
     timerZ,
+    ageX,
+    ageY,
+    ageZ,
     rollDeg,
     pitchDeg,
     yawDeg,
@@ -229,6 +237,13 @@ function buildEncoderRows(packet = {}) {
       { label: 'Gimbal Encoder timer X', value: encoder.timerX !== null ? formatNumber(encoder.timerX, 0) : '-' },
       { label: 'Gimbal Encoder timer Y', value: encoder.timerY !== null ? formatNumber(encoder.timerY, 0) : '-' },
       { label: 'Gimbal Encoder timer Z', value: encoder.timerZ !== null ? formatNumber(encoder.timerZ, 0) : '-' },
+    );
+  }
+  if ([encoder.ageX, encoder.ageY, encoder.ageZ].some((value) => value !== null)) {
+    rows.push(
+      { label: 'Gimbal Encoder age X', value: encoder.ageX !== null ? `${formatNumber(encoder.ageX, 0)} ms` : '-' },
+      { label: 'Gimbal Encoder age Y', value: encoder.ageY !== null ? `${formatNumber(encoder.ageY, 0)} ms` : '-' },
+      { label: 'Gimbal Encoder age Z', value: encoder.ageZ !== null ? `${formatNumber(encoder.ageZ, 0)} ms` : '-' },
     );
   }
   rows.push(
@@ -1446,26 +1461,14 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
       ) : null}
       <Row className="g-2 mb-3">
         <Col xs={12}><ValueGrid title="Shared Live Data" rows={sharedRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="IMU Quaternion" rows={quaternionRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Current RPY [${latest.imuEulerSequence || 'ZYX'}]`} rows={rpyRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Desired RPY (last command)" rows={commandStateRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Attitude Error" rows={qerrRows} /></Col>
-        <Col xs={12} xl={6}>
-          <ValueGrid title="Angular Rate" rows={rateRows} />
-          {formatSourceLabel(latest.angularRateSource) === 'satellite body rate' ? (
-            <div className="server-small-note mt-1">Satellite body angular rate telemetry, units rad/s.</div>
-          ) : (
-            <div className="server-small-note mt-1">Estimated from quaternion difference, units rad/s.</div>
-          )}
-        </Col>
-        <Col xs={12} xl={6}><ValueGrid title="Reaction Wheel Speed" rows={wheelRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title={`Gimbal Rotary Encoder [${latest.encoderEulerSequence || 'ZYX'}]`} rows={encoderRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Direction / Frame" rows={frameRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Status" rows={statusRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Smoothed RPY (computed display)" rows={smoothedRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Time / Command" rows={timeCommandRows} /></Col>
-        <Col xs={12} xl={6}><ValueGrid title="Serial Receiver" rows={receiverRows} /></Col>
       </Row>
+
+      <TelemetryDataView
+        latest={latest}
+        status={safeStatus}
+        isAdmin={isAdmin}
+        storageKey="cubliSharedTelemetryDataView"
+      />
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">

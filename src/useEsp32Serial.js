@@ -50,9 +50,15 @@ const DEFAULT_PACKET = {
   enc_timer_x: null,
   enc_timer_y: null,
   enc_timer_z: null,
+  enc_age_x: null,
+  enc_age_y: null,
+  enc_age_z: null,
   encoderTimerX: null,
   encoderTimerY: null,
   encoderTimerZ: null,
+  encoderAgeX: null,
+  encoderAgeY: null,
+  encoderAgeZ: null,
   encoderUpdatedAt: null,
   encoderSource: '',
   encoderStatus: 'NONE',
@@ -91,6 +97,9 @@ const DEFAULT_PACKET = {
     timerX: null,
     timerY: null,
     timerZ: null,
+    ageX: null,
+    ageY: null,
+    ageZ: null,
     updatedAt: null,
     source: '',
     status: 'NONE',
@@ -136,6 +145,7 @@ function hasIncomingEncoderData(encoder = {}) {
     'enc_x_deg', 'encoderXDeg', 'enc_y_deg', 'encoderYDeg', 'enc_z_deg', 'encoderZDeg',
     'enc_q0', 'encoderQ0', 'enc_q1', 'encoderQ1', 'enc_q2', 'encoderQ2', 'enc_q3', 'encoderQ3',
     'enc_timer_x', 'encoderTimerX', 'enc_timer_y', 'encoderTimerY', 'enc_timer_z', 'encoderTimerZ',
+    'enc_age_x', 'encoderAgeX', 'enc_age_y', 'encoderAgeY', 'enc_age_z', 'encoderAgeZ',
   ].some((key) => Object.prototype.hasOwnProperty.call(encoder || {}, key))
     || Boolean(encoder?.encoder);
 }
@@ -146,9 +156,11 @@ function encoderTimerDelta(timerX, timerY, timerZ) {
   return Math.max(...timers) - Math.min(...timers);
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, updatedAt, now }) {
+function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, ageX, ageY, ageZ, updatedAt, now }) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > 1000) return 'STALE';
+  const ages = [ageX, ageY, ageZ].map(finiteOrNull).filter((value) => value !== null);
+  if (ages.length > 0 && Math.max(...ages) > 1000) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
   if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
@@ -212,8 +224,11 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const timerX = firstFiniteValue([input.enc_timer_x, input.encoderTimerX, input.encoder?.timerX, input.encoder?.timer_x], fallbackValue('enc_timer_x', 'encoderTimerX', 'timerX', 'timer_x'));
   const timerY = firstFiniteValue([input.enc_timer_y, input.encoderTimerY, input.encoder?.timerY, input.encoder?.timer_y], fallbackValue('enc_timer_y', 'encoderTimerY', 'timerY', 'timer_y'));
   const timerZ = firstFiniteValue([input.enc_timer_z, input.encoderTimerZ, input.encoder?.timerZ, input.encoder?.timer_z], fallbackValue('enc_timer_z', 'encoderTimerZ', 'timerZ', 'timer_z'));
+  const ageX = firstFiniteValue([input.enc_age_x, input.encoderAgeX, input.encoder?.ageX, input.encoder?.age_x], fallbackValue('enc_age_x', 'encoderAgeX', 'ageX', 'age_x'));
+  const ageY = firstFiniteValue([input.enc_age_y, input.encoderAgeY, input.encoder?.ageY, input.encoder?.age_y], fallbackValue('enc_age_y', 'encoderAgeY', 'ageY', 'age_y'));
+  const ageZ = firstFiniteValue([input.enc_age_z, input.encoderAgeZ, input.encoder?.ageZ, input.encoder?.age_z], fallbackValue('enc_age_z', 'encoderAgeZ', 'ageZ', 'age_z'));
   const updatedAt = firstFiniteValue([input.encoderUpdatedAt, input.encoder?.updatedAt], fallbackValue('encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt'));
-  const hasData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ].some((value) => value !== null);
+  const hasData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ].some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
   const hasValidQuaternion = Boolean(encoderQ);
   const heldAxes = [];
@@ -232,6 +247,9 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     timerX,
     timerY,
     timerZ,
+    ageX,
+    ageY,
+    ageZ,
     updatedAt,
     now,
   });
@@ -257,9 +275,15 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     enc_timer_x: timerX,
     enc_timer_y: timerY,
     enc_timer_z: timerZ,
+    enc_age_x: ageX,
+    enc_age_y: ageY,
+    enc_age_z: ageZ,
     encoderTimerX: timerX,
     encoderTimerY: timerY,
     encoderTimerZ: timerZ,
+    encoderAgeX: ageX,
+    encoderAgeY: ageY,
+    encoderAgeZ: ageZ,
     encoderUpdatedAt: updatedAt,
     encoderSource: source,
     encoderStatus,
@@ -287,6 +311,9 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
       timerX,
       timerY,
       timerZ,
+      ageX,
+      ageY,
+      ageZ,
       updatedAt,
       source,
       status: encoderStatus,
@@ -479,19 +506,33 @@ function parseTelCsvLine(line) {
     const RPMcmd2 = numberAt(13, 'RPMcmd2', false);
     const RPMcmd3 = numberAt(14, 'RPMcmd3', false);
 
-    const hasExtendedFields = parts.length >= 27;
-    const PWM1 = hasExtendedFields ? numberAt(15, 'PWM1', false) : undefined;
-    const PWM2 = hasExtendedFields ? numberAt(16, 'PWM2', false) : undefined;
-    const PWM3 = hasExtendedFields ? numberAt(17, 'PWM3', false) : undefined;
-    const TbodycmdX = hasExtendedFields ? numberAt(18, 'Tbodycmd_x_Nm', false) : undefined;
-    const TbodycmdY = hasExtendedFields ? numberAt(19, 'Tbodycmd_y_Nm', false) : undefined;
-    const TbodycmdZ = hasExtendedFields ? numberAt(20, 'Tbodycmd_z_Nm', false) : undefined;
-    const Tmotor1 = hasExtendedFields ? numberAt(21, 'Tmotor1_Nm', false) : undefined;
-    const Tmotor2 = hasExtendedFields ? numberAt(22, 'Tmotor2_Nm', false) : undefined;
-    const Tmotor3 = hasExtendedFields ? numberAt(23, 'Tmotor3_Nm', false) : undefined;
-    const timestampIndex = hasExtendedFields ? 24 : 15;
-    const seqIndex = hasExtendedFields ? 25 : 16;
-    const statusIndex = hasExtendedFields ? 26 : 17;
+    const tokenNumber = (index) => parseOptionalNumberToken(parts[index]);
+    const statusScore = (index) => [parts[index], parts[index + 1], parts[index + 2]]
+      .filter((token) => token !== undefined && token !== '')
+      .filter((token) => parseOptionalNumberToken(token) === null)
+      .length;
+    const hasPreTimestampExtendedFields = (
+      parts.length >= 29
+      && tokenNumber(24) !== null
+      && tokenNumber(25) !== null
+      && (tokenNumber(15) === null || tokenNumber(16) === null || statusScore(26) > statusScore(17))
+    );
+    const timestampIndex = hasPreTimestampExtendedFields ? 24 : 15;
+    const seqIndex = hasPreTimestampExtendedFields ? 25 : 16;
+    const statusIndex = hasPreTimestampExtendedFields ? 26 : 17;
+    const postStatusExtendedStart = statusIndex + 3;
+    const hasPostStatusExtendedFields = !hasPreTimestampExtendedFields && parts.length >= postStatusExtendedStart + 9;
+
+    const extStart = hasPreTimestampExtendedFields ? 15 : (hasPostStatusExtendedFields ? postStatusExtendedStart : -1);
+    const PWM1 = extStart >= 0 ? numberAt(extStart, 'PWM1', false) : undefined;
+    const PWM2 = extStart >= 0 ? numberAt(extStart + 1, 'PWM2', false) : undefined;
+    const PWM3 = extStart >= 0 ? numberAt(extStart + 2, 'PWM3', false) : undefined;
+    const TbodycmdX = extStart >= 0 ? numberAt(extStart + 3, 'Tbodycmd_x_Nm', false) : undefined;
+    const TbodycmdY = extStart >= 0 ? numberAt(extStart + 4, 'Tbodycmd_y_Nm', false) : undefined;
+    const TbodycmdZ = extStart >= 0 ? numberAt(extStart + 5, 'Tbodycmd_z_Nm', false) : undefined;
+    const Tmotor1 = extStart >= 0 ? numberAt(extStart + 6, 'Tmotor1_Nm', false) : undefined;
+    const Tmotor2 = extStart >= 0 ? numberAt(extStart + 7, 'Tmotor2_Nm', false) : undefined;
+    const Tmotor3 = extStart >= 0 ? numberAt(extStart + 8, 'Tmotor3_Nm', false) : undefined;
     const timestamp = numberAt(timestampIndex, 'timestamp', false);
     const seq = numberAt(seqIndex, 'seq', false);
 
@@ -535,7 +576,7 @@ function parseTelCsvLine(line) {
       logging_status: parts[statusIndex + 2] ?? '',
     };
 
-    const encoderStart = statusIndex + 3;
+    const encoderStart = hasPostStatusExtendedFields ? postStatusExtendedStart + 9 : statusIndex + 3;
     if (parts.length > encoderStart) {
       const encoderValues = {
         enc_x_deg: parseOptionalNumberToken(parts[encoderStart]),
@@ -647,6 +688,25 @@ function parseRxDebugLine(line) {
   };
 }
 
+function parseRemoteEventLine(line) {
+  const clean = cleanLine(line);
+  const match = clean.match(/^(INFO|WARN|ERR|ACK|PONG)(?:,|\s|$)/i);
+  if (!match) return null;
+  const prefix = match[1].toUpperCase();
+  return {
+    ok: false,
+    statusOnly: true,
+    warning: prefix === 'WARN' || prefix === 'ERR',
+    ignored: prefix !== 'WARN' && prefix !== 'ERR',
+    reason: clean,
+    cleanLine: clean,
+    rawPrefix: prefix,
+    raw_prefix: prefix,
+    sample_type: prefix === 'ACK' ? 'COMMAND' : '',
+    sampleType: prefix === 'ACK' ? 'COMMAND' : '',
+  };
+}
+
 function parseEncCsvLine(line) {
   const clean = cleanLine(line);
   if (!clean.startsWith('ENC,')) return null;
@@ -683,15 +743,19 @@ function parseEncCsvLine(line) {
       if (axis === 'x') {
         encoderValues.enc_x_deg = angle;
         encoderValues.enc_timer_x = optionalAt(3);
+        encoderValues.enc_age_x = optionalAt(4);
       } else if (axis === 'y') {
         encoderValues.enc_y_deg = angle;
         encoderValues.enc_timer_y = optionalAt(3);
+        encoderValues.enc_age_y = optionalAt(4);
       } else if (axis === 'z') {
         encoderValues.enc_z_deg = angle;
         encoderValues.enc_timer_z = optionalAt(3);
+        encoderValues.enc_age_z = optionalAt(4);
       }
       encoderValues.encoderSource = `Gimbal Rotary Encoder ${axis.toUpperCase()} packet`;
-      if (parts.length > 4) encoderValues.encoderStatus = normalizeStatus(parts[4]);
+      if (parts.length > 4 && optionalAt(4) === null) encoderValues.encoderStatus = normalizeStatus(parts[4]);
+      if (parts.length > 5) encoderValues.encoderStatus = normalizeStatus(parts[5]);
     } else {
       encoderValues.enc_x_deg = optionalAt(1);
       encoderValues.enc_y_deg = optionalAt(2);
@@ -703,7 +767,15 @@ function parseEncCsvLine(line) {
       encoderValues.enc_timer_x = optionalAt(4);
       encoderValues.enc_timer_y = optionalAt(5);
       encoderValues.enc_timer_z = optionalAt(6);
-    } else if (!axis && parts.length >= 8) {
+    } else if (!axis && parts.length === 10) {
+      encoderValues.enc_timer_x = optionalAt(4);
+      encoderValues.enc_timer_y = optionalAt(5);
+      encoderValues.enc_timer_z = optionalAt(6);
+      encoderValues.enc_age_x = optionalAt(7);
+      encoderValues.enc_age_y = optionalAt(8);
+      encoderValues.enc_age_z = optionalAt(9);
+      encoderValues.encoderSource = 'Gimbal Rotary Encoder snapshot with timers and ages';
+    } else if (!axis && (parts.length === 8 || parts.length >= 11)) {
       encoderValues.enc_q0 = optionalAt(4);
       encoderValues.enc_q1 = optionalAt(5);
       encoderValues.enc_q2 = optionalAt(6);
@@ -713,7 +785,14 @@ function parseEncCsvLine(line) {
         encoderValues.enc_timer_y = optionalAt(9);
         encoderValues.enc_timer_z = optionalAt(10);
       }
-      if (parts.length > 11) {
+      if (parts.length > 13) {
+        encoderValues.enc_age_x = optionalAt(11);
+        encoderValues.enc_age_y = optionalAt(12);
+        encoderValues.enc_age_z = optionalAt(13);
+      }
+      if (parts.length > 14) {
+        encoderValues.encoderStatus = normalizeStatus(parts[14]);
+      } else if (parts.length > 11) {
         encoderValues.encoderStatus = normalizeStatus(parts[11]);
       }
     }
@@ -739,11 +818,11 @@ function parseEncCsvLine(line) {
   }
 }
 
-function parseSerialLine(line) {
+export function parseSerialLine(line) {
   const clean = cleanLine(line);
   if (!clean) return { ok: false, ignored: true, reason: 'empty line', cleanLine: '' };
 
-  const parsers = [parseTelCsvLine, parseImuCsvLine, parseEncCsvLine, parseRxDebugLine, parseRemoteStatusLine];
+  const parsers = [parseTelCsvLine, parseImuCsvLine, parseEncCsvLine, parseRemoteEventLine, parseRxDebugLine, parseRemoteStatusLine];
 
   for (const parser of parsers) {
     const parsed = parser(clean);
@@ -751,7 +830,7 @@ function parseSerialLine(line) {
     return parsed;
   }
 
-  if (/^(ACK|WARN|ERR|INFO|# STAT|\[SERIAL\]|\[STAT\])/.test(clean)) {
+  if (/^(# STAT|\[SERIAL\]|\[STAT\])/.test(clean)) {
     return { ok: false, warning: true, reason: clean, cleanLine: clean };
   }
 
