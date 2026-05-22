@@ -62,7 +62,7 @@ const IDENTITY_LIVE_PACKET = Object.freeze({
 const TUTORIAL_STEPS = Object.freeze([
   {
     title: 'Open Web App',
-    body: 'Open the Render link, then enter a display name so the server can identify your browser.',
+    body: 'Open cubli-remote-web-gui-920k.onrender.com, then enter a display name.',
   },
   {
     title: 'Admin / Viewer Role',
@@ -1321,9 +1321,6 @@ export default function CubliSimulator() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const fullDataLog = useRef([]);
 
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [showInstallPopup, setShowInstallPopup] = useState(false);
-
   const [isSensorActive, setIsSensorActive] = useState(false);
   const [useSerialImu, setUseSerialImu] = useState(false);
   const [useBleImu, setUseBleImu] = useState(false);
@@ -1860,36 +1857,21 @@ export default function CubliSimulator() {
   }, [isLogging, loggingStartTime]);
 
   useEffect(() => {
-    if (!serverSync?.hasDisplayName) return undefined;
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (typeof window === 'undefined') return undefined;
+    try {
+      window.localStorage.removeItem('cubliInstallPromptDismissed');
+      window.sessionStorage.removeItem('cubliInstallPromptShown');
+    } catch (_) {}
 
-    if (isStandalone) return undefined;
-
-    const handleBeforeInstallPrompt = (e) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-
-    const timer = setTimeout(() => {
-      setShowInstallPopup(true);
-    }, 1500);
-
-    const handleAppInstalled = () => {
-      setShowInstallPopup(false);
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener('appinstalled', handleAppInstalled);
-
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-      clearTimeout(timer);
     };
-  }, [serverSync?.hasDisplayName]);
+  }, []);
 
 
   useEffect(() => {
@@ -2036,6 +2018,7 @@ export default function CubliSimulator() {
     }
   }, [attitude, isPausedByLock, sensorMode, isLogging]);
 
+  /*
   const handleInstallClick = async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
@@ -2053,6 +2036,8 @@ export default function CubliSimulator() {
     }
   };
 
+  */
+  const handleInstallClick = () => {};
   const handleModalClose = () => {
     setShowLockModal(false);
     setIsPausedByLock(false);
@@ -2502,7 +2487,7 @@ export default function CubliSimulator() {
                 </div>
               )}
 
-              {deferredPrompt && (
+              {false && (
                 <div className="d-grid mb-3">
                   <Button
                     variant="outline-success"
@@ -2613,7 +2598,7 @@ export default function CubliSimulator() {
         </Modal.Footer>
       </Modal>
 
-      <Modal show={showInstallPopup} onHide={() => setShowInstallPopup(false)} centered backdrop="static" size="md">
+      <Modal show={false} onHide={() => {}} centered backdrop="static" size="md">
         <Modal.Header closeButton className="bg-success text-white border-0">
           <Modal.Title className="fw-bold w-100 text-center">📲 Cubli ADCS 앱 다운로드</Modal.Title>
         </Modal.Header>
@@ -2625,10 +2610,10 @@ export default function CubliSimulator() {
           </p>
         </Modal.Body>
         <Modal.Footer className="justify-content-center bg-dark border-secondary">
-          <Button variant="outline-light" onClick={() => setShowInstallPopup(false)} className="px-4 fs-7 nav-tabs">
+          <Button variant="outline-light" onClick={() => {}} className="px-4 fs-7 nav-tabs">
             나중에 웹으로 보기
           </Button>
-          <Button variant="success" onClick={handleInstallClick} className="px-4 fw-bold shadow fs-7">
+          <Button variant="success" onClick={() => {}} className="px-4 fw-bold shadow fs-7">
             지금 앱 설치하기
           </Button>
         </Modal.Footer>

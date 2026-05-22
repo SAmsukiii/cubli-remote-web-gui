@@ -29,7 +29,7 @@ const ACCEL_OPTIONS = [
   { label: '16 g', commandKey: 'acc16g' },
 ];
 const FILTER_PRESETS = [1, 5, 10, 20, 50];
-const WEB_APP_URL = 'https://cubli-remote-web-gui.onrender.com';
+const DEFAULT_WEB_APP_URL = 'https://cubli-remote-web-gui-920k.onrender.com/';
 const EULER_SEQUENCE_OPTIONS = ['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY'];
 const ATTITUDE_GAIN_DEFAULTS = {
   kp: { x: '0.040', y: '0.040', z: '0.040' },
@@ -336,6 +336,24 @@ function clientLabel(client = {}) {
   return clientDisplayName(safeClient) || (fallbackId === '-' ? 'Unknown' : fallbackId);
 }
 
+function getWebAppUrl() {
+  if (typeof window !== 'undefined') {
+    const hostname = String(window.location.hostname || '').toLowerCase();
+    if (hostname === 'onrender.com' || hostname.endsWith('.onrender.com')) {
+      return `${window.location.origin.replace(/\/+$/, '')}/`;
+    }
+  }
+  return DEFAULT_WEB_APP_URL;
+}
+
+function getWebAppDisplayUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (_) {
+    return String(url || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  }
+}
+
 function findClient(access = {}, clientId = '') {
   const safeAccess = access || {};
   const targetClientId = String(clientId || '').trim();
@@ -497,7 +515,6 @@ function IdentitySection({ serverSync, role, onChangeDisplayName }) {
         <div className="text-break">
           <div className="serial-section-title">You are</div>
           <div className="fs-6 fw-bold">{displayName} / {roleText}</div>
-          <div className="server-small-note">clientId: {shortClientId(safeServerSync?.clientId)}</div>
         </div>
         <div className="d-grid gap-2">
           <Badge bg={roleVariant(role)}>{roleText}</Badge>
@@ -531,8 +548,6 @@ function AdminLoginSection({ serverSync, role }) {
       <div className="d-flex justify-content-between align-items-start gap-2 mb-2">
         <div>
           <div className="serial-section-title">Login</div>
-          <div className="server-small-note text-break">Client ID: {safeServerSync?.clientId || '-'}</div>
-          <div className="server-small-note">Admin credentials are configured on server. Default and legacy Admin logins are accepted.</div>
         </div>
         <Badge bg={roleVariant(roleText)}>{roleText.toUpperCase()}</Badge>
       </div>
@@ -586,22 +601,29 @@ function AdminLoginSection({ serverSync, role }) {
 
 function ServerConnectionSection({ serverSync }) {
   const safeServerSync = serverSync || {};
+  const webAppUrl = getWebAppUrl();
+  const webAppDisplayUrl = getWebAppDisplayUrl(webAppUrl);
   const copyWebAppLink = () => {
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(WEB_APP_URL).catch(() => {});
+      navigator.clipboard.writeText(webAppUrl).catch(() => {});
     }
   };
   return (
     <div className="serial-control-card rounded p-3 mb-3">
       <div className="serial-section-title mb-2">Connection</div>
       <div className="serial-value-card rounded p-2 mb-3">
-        <ValueRow label="Web App Link" value={WEB_APP_URL} />
-        <div className="d-flex gap-2 mt-2">
-          <Button variant="outline-info" size="sm" href={WEB_APP_URL} target="_blank" rel="noreferrer">
-            Open Web App
+        <div className="serial-value-row d-flex justify-content-between gap-2 align-items-start">
+          <span>Web App</span>
+          <strong style={{ minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere', wordBreak: 'break-all', fontSize: '0.78rem' }}>
+            {webAppDisplayUrl}
+          </strong>
+        </div>
+        <div className="d-flex gap-2 mt-2 flex-wrap">
+          <Button variant="outline-info" size="sm" href={webAppUrl} target="_blank" rel="noreferrer">
+            Open
           </Button>
           <Button variant="outline-light" size="sm" onClick={copyWebAppLink}>
-            Copy Link
+            Copy
           </Button>
         </div>
       </div>
@@ -612,7 +634,7 @@ function ServerConnectionSection({ serverSync }) {
           type="text"
           value={safeServerSync.serverUrl || ''}
           onChange={(event) => safeServerSync.setServerUrl?.(event.target.value)}
-          placeholder="http://localhost:5050"
+          placeholder="Server URL"
         />
       </Form.Group>
 
@@ -1235,12 +1257,11 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   );
 }
 
-function MonitoringSection({ status, isActive = true }) {
+function MonitoringSection({ status, isActive = true, isAdmin = false }) {
   const safeStatus = status ?? EMPTY_OBJECT;
   const latest = useMemo(() => safeStatus.latestPacket || {}, [safeStatus.latestPacket]);
   const lastCommandInfo = useMemo(() => safeStatus.lastCommandInfo || {}, [safeStatus.lastCommandInfo]);
   const latestDesired = useMemo(() => safeStatus.latestDesiredAttitude || {}, [safeStatus.latestDesiredAttitude]);
-  const [showRawMonitor, setShowRawMonitor] = useState(false);
   const [showLivePlot, setShowLivePlot] = useState(true);
   const [showWheelGraphs, setShowWheelGraphs] = useState(false);
   const [showDebugTelemetry, setShowDebugTelemetry] = useState(false);
@@ -1248,9 +1269,9 @@ function MonitoringSection({ status, isActive = true }) {
   const sharedRows = useMemo(() => [
     { label: 'Shared Live Data', value: safeStatus.liveStatus || (latest?.publishedAt ? 'LIVE' : 'NONE') },
     { label: 'Published source', value: latest.sourceLabel || latest.source || '-' },
-    { label: 'Publisher', value: latest.publisherDisplayName || safeStatus.publisherDisplayName || latest.publisherClientId || safeStatus.publisherClientId || (latest.source === 'server-serial' ? 'server' : '-') },
+    { label: 'Publisher', value: latest.publisherDisplayName || safeStatus.publisherDisplayName || (latest.source === 'server-serial' ? 'server' : '-') },
     { label: 'Last publish time', value: formatDateTime(latest.publishedAt || safeStatus.publishedAt) },
-  ], [latest, safeStatus.liveStatus, safeStatus.publishedAt, safeStatus.publisherClientId, safeStatus.publisherDisplayName]);
+  ], [latest, safeStatus.liveStatus, safeStatus.publishedAt, safeStatus.publisherDisplayName]);
 
   const quaternionRows = useMemo(() => [
     { label: 'q0 / qw', value: formatNumber(latest.q0, 6) },
@@ -1388,20 +1409,27 @@ function MonitoringSection({ status, isActive = true }) {
     { label: 'Last command', value: safeStatus.lastCommand || '-' },
   ], [latest, safeStatus]);
 
-  const timeCommandRows = useMemo(() => [
-    { label: 'Server time', value: formatDateTime(latest.serverReceivedAt || latest.serverReceivedAtMs || latest.pcTimeMs || latest.pc_time_ms) },
-    { label: 'Session elapsed', value: formatDuration(latest.sessionElapsedMs ?? safeStatus.sessionElapsedMs) },
-    { label: 'Remote timestamp', value: formatNumber(latest.ebimu_timestamp_ms ?? latest.timestamp, 0) },
-    { label: 'seq', value: formatNumber(latest.seq, 0) },
-    { label: 'Last command', value: latest.lastCommandLabel || lastCommandInfo.label || '-' },
-    { label: 'Command key', value: latest.lastCommandKey || lastCommandInfo.commandKey || '-' },
-    { label: 'Detail', value: formatCommandParams(latest.lastCommandParams || lastCommandInfo.params) },
-    { label: 'Sent line', value: latest.lastCommandLineSent || lastCommandInfo.serialLineSent || '-' },
-    { label: 'By', value: latest.lastCommandByClientId || lastCommandInfo.clientId || '-' },
-    { label: 'Allowed', value: typeof (latest.lastCommandAllowed ?? lastCommandInfo.allowed) === 'boolean' ? String(latest.lastCommandAllowed ?? lastCommandInfo.allowed) : '-' },
-    { label: 'Reason', value: latest.lastCommandDenied ? (lastCommandInfo.reason || 'denied') : (lastCommandInfo.reason || '-') },
-    { label: 'Last command time', value: formatDateTime(latest.lastCommandAt || lastCommandInfo.at) },
-  ], [latest, lastCommandInfo, safeStatus.sessionElapsedMs]);
+  const timeCommandRows = useMemo(() => {
+    const rows = [
+      { label: 'Server time', value: formatDateTime(latest.serverReceivedAt || latest.serverReceivedAtMs || latest.pcTimeMs || latest.pc_time_ms) },
+      { label: 'Session elapsed', value: formatDuration(latest.sessionElapsedMs ?? safeStatus.sessionElapsedMs) },
+      { label: 'Remote timestamp', value: formatNumber(latest.ebimu_timestamp_ms ?? latest.timestamp, 0) },
+      { label: 'seq', value: formatNumber(latest.seq, 0) },
+      { label: 'Last command', value: latest.lastCommandLabel || lastCommandInfo.label || '-' },
+      { label: 'Detail', value: formatCommandParams(latest.lastCommandParams || lastCommandInfo.params) },
+    ];
+    if (isAdmin) {
+      rows.push(
+        { label: 'Command key', value: latest.lastCommandKey || lastCommandInfo.commandKey || '-' },
+        { label: 'Sent line', value: latest.lastCommandLineSent || lastCommandInfo.serialLineSent || '-' },
+        { label: 'By', value: latest.lastCommandByClientId || lastCommandInfo.clientId || '-' },
+        { label: 'Allowed', value: typeof (latest.lastCommandAllowed ?? lastCommandInfo.allowed) === 'boolean' ? String(latest.lastCommandAllowed ?? lastCommandInfo.allowed) : '-' },
+        { label: 'Reason', value: latest.lastCommandDenied ? (lastCommandInfo.reason || 'denied') : (lastCommandInfo.reason || '-') },
+      );
+    }
+    rows.push({ label: 'Last command time', value: formatDateTime(latest.lastCommandAt || lastCommandInfo.at) });
+    return rows;
+  }, [isAdmin, latest, lastCommandInfo, safeStatus.sessionElapsedMs]);
 
   const hasWheelGraphData = wheelGraphData.some((row) => (
     row.RPM1 != null || row.RPM2 != null || row.RPM3 != null ||
@@ -1459,19 +1487,21 @@ function MonitoringSection({ status, isActive = true }) {
         ) : null}
       </div>
 
-      <div className="serial-control-card rounded p-3 mb-3">
-        <div className="d-flex justify-content-between align-items-center mb-2">
-          <div className="serial-section-title">Debug Telemetry</div>
-          <Form.Check type="switch" id="show-debug-telemetry" label="Show" checked={showDebugTelemetry} onChange={(event) => setShowDebugTelemetry(event.target.checked)} />
+      {isAdmin ? (
+        <div className="serial-control-card rounded p-3 mb-3">
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <div className="serial-section-title">Debug Telemetry</div>
+            <Form.Check type="switch" id="show-debug-telemetry" label="Show" checked={showDebugTelemetry} onChange={(event) => setShowDebugTelemetry(event.target.checked)} />
+          </div>
+          {showDebugTelemetry ? <ValueGrid title="PWM / Torque Telemetry" rows={debugRows} /> : null}
         </div>
-        {showDebugTelemetry ? <ValueGrid title="PWM / Torque Telemetry" rows={debugRows} /> : null}
-      </div>
+      ) : null}
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">
           <div>
             <div className="serial-section-title">Live Plot</div>
-            <div className="server-small-note">Recent shared packets from Admin Web Serial Bridge. This plot is placed above Raw Monitor for quick checking.</div>
+            <div className="server-small-note">Recent shared packets from Admin Web Serial Bridge.</div>
           </div>
           <Form.Check type="switch" id="show-server-live-plot" label="Show" checked={showLivePlot} onChange={(event) => setShowLivePlot(event.target.checked)} />
         </div>
@@ -1544,14 +1574,12 @@ function MonitoringSection({ status, isActive = true }) {
           </Row>
         ) : null}
       </div>
-
-      <div className="serial-control-card rounded p-3 mb-3">
-        <div className="d-flex justify-content-between align-items-center mb-2">
-          <div className="serial-section-title">Raw Monitor</div>
-          <Form.Check type="switch" id="show-server-raw-monitor" label="Show" checked={showRawMonitor} onChange={(event) => setShowRawMonitor(event.target.checked)} />
+      {isAdmin ? (
+        <div className="serial-control-card rounded p-3 mb-3">
+          <div className="serial-section-title mb-1">Raw Monitor</div>
+          <div className="server-small-note">Raw monitor is admin-local only to reduce bandwidth. Use the Admin Web Serial panel.</div>
         </div>
-        {showRawMonitor ? <div className="serial-raw-line">{safeStatus.lastRawLine || '-'}</div> : null}
-      </div>
+      ) : null}
     </>
   );
 }
@@ -1799,7 +1827,7 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
         isController={Boolean(isController)}
       />
 
-      <MonitoringSection status={status} isActive={isActive} />
+      <MonitoringSection status={status} isActive={isActive} isAdmin={isAdmin} />
       <DataLoggingSection latestPacket={status.latestPacket} />
     </div>
   );

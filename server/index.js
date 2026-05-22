@@ -165,6 +165,76 @@ function firstStrictFinite(values, fallback = null) {
   return fallback;
 }
 
+function rawPrefixFromPacket(packet = {}) {
+  const explicit = String(packet.rawPrefix || packet.raw_prefix || '').trim().toUpperCase();
+  if (explicit) return explicit;
+  const rawText = typeof packet.raw === 'string' ? packet.raw.trim() : '';
+  return rawText ? String(rawText.split(/[,\s]+/)[0] || '').trim().toUpperCase() : '';
+}
+
+function sampleTypeFromPacket(packet = {}) {
+  const explicit = String(packet.sample_type || packet.sampleType || '').trim().toUpperCase();
+  if (explicit) return explicit;
+  const rawPrefix = rawPrefixFromPacket(packet);
+  if (rawPrefix === 'IMU' || rawPrefix === 'ENC' || rawPrefix === 'COMMAND') return rawPrefix;
+  return rawPrefix === 'CMD' ? 'COMMAND' : 'TEL';
+}
+
+function sanitizeDesiredAttitude(value, { includeDebug = false } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value || null;
+  const next = { ...value };
+  if (!includeDebug) delete next.clientId;
+  return next;
+}
+
+function sanitizeCommandInfo(value, { includeDebug = false } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value || null;
+  const next = { ...value };
+  if (!includeDebug) {
+    delete next.clientId;
+    delete next.commandId;
+    delete next.serialLineSent;
+  }
+  return next;
+}
+
+function sanitizeSharedPacket(packet, { includeDebug = false } = {}) {
+  if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return null;
+  const rawPrefix = rawPrefixFromPacket(packet);
+  const sampleType = sampleTypeFromPacket(packet);
+  const next = {
+    ...packet,
+    rawPrefix,
+    raw_prefix: rawPrefix,
+    sample_type: sampleType,
+    sampleType,
+    latestDesiredAttitude: sanitizeDesiredAttitude(packet.latestDesiredAttitude, { includeDebug }),
+  };
+
+  [
+    'raw',
+    'cleanLine',
+    'rawLine',
+    'rawHistory',
+    'rawMonitorLines',
+    'rawLines',
+  ].forEach((key) => {
+    delete next[key];
+  });
+
+  if (!includeDebug) {
+    [
+      'publisherClientId',
+      'lastCommandByClientId',
+      'lastCommandLineSent',
+    ].forEach((key) => {
+      delete next[key];
+    });
+  }
+
+  return next;
+}
+
 function getAdminCredentials() {
   const credentials = [...DEFAULT_ADMIN_CREDENTIALS];
   if (ENV_ADMIN_CREDENTIAL?.id && ENV_ADMIN_CREDENTIAL?.password) {
@@ -1011,7 +1081,9 @@ function publicAccessState(forClientId = '') {
   cleanupStaleController();
   const now = Date.now();
   const safeForClientId = String(forClientId || '').trim();
-  const clients = Array.from(accessState.clients.values()).filter((client) => client?.clientId).map((client) => {
+  const role = getEffectiveRole(safeForClientId);
+  const includeDebug = role === 'admin';
+  const clients = includeDebug ? Array.from(accessState.clients.values()).filter((client) => client?.clientId).map((client) => {
     const connected = isClientConnected(client, now);
     const displayName = sanitizeClientName(client?.displayName || client?.clientName || shortClientId(client?.clientId) || '');
     const clientId = String(client?.clientId || '').trim();
@@ -1030,13 +1102,12 @@ function publicAccessState(forClientId = '') {
       lastSeen: client.lastSeenAt,
       lastSeenMs: client.lastSeenAt ? new Date(client.lastSeenAt).getTime() : null,
     };
-  });
-  const role = getEffectiveRole(safeForClientId);
+  }) : [];
   const selfName = getStoredClientName(safeForClientId);
-  const controllerDisplayName = getStoredClientName(accessState.controllerClientId);
-  const adminDisplayName = getStoredClientName(accessState.adminClientId);
+  const controllerDisplayName = includeDebug ? getStoredClientName(accessState.controllerClientId) : '';
+  const adminDisplayName = includeDebug ? getStoredClientName(accessState.adminClientId) : '';
   return {
-    clientId: safeForClientId,
+    clientId: includeDebug ? safeForClientId : '',
     displayName: selfName,
     clientName: selfName,
     role,
@@ -1044,18 +1115,20 @@ function publicAccessState(forClientId = '') {
     myEffectiveRole: role,
     isAdmin: role === 'admin',
     isController: role === 'controller',
-    adminClientId: accessState.adminClientId,
+    adminClientId: includeDebug ? accessState.adminClientId : null,
     adminDisplayName,
     adminClientName: adminDisplayName,
-    adminLoginId: accessState.adminLoginId || '',
-    adminLabel: accessState.adminLabel || '',
-    controllerClientId: accessState.controllerClientId,
+    adminLoginId: includeDebug ? (accessState.adminLoginId || '') : '',
+    adminLabel: includeDebug ? (accessState.adminLabel || '') : '',
+    controllerClientId: includeDebug ? accessState.controllerClientId : null,
     controllerDisplayName,
     controllerClientName: controllerDisplayName,
     commandOwner: accessState.controllerClientId ? `Control assigned to: ${getClientLabel(accessState.controllerClientId)}` : 'Admin has control',
-    connectedClientCount: clients.filter((client) => client.connected).length,
+    connectedClientCount: includeDebug
+      ? clients.filter((client) => client.connected).length
+      : Array.from(accessState.clients.values()).filter((client) => isClientConnected(client, now)).length,
     clients,
-    accessLog: accessState.log.slice(-20),
+    accessLog: includeDebug ? accessState.log.slice(-20) : [],
   };
 }
 
@@ -1138,7 +1211,7 @@ function setLatestSharedPacket(packet, meta = {}) {
     encoderDisplayPitchSign: packet.encoderDisplayPitchSign,
     encoderDisplayYawSign: packet.encoderDisplayYawSign,
   });
-  const sharedPacket = {
+  const sharedPacket = sanitizeSharedPacket({
     ...packet,
     ...encoderTelemetry,
     source,
@@ -1150,7 +1223,7 @@ function setLatestSharedPacket(packet, meta = {}) {
     Roll_deg: packet.Roll_deg ?? packet.roll_deg ?? packet.rollDeg ?? null,
     Pitch_deg: packet.Pitch_deg ?? packet.pitch_deg ?? packet.pitchDeg ?? null,
     Yaw_deg: packet.Yaw_deg ?? packet.yaw_deg ?? packet.yawDeg ?? null,
-  };
+  }, { includeDebug: true });
   sharedState.latestSharedPacket = sharedPacket;
   sharedState.activeSharedSource = source;
   sharedState.sourceLabel = sourceLabel;
@@ -1181,18 +1254,17 @@ function setLatestSharedPacket(packet, meta = {}) {
     encoderPitch: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderPitchDeg : null,
     encoderYaw: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderYawDeg : null,
   }, MAX_CHART_POINTS);
-  if (sharedPacket.raw) pushLimited(sharedState.rawLines, { time: publishedAt, raw: sharedPacket.raw, source, sourceLabel }, MAX_RAW_LINES);
   appendActiveSessionSample(sharedPacket);
   // High-rate stream packet. Keep this payload small; status/bridge/client
   // management data is still available through /api/state. Sending bridgeStatus
   // at 100 Hz made Viewer browsers stutter on slower PCs/phones.
   broadcastLiveStream('live', {
     ok: true,
-    latestSharedPacket: sharedPacket,
+    latestSharedPacket: sanitizeSharedPacket(sharedPacket),
     latestSharedPacketUpdatedAt: sharedState.publishedAt,
     latestSharedPacketAgeMs: 0,
     activeSharedSource: sharedState.activeSharedSource,
-    publisherClientId: sharedState.publisherClientId,
+    publisherClientId: '',
     publisherDisplayName: sharedState.publisherDisplayName,
     publisherRole: sharedState.publisherRole,
     publishedAt: sharedState.publishedAt,
@@ -1201,10 +1273,11 @@ function setLatestSharedPacket(packet, meta = {}) {
   return sharedPacket;
 }
 
-function sanitizeSharedState() {
+function sanitizeSharedState(clientId = '') {
+  const includeDebug = getEffectiveRole(clientId) === 'admin';
   const storedPacket = sharedState.latestSharedPacket;
   const packet = storedPacket
-    ? {
+    ? sanitizeSharedPacket({
         ...storedPacket,
         ...normalizeEncoderTelemetry(storedPacket, {
           now: Date.now(),
@@ -1213,16 +1286,16 @@ function sanitizeSharedState() {
           encoderDisplayPitchSign: storedPacket.encoderDisplayPitchSign,
           encoderDisplayYawSign: storedPacket.encoderDisplayYawSign,
         }),
-      }
+      }, { includeDebug })
     : null;
   const ageMs = packet?.publishedAt ? Date.now() - packet.publishedAt : null;
   return {
     latestSharedPacket: packet,
-    latestDesiredAttitude: sharedState.latestDesiredAttitude,
-    lastCommandInfo: sharedState.lastCommandInfo,
+    latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug }),
+    lastCommandInfo: sanitizeCommandInfo(sharedState.lastCommandInfo, { includeDebug }),
     activeSharedSource: sharedState.activeSharedSource || '',
     sourceLabel: sharedState.sourceLabel || '',
-    publisherClientId: sharedState.publisherClientId || '',
+    publisherClientId: includeDebug ? (sharedState.publisherClientId || '') : '',
     publisherDisplayName: sharedState.publisherDisplayName || '',
     publisherRole: sharedState.publisherRole || '',
     publishedAt: sharedState.publishedAt || null,
@@ -1230,7 +1303,7 @@ function sanitizeSharedState() {
     ageMs,
     liveStatus: !packet ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
     chartData: sharedState.chartData,
-    rawLines: sharedState.rawLines,
+    rawLines: [],
     visualSettings: publicVisualSettings(),
   };
 }
@@ -1241,28 +1314,30 @@ function serialDiagnostics({ portCount = null, message = '' } = {}) {
     cwd: process.cwd(),
     nodeVersion: process.version,
     serialportAvailable: Boolean(SerialPort && ReadlineParser),
-    serialportLoadError,
+    serialportLoadError: includeDebug ? serialportLoadError : '',
     portCount,
     message: message || (SerialPort && ReadlineParser ? 'serialport package is available.' : 'serialport package is not available. Run npm install.'),
   };
 }
 
 function sanitizeSerialStatus(clientId = '') {
-  const shared = sanitizeSharedState();
+  const includeDebug = getEffectiveRole(clientId) === 'admin';
+  const shared = sanitizeSharedState(clientId);
+  const localLatestPacket = serialState.latestPacket ? sanitizeSharedPacket(serialState.latestPacket, { includeDebug }) : null;
   return {
     serialportAvailable: Boolean(SerialPort && ReadlineParser),
     serialportLoadError,
     isConnected: serialState.isConnected,
     isOpening: serialState.isOpening,
-    path: serialState.path,
+    path: includeDebug ? serialState.path : '',
     baudRate: serialState.baudRate,
     connectedAt: serialState.connectedAt,
     isStale: serialState.isConnected && serialState.lastReceivedAt ? Date.now() - serialState.lastReceivedAt > 700 : false,
-    lastError: serialState.lastError,
-    lastRawLine: shared.rawLines[shared.rawLines.length - 1]?.raw || serialState.lastRawLine,
-    lastInvalidReason: serialState.lastInvalidReason,
+    lastError: includeDebug ? serialState.lastError : '',
+    lastRawLine: includeDebug ? serialState.lastRawLine : '',
+    lastInvalidReason: includeDebug ? serialState.lastInvalidReason : '',
     lastReceivedAt: serialState.lastReceivedAt,
-    latestPacket: shared.latestSharedPacket || serialState.latestPacket,
+    latestPacket: shared.latestSharedPacket || localLatestPacket,
     latestSharedPacket: shared.latestSharedPacket,
     activeSharedSource: shared.activeSharedSource,
     sourceLabel: shared.sourceLabel,
@@ -1276,17 +1351,17 @@ function sanitizeSerialStatus(clientId = '') {
     latestDesiredAttitude: shared.latestDesiredAttitude,
     lastCommandInfo: shared.lastCommandInfo,
     visualSettings: shared.visualSettings,
-    recentPackets: serialState.recentPackets,
+    recentPackets: includeDebug ? serialState.recentPackets : [],
     chartData: shared.chartData.length ? shared.chartData : serialState.chartData,
-    rawLines: shared.rawLines.length ? shared.rawLines : serialState.rawLines,
+    rawLines: includeDebug ? serialState.rawLines : [],
     validCount: serialState.counters.valid,
     invalidCount: serialState.counters.invalid,
     ignoredCount: serialState.counters.ignored,
     warningCount: serialState.counters.warning,
     lastCommand: serialState.lastCommand,
-    bridge: bridgeStatus(),
-    diagnostics: serialDiagnostics(),
-    serverInfo: getServerInfo(),
+    bridge: bridgeStatus({ includeDebug }),
+    diagnostics: includeDebug ? serialDiagnostics() : null,
+    serverInfo: includeDebug ? getServerInfo() : null,
     access: publicAccessState(clientId),
   };
 }
@@ -1407,16 +1482,21 @@ function publicBridgeCommand(command) {
   return { ...command, displayName, clientName: displayName, adminDisplayName, adminClientName: adminDisplayName };
 }
 
-function bridgeStatus() {
+function bridgeStatus(options = {}) {
+  const includeDebug = Boolean(options.includeDebug);
   const now = Date.now();
   const adminBridgeLive = Boolean(sharedState.latestSharedPacket?.source === 'admin-web-serial' && sharedState.publishedAt && now - sharedState.publishedAt <= LIVE_STALE_MS);
   const pendingCount = bridgeState.commandQueue.filter((command) => command.status === 'pending' || command.status === 'dispatching').length;
-  return {
+  const summary = {
     enabledByServer: true,
     source: 'admin-web-serial',
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
     adminBridgeLive,
     pendingCount,
+  };
+  if (!includeDebug) return summary;
+  return {
+    ...summary,
     recentCommands: bridgeState.commandQueue.slice(-12).map(publicBridgeCommand),
     lastBridgeCommand: publicBridgeCommand(bridgeState.commandQueue[bridgeState.commandQueue.length - 1]),
   };
@@ -1490,15 +1570,16 @@ function setLastCommandInfo(command, options = {}) {
 }
 
 function statePayload(clientId = '') {
-  const shared = sanitizeSharedState();
+  const includeDebug = getEffectiveRole(clientId) === 'admin';
+  const shared = sanitizeSharedState(clientId);
   const displayName = getStoredClientName(clientId);
   return {
     ok: true,
-    clientId,
+    clientId: includeDebug ? clientId : '',
     displayName,
     clientName: displayName,
     role: getEffectiveRole(clientId),
-    serverInfo: getServerInfo(),
+    serverInfo: includeDebug ? getServerInfo() : null,
     access: publicAccessState(clientId),
     latestSharedPacket: shared.latestSharedPacket,
     latestSharedPacketAgeMs: shared.latestSharedPacketAgeMs,
@@ -1510,7 +1591,7 @@ function statePayload(clientId = '') {
     publishedAt: shared.publishedAt,
     liveStatus: shared.liveStatus,
     visualSettings: shared.visualSettings,
-    bridge: bridgeStatus(),
+    bridge: bridgeStatus({ includeDebug }),
     serialStatus: serialState.isConnected ? 'connected' : serialState.isOpening ? 'opening' : 'disconnected',
     serial: sanitizeSerialStatus(clientId),
   };
@@ -1518,6 +1599,7 @@ function statePayload(clientId = '') {
 
 app.get('/api/health', (req, res) => {
   const identity = readIdentity(req);
+  const includeDebug = identity.role === 'admin';
   res.json({
     ok: true,
     service: 'cubli-server-sync',
@@ -1531,14 +1613,14 @@ app.get('/api/health', (req, res) => {
       adminLogin: true,
     },
     time: new Date().toISOString(),
-    dataDir: DATA_DIR,
-    serverInfo: getServerInfo(),
+    dataDir: includeDebug ? DATA_DIR : null,
+    serverInfo: includeDebug ? getServerInfo() : { servingBuild: fs.existsSync(BUILD_INDEX) },
     serial: {
       available: Boolean(SerialPort && ReadlineParser),
       connected: serialState.isConnected,
-      path: serialState.path,
-      error: serialState.lastError || serialportLoadError || '',
-      diagnostics: serialDiagnostics(),
+      path: includeDebug ? serialState.path : '',
+      error: includeDebug ? (serialState.lastError || serialportLoadError || '') : '',
+      diagnostics: includeDebug ? serialDiagnostics() : null,
     },
     visualSettings: publicVisualSettings(),
     access: publicAccessState(identity.clientId),
@@ -1580,7 +1662,7 @@ app.post('/api/visual-settings', (req, res) => {
   broadcastLiveStream('state', {
     ok: true,
     ...sanitizeSharedState(),
-    bridge: bridgeStatus(),
+    bridge: bridgeStatus({ includeDebug: false }),
   });
   res.json({
     ok: true,
@@ -1590,7 +1672,7 @@ app.post('/api/visual-settings', (req, res) => {
 });
 
 app.get('/api/live/stream', (req, res) => {
-  readIdentity(req);
+  const identity = readIdentity(req);
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -1599,7 +1681,7 @@ app.get('/api/live/stream', (req, res) => {
   if (res.flushHeaders) res.flushHeaders();
 
   liveStreamClients.add(res);
-  sendLiveStreamEvent(res, 'state', { ok: true, ...sanitizeSharedState(), bridge: bridgeStatus() });
+  sendLiveStreamEvent(res, 'state', { ok: true, ...sanitizeSharedState(identity?.clientId || ''), bridge: bridgeStatus({ includeDebug: false }) });
 
   const heartbeat = setInterval(() => {
     try {
@@ -1619,7 +1701,7 @@ app.get('/api/live/stream', (req, res) => {
 app.get('/api/live/latest', (req, res) => {
   res.set('Cache-Control', 'no-store');
   const identity = readIdentity(req);
-  const shared = sanitizeSharedState();
+  const shared = sanitizeSharedState(identity.clientId);
   res.json({
     ok: true,
     latestSharedPacket: shared.latestSharedPacket,
@@ -1633,7 +1715,7 @@ app.get('/api/live/latest', (req, res) => {
     liveStatus: shared.liveStatus,
     latestDesiredAttitude: shared.latestDesiredAttitude,
     visualSettings: shared.visualSettings,
-    bridge: bridgeStatus(),
+    bridge: bridgeStatus({ includeDebug: false }),
     access: publicAccessState(identity.clientId),
   });
 });
@@ -1670,12 +1752,12 @@ app.post('/api/live/publish', (req, res) => {
   const identity = requireAdmin(req, res);
   if (!identity) return;
   if (!req.body?.packet) {
-    return res.status(400).json({ ok: false, error: 'packet is required', latestSharedPacket: sharedState.latestSharedPacket, access: publicAccessState(identity.clientId) });
+    return res.status(400).json({ ok: false, error: 'packet is required', latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }), access: publicAccessState(identity.clientId) });
   }
 
   const normalized = normalizePublishedPacket(req.body.packet, req.body.source || req.body.packet.source || 'admin-web-serial', identity);
   if (!normalized.ok) {
-    return res.status(400).json({ ok: false, error: normalized.error || 'Invalid live packet', latestSharedPacket: sharedState.latestSharedPacket, access: publicAccessState(identity.clientId) });
+    return res.status(400).json({ ok: false, error: normalized.error || 'Invalid live packet', latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }), access: publicAccessState(identity.clientId) });
   }
 
   const latestSharedPacket = setLatestSharedPacket(normalized.packet, {
@@ -1686,10 +1768,10 @@ app.post('/api/live/publish', (req, res) => {
     publisherRole: 'admin',
     publishedAt: Date.now(),
   });
-  const shared = sanitizeSharedState();
+  const shared = sanitizeSharedState(identity.clientId);
   res.json({
     ok: true,
-    latestSharedPacket,
+    latestSharedPacket: sanitizeSharedPacket(latestSharedPacket, { includeDebug: true }),
     latestDesiredAttitude: shared.latestDesiredAttitude,
     activeSharedSource: shared.activeSharedSource,
     publisherClientId: shared.publisherClientId,
@@ -1698,7 +1780,7 @@ app.post('/api/live/publish', (req, res) => {
     publishedAt: shared.publishedAt,
     latestSharedPacketAgeMs: shared.latestSharedPacketAgeMs,
     liveStatus: shared.liveStatus,
-    bridge: bridgeStatus(),
+    bridge: bridgeStatus({ includeDebug: true }),
     access: publicAccessState(identity.clientId),
   });
 });
@@ -1715,7 +1797,13 @@ app.post('/api/live/command', (req, res) => {
   const command = { ...descriptor, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, status: 'direct' };
   const info = setLastCommandInfo(command, { ok: true, reason: 'admin web serial direct command state' });
   appendActiveSessionEvent({ source: 'admin-web-serial', eventType: 'ADMIN_DIRECT_COMMAND', label: descriptor.label, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, commandKey: descriptor.commandKey, params: descriptor.params });
-  res.json({ ok: true, latestDesiredAttitude: sharedState.latestDesiredAttitude, lastCommandInfo: info, latestSharedPacket: sharedState.latestSharedPacket, access: publicAccessState(identity.clientId) });
+  res.json({
+    ok: true,
+    latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug: true }),
+    lastCommandInfo: sanitizeCommandInfo(info, { includeDebug: true }),
+    latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }),
+    access: publicAccessState(identity.clientId),
+  });
 });
 
 app.post('/api/bridge/command-request', (req, res) => {
@@ -1749,7 +1837,17 @@ app.post('/api/bridge/command-request', (req, res) => {
   if (bridgeState.commandQueue.length > MAX_BRIDGE_COMMANDS) bridgeState.commandQueue.splice(0, bridgeState.commandQueue.length - MAX_BRIDGE_COMMANDS);
   setLastCommandInfo(command, { ok: null, reason: 'queued for Admin Web Serial Bridge' });
   appendActiveSessionEvent({ source: 'admin-web-serial', eventType: 'BRIDGE_COMMAND_QUEUED', label: command.label, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, commandId: command.commandId, commandKey: command.commandKey, params: command.params, allowed: true });
-  res.status(202).json({ ok: true, commandId: command.commandId, command: publicBridgeCommand(command), lastCommandInfo: sharedState.lastCommandInfo, latestDesiredAttitude: sharedState.latestDesiredAttitude, latestSharedPacket: sharedState.latestSharedPacket, bridge: bridgeStatus(), access: publicAccessState(identity.clientId) });
+  const includeDebug = identity.role === 'admin';
+  res.status(202).json({
+    ok: true,
+    commandId: command.commandId,
+    command: publicBridgeCommand(command),
+    lastCommandInfo: sanitizeCommandInfo(sharedState.lastCommandInfo, { includeDebug }),
+    latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug }),
+    latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug }),
+    bridge: bridgeStatus({ includeDebug }),
+    access: publicAccessState(identity.clientId),
+  });
 });
 
 app.get('/api/bridge/commands/poll', (req, res) => {
@@ -1766,14 +1864,14 @@ app.get('/api/bridge/commands/poll', (req, res) => {
     command.dispatchedAtMs = now;
     setLastCommandInfo(command, { ok: null, reason: 'Admin bridge is relaying command...' });
   });
-  res.json({ ok: true, commands: pending.map(publicBridgeCommand), bridge: bridgeStatus(), access: publicAccessState(identity.clientId) });
+  res.json({ ok: true, commands: pending.map(publicBridgeCommand), bridge: bridgeStatus({ includeDebug: true }), access: publicAccessState(identity.clientId) });
 });
 
 app.post('/api/bridge/commands/:commandId/ack', (req, res) => {
   const identity = requireAdmin(req, res);
   if (!identity) return;
   const command = bridgeState.commandQueue.find((item) => item.commandId === String(req.params.commandId || '').trim());
-  if (!command) return res.status(404).json({ ok: false, error: 'Bridge command not found', bridge: bridgeStatus(), access: publicAccessState(identity.clientId) });
+  if (!command) return res.status(404).json({ ok: false, error: 'Bridge command not found', bridge: bridgeStatus({ includeDebug: true }), access: publicAccessState(identity.clientId) });
   const now = Date.now();
   const ok = Boolean(req.body?.ok);
   const sentLine = String(req.body?.sentLine || command.serialLine || '').trim();
@@ -1789,7 +1887,15 @@ app.post('/api/bridge/commands/:commandId/ack', (req, res) => {
   command.ackedAtMs = now;
   const info = setLastCommandInfo(command, { ok, sentLine: ok ? sentLine : '', error, reason: ok ? 'Admin bridge relayed command.' : error });
   appendActiveSessionEvent({ source: 'admin-web-serial', eventType: ok ? 'BRIDGE_COMMAND_EXECUTED' : 'BRIDGE_COMMAND_FAILED', label: command.label, clientId: command.clientId, displayName: getStoredClientName(command.clientId), clientName: getStoredClientName(command.clientId), role: command.role, adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, commandId: command.commandId, commandKey: command.commandKey, params: command.params, serialLineSent: ok ? sentLine : '', allowed: ok, reason: error });
-  res.json({ ok: true, command: publicBridgeCommand(command), lastCommandInfo: info, latestDesiredAttitude: sharedState.latestDesiredAttitude, latestSharedPacket: sharedState.latestSharedPacket, bridge: bridgeStatus(), access: publicAccessState(identity.clientId) });
+  res.json({
+    ok: true,
+    command: publicBridgeCommand(command),
+    lastCommandInfo: sanitizeCommandInfo(info, { includeDebug: true }),
+    latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug: true }),
+    latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }),
+    bridge: bridgeStatus({ includeDebug: true }),
+    access: publicAccessState(identity.clientId),
+  });
 });
 
 app.post('/api/admin/login', (req, res) => {
@@ -1989,7 +2095,8 @@ app.get('/api/serial/status', (req, res) => {
 });
 
 app.get('/api/serial/ports', async (req, res) => {
-  readIdentity(req);
+  const identity = requireAdmin(req, res);
+  if (!identity) return;
   if (!SerialPort) return res.status(500).json({ ok: false, error: serialportLoadError || 'serialport package is not available. Run npm install.', ports: [], diagnostics: serialDiagnostics({ portCount: 0 }) });
   try {
     const ports = await SerialPort.list();

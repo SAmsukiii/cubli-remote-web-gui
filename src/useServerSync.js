@@ -209,6 +209,17 @@ function addClientIdentityToJsonBody(body, clientId, displayName) {
   }
 }
 
+function stripRawForSharedPublish(packet = {}) {
+  const next = { ...packet };
+  delete next.raw;
+  delete next.cleanLine;
+  delete next.rawLine;
+  delete next.rawLines;
+  delete next.rawHistory;
+  delete next.rawMonitorLines;
+  return next;
+}
+
 function cleanServerUrl(url) {
   return String(url || FALLBACK_SERVER_URL).trim().replace(/\/+$/, '');
 }
@@ -1167,10 +1178,12 @@ export default function useServerSync() {
       return false;
     }
 
+    const packetForPublish = stripRawForSharedPublish(normalized);
+
     const makeSyntheticPublishData = () => {
       const publishedAt = Date.now();
       const latestSharedPacket = {
-        ...normalized,
+        ...packetForPublish,
         source: 'admin-web-serial',
         sourceLabel: 'Admin Web Serial Bridge',
         publishedAt,
@@ -1232,7 +1245,7 @@ export default function useServerSync() {
       clientName: safeDisplayName,
       displayName: safeDisplayName,
       source: 'admin-web-serial',
-      packet: { ...normalized, source: 'admin-web-serial', sourceLabel: 'Admin Web Serial Bridge' },
+      packet: { ...packetForPublish, source: 'admin-web-serial', sourceLabel: 'Admin Web Serial Bridge' },
     });
 
     const postPublish = async (baseUrl) => {
