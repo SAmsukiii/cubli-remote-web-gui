@@ -874,6 +874,7 @@ export default function useEsp32Serial(options = {}) {
   const [ignoredCount, setIgnoredCount] = useState(0);
   const [warningCount, setWarningCount] = useState(0);
   const [encoderCount, setEncoderCount] = useState(0);
+  const [inputHz, setInputHz] = useState(0);
   const [lastCommand, setLastCommand] = useState('');
 
   const portRef = useRef(null);
@@ -898,6 +899,7 @@ export default function useEsp32Serial(options = {}) {
   const pendingUiFlushRef = useRef(false);
   const droppedBufferCountRef = useRef(0);
   const encoderCountRef = useRef(0);
+  const inputRateWindowRef = useRef([]);
 
   const validRatio = useMemo(() => {
     const total = validCount + invalidCount;
@@ -906,6 +908,13 @@ export default function useEsp32Serial(options = {}) {
 
   const markPendingUiFlush = useCallback(() => {
     pendingUiFlushRef.current = true;
+  }, []);
+
+  const recordInputRate = useCallback((now = Date.now()) => {
+    inputRateWindowRef.current = [
+      ...inputRateWindowRef.current.filter((time) => now - time <= 1000),
+      now,
+    ];
   }, []);
 
   const pushCsvLogPacket = useCallback((packet) => {
@@ -937,6 +946,8 @@ export default function useEsp32Serial(options = {}) {
       setIgnoredCount(countersRef.current.ignored);
       setWarningCount(countersRef.current.warning);
       setEncoderCount(encoderCountRef.current);
+      inputRateWindowRef.current = inputRateWindowRef.current.filter((time) => Date.now() - time <= 1000);
+      setInputHz(inputRateWindowRef.current.length);
       setLastRawLine(lastRawLineRef.current);
       setLastInvalidReason(lastInvalidReasonRef.current);
       setLastReceivedAt(lastReceivedAtRef.current);
@@ -948,6 +959,7 @@ export default function useEsp32Serial(options = {}) {
   const registerValidPacketRefOnly = useCallback((parsed) => {
     if (parsed.encoderOnly) {
       const now = parsed.encoderUpdatedAt || Date.now();
+      recordInputRate(now);
       const encoderFields = makeEncoderFields(
         { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
         latestEncoderRef.current,
@@ -1051,6 +1063,7 @@ export default function useEsp32Serial(options = {}) {
 
     const euler = quaternionToEulerDeg(q, imuEulerSequence) || { roll: 0, pitch: 0, yaw: 0 };
     const now = Date.now();
+    recordInputRate(now);
     const encoderFields = hasIncomingEncoderData(parsed)
       ? makeEncoderFields({
           ...parsed,
@@ -1235,6 +1248,7 @@ export default function useEsp32Serial(options = {}) {
     imuEulerSequence,
     markPendingUiFlush,
     pushCsvLogPacket,
+    recordInputRate,
   ]);
 
   const registerInvalidLineRefOnly = useCallback((parsed) => {
@@ -1471,6 +1485,7 @@ export default function useEsp32Serial(options = {}) {
     pendingUiFlushRef.current = true;
     droppedBufferCountRef.current = 0;
     encoderCountRef.current = 0;
+    inputRateWindowRef.current = [];
 
     setLastRawLine('');
     setLastInvalidReason('');
@@ -1485,6 +1500,7 @@ export default function useEsp32Serial(options = {}) {
     setIgnoredCount(0);
     setWarningCount(0);
     setEncoderCount(0);
+    setInputHz(0);
     setLastCommand('');
   }, [encoderEulerSequence]);
 
@@ -1518,6 +1534,7 @@ export default function useEsp32Serial(options = {}) {
     ignoredCount,
     warningCount,
     encoderCount,
+    inputHz,
     validRatio,
     lastCommand,
     connect,

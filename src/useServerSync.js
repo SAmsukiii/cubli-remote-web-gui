@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { EULER_SEQUENCES, eulerDegToQuat, normalizeEulerSequence, normalizeLivePacket, normalizeSign } from './telemetryNormalize';
+import { EULER_SEQUENCES, eulerDegToQuat, normalizeEulerSequence, normalizeLivePacket } from './telemetryNormalize';
 
 const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
@@ -7,9 +7,8 @@ const SERVER_URL_KEY = 'cubliServerUrl';
 const IMU_EULER_SEQUENCE_KEY = 'cubliImuEulerSequence';
 const ENCODER_EULER_SEQUENCE_KEY = 'cubliEncoderEulerSequence';
 const TARGET_RPY_SEQUENCE_KEY = 'cubliTargetRpySequence';
-const TARGET_ROLL_SIGN_KEY = 'cubliTargetRollSign';
-const TARGET_PITCH_SIGN_KEY = 'cubliTargetPitchSign';
-const TARGET_YAW_SIGN_KEY = 'cubliTargetYawSign';
+const SERVER_PUBLISH_HZ_KEY = 'cubliServerPublishHz';
+const VIEWER_RECEIVE_HZ_KEY = 'cubliViewerReceiveHz';
 const DEFAULT_ROLL_SIGN = 1;
 const DEFAULT_PITCH_SIGN = 1;
 const DEFAULT_YAW_SIGN = -1;
@@ -33,8 +32,11 @@ const SERVER_PORT_CANDIDATES = ['5050', '5058', '5051', '5052', '5053', '5055'];
 const MAX_SAMPLE_QUEUE = 1200;
 const MAX_EVENT_QUEUE = 300;
 const DEFAULT_UPLOAD_RATE_HZ = 1;
+const LIVE_RATE_OPTIONS = Object.freeze([10, 15, 30, 50]);
+const DEFAULT_LIVE_RATE_HZ = 30;
 const MAX_BATCH_SAMPLES = 50;
 const MAX_BATCH_EVENTS = 30;
+const MAX_LOCAL_CHART_POINTS = 240;
 const DEFAULT_SERVER_URL = getDefaultServerUrl();
 const LIVE_PUBLISH_PATH = '/api/live/publish';
 const LIVE_PUBLISH_FAST_PATH = '/api/live/publish-fast';
@@ -42,9 +44,9 @@ const LIVE_PUBLISH_404_MESSAGE = 'HTTP 404: /api/live/publish endpoint not found
 const LIVE_PUBLISH_404_BACKOFF_MS = 5000;
 const LIVE_PUBLISH_MIN_INTERVAL_MS = 10;
 const API_SERVER_VERIFY_TTL_MS = 15000;
-const LIVE_LATEST_POLL_INTERVAL_MS = 50; // fallback only; skipped while SSE live stream is connected
-const ACCESS_STATE_POLL_INTERVAL_MS = 500;
-const SERVER_SERIAL_STATUS_POLL_INTERVAL_MS = 200;
+const LIVE_STREAM_ENABLED = false;
+const ACCESS_STATE_POLL_INTERVAL_MS = 1000;
+const SERVER_SERIAL_STATUS_POLL_INTERVAL_MS = 1000;
 
 function makeClientId() {
   const random = typeof crypto !== 'undefined' && crypto.randomUUID
@@ -112,9 +114,14 @@ function getStoredEulerSequence(key) {
   return normalizeEulerSequence(getLocalStorageValue(key), 'ZYX');
 }
 
-function getStoredSign(key, fallback = 1) {
-  if (typeof window === 'undefined') return normalizeSign(fallback, 1);
-  return normalizeSign(getLocalStorageValue(key), fallback);
+function normalizeLiveRateHz(value, fallback = DEFAULT_LIVE_RATE_HZ) {
+  const number = Number(value);
+  return LIVE_RATE_OPTIONS.includes(number) ? number : fallback;
+}
+
+function getStoredLiveRateHz(key, fallback = DEFAULT_LIVE_RATE_HZ) {
+  if (typeof window === 'undefined') return fallback;
+  return normalizeLiveRateHz(getLocalStorageValue(key), fallback);
 }
 
 function boolValue(value, fallback = false) {
@@ -218,6 +225,101 @@ function stripRawForSharedPublish(packet = {}) {
   delete next.rawHistory;
   delete next.rawMonitorLines;
   return next;
+}
+
+function sampleTypeFromPacket(packet = {}) {
+  return String(packet.sample_type || packet.sampleType || packet.rawPrefix || packet.raw_prefix || 'TEL').trim().toUpperCase();
+}
+
+function packetOrderValue(packet = {}) {
+  return {
+    seq: finiteNumber(packet.seq ?? packet.rxCount ?? packet.packetCount, null),
+    timestamp: finiteNumber(packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs, null),
+    pcTimeMs: finiteNumber(packet.pcTimeMs ?? packet.pc_time_ms ?? packet.updatedAt, null),
+  };
+}
+
+function isEncoderOnlyPacket(packet = {}) {
+  return sampleTypeFromPacket(packet) === 'ENC';
+}
+
+function isOlderAttitudePacket(nextPacket, previousPacket) {
+  if (!nextPacket || !previousPacket || isEncoderOnlyPacket(nextPacket)) return false;
+  const next = packetOrderValue(nextPacket);
+  const previous = packetOrderValue(previousPacket);
+  if (next.seq !== null && previous.seq !== null && next.seq < previous.seq) return true;
+  if (next.seq !== null && previous.seq !== null && next.seq > previous.seq) return false;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp < previous.timestamp) return true;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp > previous.timestamp) return false;
+  if (next.pcTimeMs !== null && previous.pcTimeMs !== null && next.pcTimeMs < previous.pcTimeMs) return true;
+  return false;
+}
+
+const ENCODER_PACKET_FIELDS = [
+  'sample_type', 'sampleType',
+  'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
+  'encoderXDeg', 'encoderYDeg', 'encoderZDeg',
+  'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
+  'encoderQ0', 'encoderQ1', 'encoderQ2', 'encoderQ3',
+  'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
+  'encoderRawRollDeg', 'encoderRawPitchDeg', 'encoderRawYawDeg',
+  'encoderEulerSequence', 'encoderStatus', 'encoderSource', 'encoderRpySource',
+  'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
+  'enc_age_x', 'enc_age_y', 'enc_age_z',
+  'encoderTimerX', 'encoderTimerY', 'encoderTimerZ',
+  'encoderAgeX', 'encoderAgeY', 'encoderAgeZ',
+  'encoderUpdatedAt', 'encoder',
+];
+
+function mergeEncoderPacket(previousPacket = {}, nextPacket = {}) {
+  const merged = {
+    ...previousPacket,
+    publishedAt: nextPacket.publishedAt ?? previousPacket.publishedAt,
+    serverReceivedAt: nextPacket.serverReceivedAt ?? previousPacket.serverReceivedAt,
+    serverReceivedAtMs: nextPacket.serverReceivedAtMs ?? previousPacket.serverReceivedAtMs,
+    serverSentAt: nextPacket.serverSentAt ?? previousPacket.serverSentAt,
+    encoderOnlyUpdate: true,
+  };
+  ENCODER_PACKET_FIELDS.forEach((key) => {
+    if (nextPacket[key] !== undefined) merged[key] = nextPacket[key];
+  });
+  merged.sample_type = 'ENC';
+  merged.sampleType = 'ENC';
+  return merged;
+}
+
+function compactChartPoint(packet = {}, sample = 1) {
+  return {
+    sample,
+    time: packet.pcTimeMs ?? packet.pc_time_ms ?? packet.publishedAt ?? Date.now(),
+    roll: finiteNumber(packet.roll_deg ?? packet.rollDeg, null),
+    pitch: finiteNumber(packet.pitch_deg ?? packet.pitchDeg, null),
+    yaw: finiteNumber(packet.yaw_deg ?? packet.yawDeg, null),
+    qerr: finiteNumber(packet.qerr_deg ?? packet.qerrDeg, null),
+    wx: finiteNumber(packet.wx, null),
+    wy: finiteNumber(packet.wy, null),
+    wz: finiteNumber(packet.wzDisplay ?? packet.wz, null),
+    RPM1: finiteNumber(packet.RPM1, null),
+    RPM2: finiteNumber(packet.RPM2, null),
+    RPM3: finiteNumber(packet.RPM3, null),
+    RPMcmd1: finiteNumber(packet.RPMcmd1, null),
+    RPMcmd2: finiteNumber(packet.RPMcmd2, null),
+    RPMcmd3: finiteNumber(packet.RPMcmd3, null),
+    encX: finiteNumber(packet.enc_x_deg ?? packet.encoderXDeg, null),
+    encY: finiteNumber(packet.enc_y_deg ?? packet.encoderYDeg, null),
+    encZ: finiteNumber(packet.enc_z_deg ?? packet.encoderZDeg, null),
+    encoderRoll: finiteNumber(packet.encoderRollDeg, null),
+    encoderPitch: finiteNumber(packet.encoderPitchDeg, null),
+    encoderYaw: finiteNumber(packet.encoderYawDeg, null),
+  };
+}
+
+function liveDataStatusFromAge(ageMs) {
+  const age = Number(ageMs);
+  if (!Number.isFinite(age)) return 'NONE';
+  if (age < 150) return 'LIVE';
+  if (age < 500) return 'SLOW';
+  return 'STALE';
 }
 
 function cleanServerUrl(url) {
@@ -687,11 +789,20 @@ export default function useServerSync() {
   const encoderDisplayPitchSign = DEFAULT_PITCH_SIGN;
   const encoderDisplayYawSign = DEFAULT_YAW_SIGN;
   const [targetRpySequence, setTargetRpySequenceState] = useState(() => getStoredEulerSequence(TARGET_RPY_SEQUENCE_KEY));
-  const [targetRollSign, setTargetRollSignState] = useState(() => getStoredSign(TARGET_ROLL_SIGN_KEY, DEFAULT_ROLL_SIGN));
-  const [targetPitchSign, setTargetPitchSignState] = useState(() => getStoredSign(TARGET_PITCH_SIGN_KEY, DEFAULT_PITCH_SIGN));
-  const [targetYawSign, setTargetYawSignState] = useState(() => getStoredSign(TARGET_YAW_SIGN_KEY, DEFAULT_YAW_SIGN));
   const bodyRateWzDisplaySign = DEFAULT_WZ_DISPLAY_SIGN;
   const [visualSettings, setVisualSettingsState] = useState(() => normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS));
+  const [serverPublishHz, setServerPublishHzState] = useState(() => getStoredLiveRateHz(SERVER_PUBLISH_HZ_KEY));
+  const [viewerReceiveHz, setViewerReceiveHzState] = useState(() => getStoredLiveRateHz(VIEWER_RECEIVE_HZ_KEY));
+  const [webSerialInputHz, setWebSerialInputHz] = useState(0);
+  const [actualPublishHz, setActualPublishHz] = useState(0);
+  const [actualReceiveHz, setActualReceiveHz] = useState(0);
+  const [publishLatencyMs, setPublishLatencyMs] = useState(null);
+  const [skippedPublishCount, setSkippedPublishCount] = useState(0);
+  const [droppedPublishCount, setDroppedPublishCount] = useState(0);
+  const [skippedReceiveCount, setSkippedReceiveCount] = useState(0);
+  const [serverToViewerLatencyMs, setServerToViewerLatencyMs] = useState(null);
+  const [droppedOutOfOrderCount, setDroppedOutOfOrderCount] = useState(0);
+  const [liveDataStatus, setLiveDataStatus] = useState('NONE');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastError, setLastError] = useState('');
   const [sessionId, setSessionId] = useState('');
@@ -739,6 +850,9 @@ export default function useServerSync() {
     publishedAt: null,
     latestSharedPacketAgeMs: null,
     liveStatus: 'NONE',
+    receiveStatus: 'NONE',
+    serverToViewerLatencyMs: null,
+    droppedOutOfOrderCount: 0,
     visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
     bridge: {
       enabledByServer: true,
@@ -772,6 +886,11 @@ export default function useServerSync() {
   const latestServerSerialPacketRef = useRef(null);
   const publishPrevPacketRef = useRef(null);
   const lastPublishAtRef = useRef(0);
+  const publishInFlightRef = useRef(false);
+  const publishTimesRef = useRef([]);
+  const receiveTimesRef = useRef([]);
+  const webSerialInputTimesRef = useRef([]);
+  const localChartSampleRef = useRef(0);
   const consecutivePublish404Ref = useRef(0);
   const publishBackoffUntilRef = useRef(0);
   const apiServerVerifiedUrlRef = useRef('');
@@ -836,28 +955,43 @@ export default function useServerSync() {
     return next;
   }, []);
 
-  const setStoredSign = useCallback((key, setter, value, fallback = 1) => {
-    const next = normalizeSign(value, fallback);
-    setter(next);
-    setLocalStorageValue(key, next);
-    return next;
-  }, []);
-
   const setTargetRpySequence = useCallback((value) => {
     const next = normalizeEulerSequence(value, 'ZYX');
     setTargetRpySequenceState(next);
     setLocalStorageValue(TARGET_RPY_SEQUENCE_KEY, next);
     return next;
   }, []);
-  const setTargetRollSign = useCallback((value) => setStoredSign(TARGET_ROLL_SIGN_KEY, setTargetRollSignState, value, DEFAULT_ROLL_SIGN), [setStoredSign]);
-  const setTargetPitchSign = useCallback((value) => setStoredSign(TARGET_PITCH_SIGN_KEY, setTargetPitchSignState, value, DEFAULT_PITCH_SIGN), [setStoredSign]);
-  const setTargetYawSign = useCallback((value) => setStoredSign(TARGET_YAW_SIGN_KEY, setTargetYawSignState, value, DEFAULT_YAW_SIGN), [setStoredSign]);
   const resetTargetCommandConvention = useCallback(() => {
     setTargetRpySequence('ZYX');
-    setTargetRollSign(DEFAULT_ROLL_SIGN);
-    setTargetPitchSign(DEFAULT_PITCH_SIGN);
-    setTargetYawSign(DEFAULT_YAW_SIGN);
-  }, [setTargetPitchSign, setTargetRollSign, setTargetRpySequence, setTargetYawSign]);
+  }, [setTargetRpySequence]);
+
+  const setServerPublishHz = useCallback((value) => {
+    const next = normalizeLiveRateHz(value);
+    setServerPublishHzState(next);
+    setLocalStorageValue(SERVER_PUBLISH_HZ_KEY, next);
+    return next;
+  }, []);
+
+  const setViewerReceiveHz = useCallback((value) => {
+    const next = normalizeLiveRateHz(value);
+    setViewerReceiveHzState(next);
+    setLocalStorageValue(VIEWER_RECEIVE_HZ_KEY, next);
+    return next;
+  }, []);
+
+  const recordRateSample = useCallback((ref, setter, now = Date.now()) => {
+    ref.current = [...ref.current.filter((time) => now - time <= 1000), now];
+    setter(ref.current.length);
+  }, []);
+
+  const recordWebSerialInputPacket = useCallback((updatedAt = Date.now()) => {
+    recordRateSample(webSerialInputTimesRef, setWebSerialInputHz, Number(updatedAt) || Date.now());
+  }, [recordRateSample]);
+
+  const notePublishSkipped = useCallback((dropped = false) => {
+    setSkippedPublishCount((prev) => prev + 1);
+    if (dropped) setDroppedPublishCount((prev) => prev + 1);
+  }, []);
 
   const getSuggestedDisplayName = useCallback((role = 'Viewer') => (
     makeSuggestedDisplayName(role, clientId)
@@ -1150,12 +1284,22 @@ export default function useServerSync() {
     }
     if (!packet) return false;
     const now = Date.now();
-    const minIntervalMs = Number(options.minIntervalMs ?? LIVE_PUBLISH_MIN_INTERVAL_MS);
-    if (!options.force && now - lastPublishAtRef.current < minIntervalMs) return false;
+    const targetHz = normalizeLiveRateHz(options.publishHz ?? serverPublishHz);
+    const minIntervalMs = Number(options.minIntervalMs ?? Math.max(LIVE_PUBLISH_MIN_INTERVAL_MS, Math.round(1000 / targetHz)));
+    if (publishInFlightRef.current) {
+      setSkippedPublishCount((prev) => prev + 1);
+      setDroppedPublishCount((prev) => prev + 1);
+      return false;
+    }
+    if (!options.force && now - lastPublishAtRef.current < minIntervalMs) {
+      setSkippedPublishCount((prev) => prev + 1);
+      return false;
+    }
 
     if (publishBackoffUntilRef.current && now < publishBackoffUntilRef.current) {
       const remainingMs = publishBackoffUntilRef.current - now;
       setLastPublishError(`${LIVE_PUBLISH_404_MESSAGE} Publish is paused for ${Math.ceil(remainingMs / 1000)}s after repeated 404 responses.`);
+      setSkippedPublishCount((prev) => prev + 1);
       return false;
     }
 
@@ -1241,6 +1385,7 @@ export default function useServerSync() {
       setLastPublishHttpStatus(data.httpStatus || 200);
       setLastPublishError('');
       setPublishCount((prev) => prev + 1);
+      recordRateSample(publishTimesRef, setActualPublishHz, Date.now());
       setConnectionStatus('connected');
       setLastError('');
       return true;
@@ -1255,7 +1400,7 @@ export default function useServerSync() {
     });
 
     const postPublish = async (baseUrl) => {
-      const endpointPath = options.fast ? LIVE_PUBLISH_FAST_PATH : LIVE_PUBLISH_PATH;
+      const endpointPath = options.fast === false ? LIVE_PUBLISH_PATH : LIVE_PUBLISH_FAST_PATH;
       const response = await fetch(`${cleanServerUrl(baseUrl)}${endpointPath}`, {
         method: 'POST',
         headers: makeClientHeaders(clientId, safeDisplayName, {
@@ -1288,11 +1433,15 @@ export default function useServerSync() {
       return data;
     };
 
-    const baseUrl = await ensureApiServerUrl(serverUrlRef.current);
     lastPublishAtRef.current = now;
+    publishInFlightRef.current = true;
+    const publishStartedAt = Date.now();
+    let baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
 
     try {
+      baseUrl = await ensureApiServerUrl(serverUrlRef.current);
       const data = await postPublish(baseUrl);
+      setPublishLatencyMs(Date.now() - publishStartedAt);
       return handlePublishSuccess(data);
     } catch (err) {
       let publishError = err;
@@ -1304,6 +1453,7 @@ export default function useServerSync() {
         if (detectedUrl && detectedUrl !== baseUrl) {
           try {
             const retryData = await postPublish(detectedUrl);
+            setPublishLatencyMs(Date.now() - publishStartedAt);
             return handlePublishSuccess(retryData);
           } catch (retryErr) {
             publishError = retryErr;
@@ -1332,6 +1482,8 @@ export default function useServerSync() {
       setConnectionStatus('error');
       setLastError(errorMessage);
       return false;
+    } finally {
+      publishInFlightRef.current = false;
     }
   }, [
     bodyRateWzDisplaySign,
@@ -1347,6 +1499,8 @@ export default function useServerSync() {
     imuEulerSequence,
     safeDisplayName,
     ensureApiServerUrl,
+    recordRateSample,
+    serverPublishHz,
     serverSerialStatus.latestDesiredAttitude,
   ]);
 
@@ -1473,12 +1627,9 @@ export default function useServerSync() {
     const inputPitch = finiteCommandNumber(params.inputPitch ?? params.pitch ?? params.target2, 0);
     const inputYaw = finiteCommandNumber(params.inputYaw ?? params.yaw ?? params.target3, 0);
     const sequence = normalizeEulerSequence(params.targetRpySequence || params.targetSequence || targetRpySequence, 'ZYX');
-    const rollSign = normalizeSign(params.targetRollSign, targetRollSign);
-    const pitchSign = normalizeSign(params.targetPitchSign, targetPitchSign);
-    const yawSign = normalizeSign(params.targetYawSign, targetYawSign);
-    const roll = inputRoll * rollSign;
-    const pitch = inputPitch * pitchSign;
-    const yaw = inputYaw * yawSign;
+    const roll = inputRoll;
+    const pitch = inputPitch;
+    const yaw = inputYaw;
     const qd = eulerDegToQuat(roll, pitch, yaw, sequence) || [1, 0, 0, 0];
     return {
       ...params,
@@ -1489,16 +1640,13 @@ export default function useServerSync() {
       pitch,
       yaw,
       targetRpySequence: sequence,
-      targetRollSign: rollSign,
-      targetPitchSign: pitchSign,
-      targetYawSign: yawSign,
       qd0: qd[0],
       qd1: qd[1],
       qd2: qd[2],
       qd3: qd[3],
       targetConventionApplied: true,
     };
-  }, [targetPitchSign, targetRollSign, targetRpySequence, targetYawSign]);
+  }, [targetRpySequence]);
 
   const updateServerSerialStatusState = useCallback((data) => {
     if (!data) return data;
@@ -1647,13 +1795,24 @@ export default function useServerSync() {
     sendServerSerialCommand('targetAttitude', { roll, pitch, yaw }, { eventType: 'TARGET_ATTITUDE', label: 'Send Target Attitude' })
   ), [sendServerSerialCommand]);
 
-  const sendCubliInitialize = useCallback(() => (
-    sendServerSerialCommand('cubliInitialize', {}, {
+  const sendCubliInitialize = useCallback(async () => {
+    const initOk = await sendServerSerialCommand('cubliInitialize', {}, {
       eventType: 'CUBLI_INITIALIZE',
       label: 'Cubli Initialize',
       detail: { firmwareCommand: 'TARE' },
-    })
-  ), [sendServerSerialCommand]);
+    });
+    await sendServerSerialCommand('magOff', {}, {
+      eventType: 'EBIMU_RUNTIME',
+      label: 'Default IMU Magnetometer Off',
+      detail: { defaultImuSetting: true },
+    });
+    await sendServerSerialCommand('gyro500', {}, {
+      eventType: 'EBIMU_RUNTIME',
+      label: 'Default IMU Gyro 500 dps',
+      detail: { defaultImuSetting: true },
+    });
+    return Boolean(initOk);
+  }, [sendServerSerialCommand]);
 
   const sendEncoderInitialize = useCallback(() => (
     sendServerSerialCommand('encoderInitialize', {}, {
@@ -1768,28 +1927,19 @@ export default function useServerSync() {
       const nextVisualSettings = applyVisualSettings(data.visualSettings || data.serial?.visualSettings);
       setServerSerialStatus((prev) => ({
         ...prev,
-        ...(data.serial || {}),
         visualSettings: nextVisualSettings || data.serial?.visualSettings || prev.visualSettings,
-        latestSharedPacket: data.latestSharedPacket || data.serial?.latestSharedPacket || prev.latestSharedPacket,
-        latestPacket: data.serial?.latestPacket || data.latestSharedPacket || prev.latestPacket,
-        activeSharedSource: data.activeSharedSource || data.serial?.activeSharedSource || prev.activeSharedSource,
-        publisherClientId: data.publisherClientId || data.serial?.publisherClientId || prev.publisherClientId,
-        publisherDisplayName: data.publisherDisplayName || data.serial?.publisherDisplayName || prev.publisherDisplayName,
-        publisherRole: data.publisherRole || data.serial?.publisherRole || prev.publisherRole,
-        publishedAt: data.publishedAt || data.serial?.publishedAt || prev.publishedAt,
-        latestSharedPacketAgeMs: data.latestSharedPacketAgeMs ?? data.serial?.latestSharedPacketAgeMs ?? prev.latestSharedPacketAgeMs,
-        liveStatus: data.liveStatus || data.serial?.liveStatus || prev.liveStatus,
         bridge: data.bridge || data.serial?.bridge || prev.bridge,
         lastBridgeCommand: data.bridge?.lastBridgeCommand || data.serial?.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
         access: data.access || prev.access,
         serverInfo: data.serverInfo || data.serial?.serverInfo || prev.serverInfo,
+        serialportAvailable: data.serial?.serialportAvailable ?? prev.serialportAvailable,
+        serialportLoadError: data.serial?.serialportLoadError || prev.serialportLoadError,
+        isConnected: data.serial?.isConnected ?? prev.isConnected,
+        isOpening: data.serial?.isOpening ?? prev.isOpening,
+        path: data.serial?.path ?? prev.path,
+        baudRate: data.serial?.baudRate ?? prev.baudRate,
+        lastError: data.serial?.lastError || prev.lastError,
       }));
-      if (data.serial?.latestPacket?.updatedAt) {
-        latestServerSerialPacketRef.current = data.serial.latestPacket;
-      }
-      if (data.latestSharedPacket?.updatedAt || data.latestSharedPacket?.publishedAt) {
-        latestServerSerialPacketRef.current = data.latestSharedPacket;
-      }
       return data.access || null;
     } catch (err) {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Access state refresh failed' }));
@@ -1801,7 +1951,30 @@ export default function useServerSync() {
     if (!data || typeof data !== 'object') return null;
     const nextVisualSettings = applyVisualSettings(data.visualSettings);
 
-    const packet = data.latestSharedPacket || data.packet || null;
+    const incomingPacket = data.latestSharedPacket || data.packet || null;
+    const previousPacket = latestServerSerialPacketRef.current;
+    let packet = incomingPacket;
+    let outOfOrder = false;
+    if (packet && isOlderAttitudePacket(packet, previousPacket)) {
+      outOfOrder = true;
+      setDroppedOutOfOrderCount((prev) => Math.max(prev + 1, Number(data.droppedOutOfOrderCount) || 0));
+      packet = previousPacket;
+    } else if (packet && previousPacket && isEncoderOnlyPacket(packet)) {
+      packet = mergeEncoderPacket(previousPacket, packet);
+    }
+
+    const now = Date.now();
+    const packetAgeMs = data.latestSharedPacketAgeMs ?? data.ageMs ?? (
+      packet?.publishedAt ? Math.max(0, now - packet.publishedAt) : null
+    );
+    const receiveLatencyMs = data.serverSentAt ? Math.max(0, now - Number(data.serverSentAt)) : null;
+    if (data.droppedOutOfOrderCount != null) {
+      setDroppedOutOfOrderCount(Number(data.droppedOutOfOrderCount) || 0);
+    }
+    setServerToViewerLatencyMs(receiveLatencyMs);
+    setLiveDataStatus(liveDataStatusFromAge(packetAgeMs));
+    recordRateSample(receiveTimesRef, setActualReceiveHz, now);
+
     if (packet?.updatedAt || packet?.publishedAt) {
       latestServerSerialPacketRef.current = packet;
       if (typeof window !== 'undefined') {
@@ -1820,18 +1993,24 @@ export default function useServerSync() {
       publisherDisplayName: data.publisherDisplayName || packet?.publisherDisplayName || prev.publisherDisplayName,
       publisherRole: data.publisherRole || packet?.publisherRole || prev.publisherRole,
       publishedAt: data.publishedAt || packet?.publishedAt || prev.publishedAt,
-      latestSharedPacketAgeMs: data.latestSharedPacketAgeMs ?? data.ageMs ?? prev.latestSharedPacketAgeMs,
-      liveStatus: data.liveStatus || prev.liveStatus,
+      latestSharedPacketAgeMs: packetAgeMs ?? prev.latestSharedPacketAgeMs,
+      liveStatus: liveDataStatusFromAge(packetAgeMs) || data.liveStatus || prev.liveStatus,
       bridge: data.bridge || prev.bridge,
       visualSettings: nextVisualSettings || prev.visualSettings,
       lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
       latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
       access: data.access || prev.access,
+      droppedOutOfOrderCount: Number(data.droppedOutOfOrderCount) || droppedOutOfOrderCount,
+      serverToViewerLatencyMs: receiveLatencyMs,
+      receiveStatus: liveDataStatusFromAge(packetAgeMs),
+      chartData: packet && !outOfOrder
+        ? [...(Array.isArray(prev.chartData) ? prev.chartData : []), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
+        : (Array.isArray(prev.chartData) ? prev.chartData : []),
       lastError: '',
     }));
 
     return packet;
-  }, [applyVisualSettings]);
+  }, [applyVisualSettings, droppedOutOfOrderCount, recordRateSample]);
 
   const scheduleLiveStateFlush = useCallback((data) => {
     applyLivePayload(data, { updateState: false });
@@ -1854,7 +2033,10 @@ export default function useServerSync() {
   }, [applyLivePayload]);
 
   const refreshLiveLatest = useCallback(async () => {
-    if (liveLatestPollBusyRef.current) return null;
+    if (liveLatestPollBusyRef.current) {
+      setSkippedReceiveCount((prev) => prev + 1);
+      return null;
+    }
     liveLatestPollBusyRef.current = true;
 
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
@@ -1987,6 +2169,7 @@ export default function useServerSync() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') return undefined;
+    if (!LIVE_STREAM_ENABLED) return undefined;
     if (!hasDisplayName) return undefined;
 
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrl);
@@ -2061,16 +2244,16 @@ export default function useServerSync() {
   }, [clientId, safeDisplayName, hasDisplayName, scheduleLiveStateFlush, serverUrl]);
 
   useEffect(() => {
-    // Fallback for browsers/network paths where EventSource is unavailable.
-    // Do not keep polling /api/live/latest while SSE is connected; that extra
-    // 20 Hz HTTP traffic was a major source of Viewer-side stutter.
+    // High-speed live telemetry uses /api/live/latest only. Request overlap is
+    // skipped in refreshLiveLatest, so slow networks do not build a backlog.
     if (!hasDisplayName) return undefined;
     refreshLiveLatest();
+    const intervalMs = Math.max(20, Math.round(1000 / normalizeLiveRateHz(viewerReceiveHz)));
     const timer = window.setInterval(() => {
-      if (!liveStreamConnectedRef.current) refreshLiveLatest();
-    }, LIVE_LATEST_POLL_INTERVAL_MS);
+      refreshLiveLatest();
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [hasDisplayName, refreshLiveLatest]);
+  }, [hasDisplayName, refreshLiveLatest, viewerReceiveHz]);
 
   useEffect(() => {
     if (!hasDisplayName) return undefined;
@@ -2109,13 +2292,24 @@ export default function useServerSync() {
     resetVisualSettings,
     targetRpySequence,
     setTargetRpySequence,
-    targetRollSign,
-    setTargetRollSign,
-    targetPitchSign,
-    setTargetPitchSign,
-    targetYawSign,
-    setTargetYawSign,
     resetTargetCommandConvention,
+    liveRateOptions: LIVE_RATE_OPTIONS,
+    serverPublishHz,
+    setServerPublishHz,
+    viewerReceiveHz,
+    setViewerReceiveHz,
+    webSerialInputHz,
+    actualPublishHz,
+    actualReceiveHz,
+    publishLatencyMs,
+    skippedPublishCount,
+    droppedPublishCount,
+    skippedReceiveCount,
+    serverToViewerLatencyMs,
+    droppedOutOfOrderCount,
+    liveDataStatus,
+    recordWebSerialInputPacket,
+    notePublishSkipped,
     getSuggestedDisplayName,
     role: serverSerialStatus.access?.myEffectiveRole || 'viewer',
     isAdmin: serverSerialStatus.access?.myEffectiveRole === 'admin',
@@ -2135,6 +2329,8 @@ export default function useServerSync() {
     publishCount,
     publishFailedCount,
     publishBackoffUntil,
+    serverPublishIntervalMs: Math.max(20, Math.round(1000 / normalizeLiveRateHz(serverPublishHz))),
+    viewerReceiveIntervalMs: Math.max(20, Math.round(1000 / normalizeLiveRateHz(viewerReceiveHz))),
     latestSharedPacket: serverSerialStatus.latestSharedPacket,
     latestSharedPacketAgeMs: serverSerialStatus.latestSharedPacketAgeMs,
     activeSharedSource: serverSerialStatus.activeSharedSource,
@@ -2181,12 +2377,6 @@ export default function useServerSync() {
       sendControllerCommand: sendServerControllerCommand,
       targetRpySequence,
       setTargetRpySequence,
-      targetRollSign,
-      setTargetRollSign,
-      targetPitchSign,
-      setTargetPitchSign,
-      targetYawSign,
-      setTargetYawSign,
       resetTargetCommandConvention,
       imuDisplayYawSign,
       bodyRateWzDisplaySign,

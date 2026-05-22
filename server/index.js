@@ -94,6 +94,8 @@ const sharedState = {
   previousRatePacket: null,
   omegaEstimate: null,
   visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
+  droppedOutOfOrderCount: 0,
+  lastOutOfOrderAt: null,
 };
 
 const serialState = {
@@ -233,6 +235,238 @@ function sanitizeSharedPacket(packet, { includeDebug = false } = {}) {
   }
 
   return next;
+}
+
+const COMPACT_LIVE_PACKET_KEYS = Object.freeze([
+  'ok',
+  'sample_type',
+  'sampleType',
+  'source',
+  'sourceLabel',
+  'q0',
+  'q1',
+  'q2',
+  'q3',
+  'q',
+  'norm',
+  'rollDeg',
+  'pitchDeg',
+  'yawDeg',
+  'roll_deg',
+  'pitch_deg',
+  'yaw_deg',
+  'Roll_deg',
+  'Pitch_deg',
+  'Yaw_deg',
+  'imuEulerSequence',
+  'rpySource',
+  'qerr_deg',
+  'qerrDeg',
+  'qerrSource',
+  'wx',
+  'wy',
+  'wz',
+  'wzRaw',
+  'wzDisplay',
+  'angularRateSource',
+  'RPM1',
+  'RPM2',
+  'RPM3',
+  'RPMcmd1',
+  'RPMcmd2',
+  'RPMcmd3',
+  'PWM1',
+  'PWM2',
+  'PWM3',
+  'Tbodycmd_x_Nm',
+  'Tbodycmd_y_Nm',
+  'Tbodycmd_z_Nm',
+  'Tmotor1_Nm',
+  'Tmotor2_Nm',
+  'Tmotor3_Nm',
+  'enc_x_deg',
+  'enc_y_deg',
+  'enc_z_deg',
+  'encoderXDeg',
+  'encoderYDeg',
+  'encoderZDeg',
+  'enc_q0',
+  'enc_q1',
+  'enc_q2',
+  'enc_q3',
+  'encoderQ0',
+  'encoderQ1',
+  'encoderQ2',
+  'encoderQ3',
+  'encoderRollDeg',
+  'encoderPitchDeg',
+  'encoderYawDeg',
+  'encoderRawRollDeg',
+  'encoderRawPitchDeg',
+  'encoderRawYawDeg',
+  'encoderEulerSequence',
+  'encoderStatus',
+  'encoderSource',
+  'encoderRpySource',
+  'enc_timer_x',
+  'enc_timer_y',
+  'enc_timer_z',
+  'enc_age_x',
+  'enc_age_y',
+  'enc_age_z',
+  'encoderTimerX',
+  'encoderTimerY',
+  'encoderTimerZ',
+  'encoderAgeX',
+  'encoderAgeY',
+  'encoderAgeZ',
+  'encoderUpdatedAt',
+  'control_mode',
+  'EBIMU_status',
+  'logging_status',
+  'timestamp',
+  'ebimu_timestamp_ms',
+  'ebimuTimestampMs',
+  'seq',
+  'rxCount',
+  'pcTimeMs',
+  'pc_time_ms',
+  'updatedAt',
+  'publishedAt',
+  'serverReceivedAt',
+  'serverReceivedAtMs',
+  'serverSentAt',
+  'droppedOutOfOrderCount',
+  'lastOutOfOrderAt',
+]);
+
+const ENCODER_ONLY_PACKET_FIELDS = Object.freeze([
+  'sample_type',
+  'sampleType',
+  'enc_x_deg',
+  'enc_y_deg',
+  'enc_z_deg',
+  'encoderXDeg',
+  'encoderYDeg',
+  'encoderZDeg',
+  'enc_q0',
+  'enc_q1',
+  'enc_q2',
+  'enc_q3',
+  'encoderQ0',
+  'encoderQ1',
+  'encoderQ2',
+  'encoderQ3',
+  'encoderRollDeg',
+  'encoderPitchDeg',
+  'encoderYawDeg',
+  'encoderRawRollDeg',
+  'encoderRawPitchDeg',
+  'encoderRawYawDeg',
+  'encoderEulerSequence',
+  'encoderStatus',
+  'encoderSource',
+  'encoderRpySource',
+  'enc_timer_x',
+  'enc_timer_y',
+  'enc_timer_z',
+  'enc_age_x',
+  'enc_age_y',
+  'enc_age_z',
+  'encoderTimerX',
+  'encoderTimerY',
+  'encoderTimerZ',
+  'encoderAgeX',
+  'encoderAgeY',
+  'encoderAgeZ',
+  'encoderUpdatedAt',
+  'encoder',
+]);
+
+function copyDefinedFields(target, source, keys) {
+  keys.forEach((key) => {
+    if (source[key] !== undefined) target[key] = source[key];
+  });
+  return target;
+}
+
+function packetOrderValue(packet = {}) {
+  const seq = strictFiniteNumber(packet.seq ?? packet.rxCount ?? packet.packetCount, null);
+  const timestamp = strictFiniteNumber(packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs, null);
+  const pcTimeMs = strictFiniteNumber(packet.pcTimeMs ?? packet.pc_time_ms ?? packet.updatedAt, null);
+  return { seq, timestamp, pcTimeMs };
+}
+
+function isEncoderOnlySample(packet = {}) {
+  return sampleTypeFromPacket(packet) === 'ENC';
+}
+
+function isOutOfOrderAttitudePacket(nextPacket, previousPacket) {
+  if (!nextPacket || !previousPacket || isEncoderOnlySample(nextPacket)) return false;
+  const next = packetOrderValue(nextPacket);
+  const previous = packetOrderValue(previousPacket);
+  if (next.seq !== null && previous.seq !== null && next.seq < previous.seq) return true;
+  if (next.seq !== null && previous.seq !== null && next.seq > previous.seq) return false;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp < previous.timestamp) return true;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp > previous.timestamp) return false;
+  if (next.pcTimeMs !== null && previous.pcTimeMs !== null && next.pcTimeMs < previous.pcTimeMs) return true;
+  return false;
+}
+
+function mergeEncoderOnlyPacket(previousPacket, nextPacket, publishedAt) {
+  const merged = {
+    ...previousPacket,
+    publishedAt,
+    serverReceivedAt: nextPacket.serverReceivedAt,
+    serverReceivedAtMs: nextPacket.serverReceivedAtMs,
+    lastEncoderPacketAt: publishedAt,
+    encoderOnlyUpdate: true,
+  };
+  copyDefinedFields(merged, nextPacket, ENCODER_ONLY_PACKET_FIELDS);
+  merged.sample_type = 'ENC';
+  merged.sampleType = 'ENC';
+  return merged;
+}
+
+function compactLivePacket(packet, options = {}) {
+  const includeDebug = Boolean(options.includeDebug);
+  const sanitized = sanitizeSharedPacket(packet, { includeDebug });
+  if (!sanitized) return null;
+  const compact = {};
+  COMPACT_LIVE_PACKET_KEYS.forEach((key) => {
+    if (sanitized[key] !== undefined) compact[key] = sanitized[key];
+  });
+  compact.sample_type = sampleTypeFromPacket(sanitized);
+  compact.sampleType = compact.sample_type;
+  compact.source = sanitized.source || '';
+  compact.sourceLabel = sanitized.sourceLabel || SOURCE_LABELS[compact.source] || compact.source;
+  compact.droppedOutOfOrderCount = sharedState.droppedOutOfOrderCount;
+  compact.lastOutOfOrderAt = sharedState.lastOutOfOrderAt;
+  if (Array.isArray(sanitized.q) && sanitized.q.length === 4) compact.q = sanitized.q;
+  return compact;
+}
+
+function buildLivePayload(packet, options = {}) {
+  const includeDebug = Boolean(options.includeDebug);
+  const serverSentAt = Date.now();
+  const compactPacket = compactLivePacket(packet, { includeDebug });
+  if (compactPacket) compactPacket.serverSentAt = serverSentAt;
+  const ageMs = compactPacket?.publishedAt ? serverSentAt - compactPacket.publishedAt : null;
+  return {
+    ok: true,
+    latestSharedPacket: compactPacket,
+    latestSharedPacketUpdatedAt: sharedState.publishedAt || null,
+    latestSharedPacketAgeMs: ageMs,
+    ageMs,
+    activeSharedSource: sharedState.activeSharedSource || '',
+    publisherDisplayName: sharedState.publisherDisplayName || '',
+    publisherRole: sharedState.publisherRole || '',
+    publishedAt: sharedState.publishedAt || null,
+    liveStatus: !compactPacket ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
+    droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
+    lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
+    serverSentAt,
+  };
 }
 
 function getAdminCredentials() {
@@ -862,9 +1096,6 @@ function normalizePublishedPacket(packet, source, identity) {
     targetInputPitchDeg: desired?.inputPitchDeg ?? null,
     targetInputYawDeg: desired?.inputYawDeg ?? null,
     targetRpySequence: desired?.targetRpySequence ?? '',
-    targetRollSign: desired?.targetRollSign ?? null,
-    targetPitchSign: desired?.targetPitchSign ?? null,
-    targetYawSign: desired?.targetYawSign ?? null,
     targetQd0: desired?.qd0 ?? null,
     targetQd1: desired?.qd1 ?? null,
     targetQd2: desired?.qd2 ?? null,
@@ -1221,6 +1452,12 @@ function setLatestSharedPacket(packet, meta = {}) {
   const source = normalizeSourceKey(meta.source || packet.source || 'admin-web-serial');
   const publishedAt = meta.publishedAt || Date.now();
   const sourceLabel = meta.sourceLabel || SOURCE_LABELS[source] || packet.sourceLabel || source;
+  const previousPacket = sharedState.latestSharedPacket;
+  if (isOutOfOrderAttitudePacket(packet, previousPacket)) {
+    sharedState.droppedOutOfOrderCount += 1;
+    sharedState.lastOutOfOrderAt = publishedAt;
+    return previousPacket;
+  }
   const encoderTelemetry = normalizeEncoderTelemetry(packet, {
     now: publishedAt,
     encoderEulerSequence: packet.encoderEulerSequence,
@@ -1228,18 +1465,30 @@ function setLatestSharedPacket(packet, meta = {}) {
     encoderDisplayPitchSign: packet.encoderDisplayPitchSign,
     encoderDisplayYawSign: packet.encoderDisplayYawSign,
   });
+  const packetForStorage = previousPacket && isEncoderOnlySample(packet)
+    ? mergeEncoderOnlyPacket(previousPacket, {
+        ...packet,
+        ...encoderTelemetry,
+        serverReceivedAt: packet.serverReceivedAt,
+        serverReceivedAtMs: packet.serverReceivedAtMs,
+      }, publishedAt)
+    : {
+        ...packet,
+        ...encoderTelemetry,
+      };
   const sharedPacket = sanitizeSharedPacket({
-    ...packet,
-    ...encoderTelemetry,
+    ...packetForStorage,
     source,
     sourceLabel,
     publishedAt,
-    publisherClientId: meta.publisherClientId ?? packet.publisherClientId ?? '',
-    publisherDisplayName: sanitizeClientName(meta.publisherDisplayName ?? packet.publisherDisplayName ?? ''),
-    publisherRole: meta.publisherRole ?? packet.publisherRole ?? '',
-    Roll_deg: packet.Roll_deg ?? packet.roll_deg ?? packet.rollDeg ?? null,
-    Pitch_deg: packet.Pitch_deg ?? packet.pitch_deg ?? packet.pitchDeg ?? null,
-    Yaw_deg: packet.Yaw_deg ?? packet.yaw_deg ?? packet.yawDeg ?? null,
+    publisherClientId: meta.publisherClientId ?? packetForStorage.publisherClientId ?? '',
+    publisherDisplayName: sanitizeClientName(meta.publisherDisplayName ?? packetForStorage.publisherDisplayName ?? ''),
+    publisherRole: meta.publisherRole ?? packetForStorage.publisherRole ?? '',
+    Roll_deg: packetForStorage.Roll_deg ?? packetForStorage.roll_deg ?? packetForStorage.rollDeg ?? null,
+    Pitch_deg: packetForStorage.Pitch_deg ?? packetForStorage.pitch_deg ?? packetForStorage.pitchDeg ?? null,
+    Yaw_deg: packetForStorage.Yaw_deg ?? packetForStorage.yaw_deg ?? packetForStorage.yawDeg ?? null,
+    droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
+    lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
   }, { includeDebug: true });
   sharedState.latestSharedPacket = sharedPacket;
   sharedState.activeSharedSource = source;
@@ -1272,21 +1521,7 @@ function setLatestSharedPacket(packet, meta = {}) {
     encoderYaw: sharedPacket.encoderStatus === 'LIVE' ? sharedPacket.encoderYawDeg : null,
   }, MAX_CHART_POINTS);
   appendActiveSessionSample(sharedPacket);
-  // High-rate stream packet. Keep this payload small; status/bridge/client
-  // management data is still available through /api/state. Sending bridgeStatus
-  // at 100 Hz made Viewer browsers stutter on slower PCs/phones.
-  broadcastLiveStream('live', {
-    ok: true,
-    latestSharedPacket: sanitizeSharedPacket(sharedPacket),
-    latestSharedPacketUpdatedAt: sharedState.publishedAt,
-    latestSharedPacketAgeMs: 0,
-    activeSharedSource: sharedState.activeSharedSource,
-    publisherClientId: '',
-    publisherDisplayName: sharedState.publisherDisplayName,
-    publisherRole: sharedState.publisherRole,
-    publishedAt: sharedState.publishedAt,
-    liveStatus: 'LIVE',
-  });
+  broadcastLiveStream('live', buildLivePayload(sharedPacket));
   return sharedPacket;
 }
 
@@ -1294,7 +1529,7 @@ function sanitizeSharedState(clientId = '') {
   const includeDebug = getEffectiveRole(clientId) === 'admin';
   const storedPacket = sharedState.latestSharedPacket;
   const packet = storedPacket
-    ? sanitizeSharedPacket({
+    ? compactLivePacket({
         ...storedPacket,
         ...normalizeEncoderTelemetry(storedPacket, {
           now: Date.now(),
@@ -1319,13 +1554,15 @@ function sanitizeSharedState(clientId = '') {
     latestSharedPacketAgeMs: ageMs,
     ageMs,
     liveStatus: !packet ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
-    chartData: sharedState.chartData,
+    droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
+    lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
+    chartData: [],
     rawLines: [],
     visualSettings: publicVisualSettings(),
   };
 }
 
-function serialDiagnostics({ portCount = null, message = '' } = {}) {
+function serialDiagnostics({ portCount = null, message = '', includeDebug = false } = {}) {
   return {
     platform: process.platform,
     cwd: process.cwd(),
@@ -1369,7 +1606,7 @@ function sanitizeSerialStatus(clientId = '') {
     lastCommandInfo: shared.lastCommandInfo,
     visualSettings: shared.visualSettings,
     recentPackets: includeDebug ? serialState.recentPackets : [],
-    chartData: shared.chartData.length ? shared.chartData : serialState.chartData,
+    chartData: [],
     rawLines: includeDebug ? serialState.rawLines : [],
     validCount: serialState.counters.valid,
     invalidCount: serialState.counters.invalid,
@@ -1377,7 +1614,7 @@ function sanitizeSerialStatus(clientId = '') {
     warningCount: serialState.counters.warning,
     lastCommand: serialState.lastCommand,
     bridge: bridgeStatus({ includeDebug }),
-    diagnostics: includeDebug ? serialDiagnostics() : null,
+    diagnostics: includeDebug ? serialDiagnostics({ includeDebug }) : null,
     serverInfo: includeDebug ? getServerInfo() : null,
     access: publicAccessState(clientId),
   };
@@ -1549,9 +1786,6 @@ function setLastCommandInfo(command, options = {}) {
       inputPitchDeg: Number(command.params.inputPitch) || 0,
       inputYawDeg: Number(command.params.inputYaw) || 0,
       targetRpySequence: command.params.targetRpySequence || command.params.targetSequence || 'ZYX',
-      targetRollSign: normalizeSign(command.params.targetRollSign, 1),
-      targetPitchSign: normalizeSign(command.params.targetPitchSign, 1),
-      targetYawSign: normalizeSign(command.params.targetYawSign, -1),
       qd0: strictFiniteNumber(command.params.qd0, null),
       qd1: strictFiniteNumber(command.params.qd1, null),
       qd2: strictFiniteNumber(command.params.qd2, null),
@@ -1637,7 +1871,7 @@ app.get('/api/health', (req, res) => {
       connected: serialState.isConnected,
       path: includeDebug ? serialState.path : '',
       error: includeDebug ? (serialState.lastError || serialportLoadError || '') : '',
-      diagnostics: includeDebug ? serialDiagnostics() : null,
+      diagnostics: includeDebug ? serialDiagnostics({ includeDebug }) : null,
     },
     visualSettings: publicVisualSettings(),
     access: publicAccessState(identity.clientId),
@@ -1716,25 +1950,12 @@ app.get('/api/live/stream', (req, res) => {
 });
 
 app.get('/api/live/latest', (req, res) => {
-  res.set('Cache-Control', 'no-store');
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   const identity = readIdentity(req);
-  const shared = sanitizeSharedState(identity.clientId);
-  res.json({
-    ok: true,
-    latestSharedPacket: shared.latestSharedPacket,
-    latestSharedPacketUpdatedAt: shared.publishedAt,
-    latestSharedPacketAgeMs: shared.latestSharedPacketAgeMs,
-    activeSharedSource: shared.activeSharedSource,
-    publisherClientId: shared.publisherClientId,
-    publisherDisplayName: shared.publisherDisplayName,
-    publisherRole: shared.publisherRole,
-    publishedAt: shared.publishedAt,
-    liveStatus: shared.liveStatus,
-    latestDesiredAttitude: shared.latestDesiredAttitude,
-    visualSettings: shared.visualSettings,
-    bridge: bridgeStatus({ includeDebug: false }),
-    access: publicAccessState(identity.clientId),
-  });
+  const includeDebug = getEffectiveRole(identity.clientId) === 'admin';
+  res.json(buildLivePayload(sharedState.latestSharedPacket, { includeDebug }));
 });
 
 app.post('/api/live/publish-fast', (req, res) => {
@@ -1750,7 +1971,7 @@ app.post('/api/live/publish-fast', (req, res) => {
     return res.status(400).json({ ok: false, error: normalized.error || 'Invalid live packet' });
   }
 
-  setLatestSharedPacket(normalized.packet, {
+  const latestSharedPacket = setLatestSharedPacket(normalized.packet, {
     source: 'admin-web-serial',
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
     publisherClientId: identity.clientId,
@@ -1759,9 +1980,15 @@ app.post('/api/live/publish-fast', (req, res) => {
     publishedAt: Date.now(),
   });
 
-  // Fast path for 100 Hz local bridge. The Viewer receives the packet through
-  // /api/live/stream, so the Admin does not need a full JSON response here.
-  return res.status(204).end();
+  return res.json({
+    ok: true,
+    updatedAt: latestSharedPacket?.updatedAt ?? null,
+    seq: latestSharedPacket?.seq ?? null,
+    timestamp: latestSharedPacket?.timestamp ?? latestSharedPacket?.ebimu_timestamp_ms ?? null,
+    serverReceivedAt: latestSharedPacket?.serverReceivedAt ?? null,
+    serverSentAt: Date.now(),
+    droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
+  });
 });
 
 app.post('/api/live/publish', (req, res) => {

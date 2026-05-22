@@ -37,8 +37,6 @@ const WHEEL_DISTANCE = 62.5;
 const BODY_SCALE = 1.0;
 const WHEEL_SCALE = 1.0;
 const DEFAULT_VIEW_DIRECTION = new THREE.Vector3(1, 0.72, 1).normalize();
-const WEB_SERIAL_BRIDGE_PUBLISH_INTERVAL_MS = 10; // 100 Hz target for Admin Web Serial Bridge
-const WEB_SERIAL_BRIDGE_MAX_IN_FLIGHT = 10; // fast 204 publish endpoint allows more overlap without blocking Viewer streaming
 const WEB_SERIAL_BRIDGE_COMMAND_POLL_MS = 50; // faster bridge command relay
 const EMPTY_OBJECT = Object.freeze({});
 const IDENTITY_LIVE_PACKET = Object.freeze({
@@ -235,6 +233,35 @@ function getPacketQuaternionOrIdentity(packet) {
     : [safePacket.q0, safePacket.q1, safePacket.q2, safePacket.q3];
   const normalized = normalizeQuaternion(rawQ);
   return normalized.ok ? normalized.q : IDENTITY_LIVE_PACKET.q;
+}
+
+function sampleTypeFromPacket(packet = {}) {
+  return String(packet.sample_type || packet.sampleType || packet.rawPrefix || packet.raw_prefix || 'TEL').trim().toUpperCase();
+}
+
+function finitePacketNumber(value, fallback = null) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function packetOrderValue(packet = {}) {
+  return {
+    seq: finitePacketNumber(packet.seq ?? packet.rxCount ?? packet.packetCount, null),
+    timestamp: finitePacketNumber(packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs, null),
+    pcTimeMs: finitePacketNumber(packet.pcTimeMs ?? packet.pc_time_ms ?? packet.updatedAt, null),
+  };
+}
+
+function isOlderAttitudePacket(nextPacket, previousPacket) {
+  if (!nextPacket || !previousPacket || sampleTypeFromPacket(nextPacket) === 'ENC') return false;
+  const next = packetOrderValue(nextPacket);
+  const previous = packetOrderValue(previousPacket);
+  if (next.seq !== null && previous.seq !== null && next.seq < previous.seq) return true;
+  if (next.seq !== null && previous.seq !== null && next.seq > previous.seq) return false;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp < previous.timestamp) return true;
+  if (next.timestamp !== null && previous.timestamp !== null && next.timestamp > previous.timestamp) return false;
+  if (next.pcTimeMs !== null && previous.pcTimeMs !== null && next.pcTimeMs < previous.pcTimeMs) return true;
+  return false;
 }
 
 function getBodyFrameDisplayBasis() {
@@ -1325,7 +1352,7 @@ export default function CubliSimulator() {
   const [useSerialImu, setUseSerialImu] = useState(false);
   const [useBleImu, setUseBleImu] = useState(false);
   const phoneZeroRef = useRef(null);
-  const bridgePublishRef = useRef({ lastAt: 0, busy: false, lastPacketUpdatedAt: 0 });
+  const bridgePublishRef = useRef({ lastAt: 0, inFlight: 0, lastPacketUpdatedAt: 0 });
   const bridgeCommandBusyRef = useRef(false);
 
   const cameraRef = useRef();
@@ -1377,6 +1404,8 @@ export default function CubliSimulator() {
   const normalizedFrameDebug = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
   const axisLength = normalizedFrameDebug.bodyAxisLength;
   const webSerialBridgeEnabled = Boolean(serverSync?.bridgeEnabled);
+  const notePublishSkipped = serverSync?.notePublishSkipped;
+  const recordWebSerialInputPacket = serverSync?.recordWebSerialInputPacket;
   const setWebSerialBridgeEnabled = serverSync?.setBridgeEnabled;
 
   const suggestedDisplayName = useMemo(() => (
@@ -1513,12 +1542,18 @@ export default function CubliSimulator() {
   const phonePacketMirrorRef = useRef(null);
   const sharedPacketMirrorRef = useRef(null);
   const fallbackLivePacketRef = useRef(IDENTITY_LIVE_PACKET);
+  const latestAttitudePacketRef = useRef(null);
 
   useEffect(() => {
     if (serial.latestPacket?.updatedAt) {
       serialPacketMirrorRef.current = serial.latestPacket;
     }
   }, [serial.latestPacket?.updatedAt]);
+
+  useEffect(() => {
+    if (!serial.latestPacket?.updatedAt) return;
+    recordWebSerialInputPacket?.(serial.latestPacket.updatedAt);
+  }, [recordWebSerialInputPacket, serial.latestPacket?.updatedAt]);
 
   useEffect(() => {
     if (ble.latestPacket?.updatedAt) {
@@ -1648,6 +1683,7 @@ export default function CubliSimulator() {
 
   useEffect(() => {
     if (!isAdmin || !webSerialBridgeEnabled || !serial.isConnected) return undefined;
+    const publishIntervalMs = serverSync?.serverPublishIntervalMs || 33;
 
     const publishLatestSerialPacket = () => {
       const packet = serial.latestPacketRef?.current || serial.latestPacket;
@@ -1655,14 +1691,20 @@ export default function CubliSimulator() {
       if (packet.updatedAt === bridgePublishRef.current.lastPacketUpdatedAt) return;
 
       const now = Date.now();
-      if (now - bridgePublishRef.current.lastAt < WEB_SERIAL_BRIDGE_PUBLISH_INTERVAL_MS) return;
-      if (bridgePublishRef.current.inFlight >= WEB_SERIAL_BRIDGE_MAX_IN_FLIGHT) return;
+      if (now - bridgePublishRef.current.lastAt < publishIntervalMs) {
+        notePublishSkipped?.(false);
+        return;
+      }
+      if (bridgePublishRef.current.inFlight >= 1) {
+        notePublishSkipped?.(true);
+        return;
+      }
 
       bridgePublishRef.current.lastAt = now;
       bridgePublishRef.current.lastPacketUpdatedAt = packet.updatedAt;
       bridgePublishRef.current.inFlight += 1;
 
-      publishLivePacket(packet, 'admin-web-serial', { force: true, minIntervalMs: 0, fast: true })
+      publishLivePacket(packet, 'admin-web-serial', { publishHz: serverSync?.serverPublishHz || 30, fast: true })
         .then((ok) => {
           if (ok) {
             enqueueSample(packet, 'admin-web-serial', {
@@ -1679,7 +1721,7 @@ export default function CubliSimulator() {
     };
 
     publishLatestSerialPacket();
-    const timer = window.setInterval(publishLatestSerialPacket, WEB_SERIAL_BRIDGE_PUBLISH_INTERVAL_MS);
+    const timer = window.setInterval(publishLatestSerialPacket, publishIntervalMs);
     return () => window.clearInterval(timer);
   }, [
     isAdmin,
@@ -1690,6 +1732,9 @@ export default function CubliSimulator() {
     serial.validCount,
     serial.invalidCount,
     serial.warningCount,
+    notePublishSkipped,
+    serverSync?.serverPublishHz,
+    serverSync?.serverPublishIntervalMs,
     enqueueSample,
     publishLivePacket,
   ]);
@@ -1909,7 +1954,10 @@ export default function CubliSimulator() {
   };
 
   const applyImuPacketToAttitude = React.useCallback((packet) => {
-    if (!packet?.updatedAt) return;
+    if (!packet?.updatedAt && !packet?.publishedAt) return;
+    if (sampleTypeFromPacket(packet) === 'ENC') return;
+    if (isOlderAttitudePacket(packet, latestAttitudePacketRef.current)) return;
+    latestAttitudePacketRef.current = packet;
 
     const nextAttitude = {
       roll: Number(packet.rollDeg ?? packet.roll_deg) || 0,
@@ -2556,6 +2604,7 @@ export default function CubliSimulator() {
                     serverSync={serverSync}
                     webSerialConnected={serial.isConnected}
                     webSerialLatestPacketUpdatedAt={serial.latestPacket?.updatedAt}
+                    webSerialInputHz={serial.inputHz}
                     onChangeDisplayName={handleOpenNameModal}
                     isActive={activeTab === 'server'}
                   />

@@ -126,6 +126,10 @@ const ATTITUDE_GAIN_MIN = 0;
 const ATTITUDE_GAIN_MAX = 10;
 const ATTITUDE_GAIN_STEP = 0.001;
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function formatNumber(value, digits = 3) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '-';
@@ -469,6 +473,14 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     detail: { cmdId, value },
   });
 
+  const applyDefaultImuSetting = async () => {
+    await sendEbimuRuntime(EBIMU_COMMANDS.DEFAULT, 0, 'EBIMU Default Setup');
+    await delay(80);
+    await sendEbimuRuntime(EBIMU_COMMANDS.MAG_MODE, 0, 'Default IMU Magnetometer Off');
+    await delay(80);
+    await sendEbimuRuntime(EBIMU_COMMANDS.GYRO_DPS, 500, 'Default IMU Gyro 500 dps');
+  };
+
   const sendTare = () => sendController(2, 0, 0, 0, {
     eventType: 'TARE',
     label: 'Set Zero / Tare',
@@ -800,8 +812,20 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="stream" title="EBIMU Stream">
+            <div className="mb-3">
+              <ValueGrid
+                title="Default IMU Setting"
+                rows={[
+                  { label: 'Magnetometer', value: 'OFF' },
+                  { label: 'Gyro Range', value: '500 dps' },
+                ]}
+              />
+              <div className="server-small-note mt-2">
+                Default is selected from current Cubli experiment stability.
+              </div>
+            </div>
             <CommandGroup>
-              <CommandButton label="Default Setup" onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.DEFAULT, 0, 'EBIMU Default Setup')} disabled={commandDisabled} />
+              <CommandButton label="Apply Default Setting" onClick={applyDefaultImuSetting} disabled={commandDisabled} />
               <CommandButton label="EBIMU Start" onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.START, 0, 'EBIMU Start')} disabled={commandDisabled} />
               <CommandButton label="EBIMU Stop" onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.STOP, 0, 'EBIMU Stop')} disabled={commandDisabled} />
             </CommandGroup>

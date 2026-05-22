@@ -10,7 +10,6 @@ const DEFAULT_EULER_SEQUENCE = 'ZYX';
 const DEFAULT_ENCODER_FRESH_MS = 1000;
 const DEFAULT_ENCODER_SYNC_MS = 1000;
 export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
-export const DEFAULT_TARGET_RPY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
 export const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
 
 function finiteNumber(value, fallback = null) {
@@ -690,9 +689,6 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     targetInputPitchDeg: firstFinite([desired.inputPitchDeg, desired.inputPitch], null),
     targetInputYawDeg: firstFinite([desired.inputYawDeg, desired.inputYaw], null),
     targetRpySequence: desired.targetRpySequence || desired.targetSequence || '',
-    targetRollSign: finiteNumber(desired.targetRollSign, null),
-    targetPitchSign: finiteNumber(desired.targetPitchSign, null),
-    targetYawSign: finiteNumber(desired.targetYawSign, null),
     targetQd0: finiteNumber(desired.qd0 ?? desired.targetQd0, null),
     targetQd1: finiteNumber(desired.qd1 ?? desired.targetQd1, null),
     targetQd2: finiteNumber(desired.qd2 ?? desired.targetQd2, null),

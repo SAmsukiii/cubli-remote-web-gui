@@ -8,7 +8,7 @@ import {
   csvRowFromPacket,
   finalizeCsvLogRows,
 } from './csvLogUtils';
-import { eulerDegToQuat, normalizeEulerSequence, normalizeSign } from './telemetryNormalize';
+import { eulerDegToQuat, normalizeEulerSequence } from './telemetryNormalize';
 import TelemetryDataView from './TelemetryDataView';
 
 const MAG_OPTIONS = [
@@ -282,30 +282,19 @@ function readWheelRpmTriplet(values = {}) {
   return { x, y, z };
 }
 
-function signText(value) {
-  return normalizeSign(value, 1) > 0 ? '+' : '-';
-}
-
-function signsText(rollSign, pitchSign, yawSign) {
-  return `[${signText(rollSign)},${signText(pitchSign)},${signText(yawSign)}]`;
-}
-
-function signedNumber(value, sign) {
+function signedNumber(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? number * normalizeSign(sign, 1) : 0;
+  return Number.isFinite(number) ? number : 0;
 }
 
-function buildTargetPreview(values = {}, sequence = 'ZYX', signs = {}) {
+function buildTargetPreview(values = {}, sequence = 'ZYX') {
   const inputRoll = Number(values.roll) || 0;
   const inputPitch = Number(values.pitch) || 0;
   const inputYaw = Number(values.yaw) || 0;
   const safeSequence = normalizeEulerSequence(sequence, 'ZYX');
-  const rollSign = normalizeSign(signs.roll, 1);
-  const pitchSign = normalizeSign(signs.pitch, 1);
-  const yawSign = normalizeSign(signs.yaw, -1);
-  const commandRoll = signedNumber(inputRoll, rollSign);
-  const commandPitch = signedNumber(inputPitch, pitchSign);
-  const commandYaw = signedNumber(inputYaw, yawSign);
+  const commandRoll = signedNumber(inputRoll);
+  const commandPitch = signedNumber(inputPitch);
+  const commandYaw = signedNumber(inputYaw);
   const qd = eulerDegToQuat(commandRoll, commandPitch, commandYaw, safeSequence) || [1, 0, 0, 0];
   return {
     inputRoll,
@@ -315,9 +304,6 @@ function buildTargetPreview(values = {}, sequence = 'ZYX', signs = {}) {
     commandPitch,
     commandYaw,
     sequence: safeSequence,
-    rollSign,
-    pitchSign,
-    yawSign,
     qd,
   };
 }
@@ -496,18 +482,6 @@ function CommandButton({ label, onClick, disabled }) {
 
 function CommandGroup({ children }) {
   return <div className="serial-command-grid compact-command-grid">{children}</div>;
-}
-
-function SignSelect({ label, value, onChange }) {
-  return (
-    <Form.Group>
-      <Form.Label className="serial-mini-label">{label}</Form.Label>
-      <Form.Select size="sm" value={normalizeSign(value, 1)} onChange={(event) => onChange?.(Number(event.target.value))}>
-        <option value={1}>+1</option>
-        <option value={-1}>-1</option>
-      </Form.Select>
-    </Form.Group>
-  );
 }
 
 function CommandAccordionItem({ eventKey, title, children }) {
@@ -911,13 +885,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const rpmValues = readWheelRpmTriplet(rpmCommand);
   const rpmInputInvalid = !rpmValues;
   const targetSequence = normalizeEulerSequence(safeSerial.targetRpySequence, 'ZYX');
-  const targetRollSign = normalizeSign(safeSerial.targetRollSign, 1);
-  const targetPitchSign = normalizeSign(safeSerial.targetPitchSign, 1);
-  const targetYawSign = normalizeSign(safeSerial.targetYawSign, -1);
   const targetPreview = buildTargetPreview(
     { roll: targetRoll, pitch: targetPitch, yaw: targetYaw },
-    targetSequence,
-    { roll: targetRollSign, pitch: targetPitchSign, yaw: targetYawSign }
+    targetSequence
   );
   const latestPacket = safeStatus.latestPacket || safeStatus.latestSharedPacket || {};
   const currentRawYaw = latestPacket.rawYawDeg ?? latestPacket.yawRawDeg ?? latestPacket.remoteYawDeg;
@@ -927,6 +897,11 @@ function CommandSection({ serial, status, role, controllerClientId, isController
 
   const sendShortcut = (commandKey, label, params = {}) => safeSerial.sendEbimuShortcut?.(commandKey, label, params);
   const sendAccFactor = (value) => safeSerial.sendAccFactor?.(Number(value) || 10);
+  const applyDefaultImuSetting = async () => {
+    await sendShortcut('ebimuDefault', 'EBIMU Default Setup');
+    await sendShortcut('magOff', 'Default IMU Magnetometer Off');
+    await sendShortcut('gyro500', 'Default IMU Gyro 500 dps');
+  };
   const updateKpGain = (axis, value) => {
     setKpGain((prev) => ({ ...prev, [axis]: value }));
     setGainStatus('');
@@ -1045,7 +1020,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         <CommandAccordionItem eventKey="target" title="Target Attitude">
           <div className="serial-subsection-title mb-2">Target RPY Command Convention</div>
           <Row className="g-2 align-items-end mb-3">
-            <Col xs={12} md={3}>
+            <Col xs={12} md={6}>
               <Form.Label className="serial-mini-label">Target Rotation Sequence</Form.Label>
               <Form.Select size="sm" value={targetSequence} onChange={(event) => safeSerial.setTargetRpySequence?.(event.target.value)}>
                 {EULER_SEQUENCE_OPTIONS.map((sequence) => (
@@ -1053,23 +1028,17 @@ function CommandSection({ serial, status, role, controllerClientId, isController
                 ))}
               </Form.Select>
             </Col>
-            <Col xs={4} md={2}>
-              <SignSelect label="Target Roll Sign" value={targetRollSign} onChange={safeSerial.setTargetRollSign} />
-            </Col>
-            <Col xs={4} md={2}>
-              <SignSelect label="Target Pitch Sign" value={targetPitchSign} onChange={safeSerial.setTargetPitchSign} />
-            </Col>
-            <Col xs={4} md={2}>
-              <SignSelect label="Target Yaw Sign" value={targetYawSign} onChange={safeSerial.setTargetYawSign} />
-            </Col>
-            <Col xs={12} md={3}>
+            <Col xs={12} md={6}>
               <Button variant="outline-light" className="w-100" onClick={safeSerial.resetTargetCommandConvention}>
                 Reset Target Command Convention
               </Button>
             </Col>
           </Row>
           <div className="server-small-note mb-2">
-            Target command uses: {targetPreview.sequence}, signs {signsText(targetRollSign, targetPitchSign, targetYawSign)}. Display RPY sequence does not affect target command.
+            Enter signed target angles directly. Example: Yaw = -10 deg sends a negative yaw target. Rotation sequence only changes how target quaternion is generated.
+          </div>
+          <div className="server-small-note mb-2">
+            Target command uses: {targetPreview.sequence}. Display RPY sequence does not affect target command.
           </div>
           <Row className="g-2 align-items-end">
             <Col xs={4}>
@@ -1097,7 +1066,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           </Row>
           <div className="serial-value-card rounded p-2 mt-3">
             <div className="serial-section-title mb-2">qd preview</div>
-            <ValueRow label="Target yaw after command sign" value={`${formatNumber(targetPreview.commandYaw, 2)} deg`} />
+            <ValueRow label="Target roll command" value={`${formatNumber(targetPreview.commandRoll, 2)} deg`} />
+            <ValueRow label="Target pitch command" value={`${formatNumber(targetPreview.commandPitch, 2)} deg`} />
+            <ValueRow label="Target yaw command" value={`${formatNumber(targetPreview.commandYaw, 2)} deg`} />
             <ValueRow label="qd0" value={formatNumber(targetPreview.qd[0], 6)} />
             <ValueRow label="qd1" value={formatNumber(targetPreview.qd[1], 6)} />
             <ValueRow label="qd2" value={formatNumber(targetPreview.qd[2], 6)} />
@@ -1194,8 +1165,16 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         </CommandAccordionItem>
 
         <CommandAccordionItem eventKey="stream" title="EBIMU Stream">
+          <div className="serial-value-card rounded p-2 mb-3">
+            <div className="serial-section-title mb-2">Default IMU Setting</div>
+            <ValueRow label="Magnetometer" value="OFF" />
+            <ValueRow label="Gyro Range" value="500 dps" />
+            <div className="server-small-note mt-2">
+              Default is selected from current Cubli experiment stability.
+            </div>
+          </div>
           <CommandGroup>
-            <CommandButton label="EBIMU Default Setup" onClick={() => sendShortcut('ebimuDefault', 'EBIMU Default Setup')} disabled={!canSendCommand} />
+            <CommandButton label="Apply Default Setting" onClick={applyDefaultImuSetting} disabled={!canSendCommand} />
             <CommandButton label="EBIMU Start" onClick={() => sendShortcut('ebimuStart', 'EBIMU Start')} disabled={!canSendCommand} />
             <CommandButton label="EBIMU Stop" onClick={() => sendShortcut('ebimuStop', 'EBIMU Stop')} disabled={!canSendCommand} />
           </CommandGroup>
@@ -1260,9 +1239,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
               { label: '3D source', value: 'quaternion q0~q3' },
               { label: 'Encoder source', value: latestPacket.encoderSource || 'Gimbal rotary encoder' },
               { label: 'Current yaw from quaternion', value: currentRawYaw != null ? `${formatNumber(currentRawYaw, 2)} deg` : '-' },
-              { label: 'Target Command Yaw Sign', value: signText(targetYawSign) },
               { label: 'Target input yaw', value: `${formatNumber(targetPreview.inputYaw, 2)} deg` },
-              { label: 'Target yaw after command sign', value: `${formatNumber(targetPreview.commandYaw, 2)} deg` },
+              { label: 'Target yaw command', value: `${formatNumber(targetPreview.commandYaw, 2)} deg` },
               { label: 'qd preview', value: qdPreviewText },
             ]}
           />
@@ -1700,6 +1678,70 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
   );
 }
 
+function LiveRateSettingsSection({ serverSync, isAdmin, webSerialInputHz = null }) {
+  const safeServerSync = serverSync || {};
+  const options = Array.isArray(safeServerSync.liveRateOptions) && safeServerSync.liveRateOptions.length
+    ? safeServerSync.liveRateOptions
+    : [10, 15, 30, 50];
+  const publishHz = safeServerSync.serverPublishHz || 30;
+  const receiveHz = safeServerSync.viewerReceiveHz || 30;
+  const selectedHz = isAdmin ? publishHz : receiveHz;
+  const rows = isAdmin ? [
+    { label: 'Web Serial input Hz', value: `${formatNumber(webSerialInputHz ?? safeServerSync.webSerialInputHz, 1)} Hz` },
+    { label: 'Publish target Hz', value: `${publishHz} Hz` },
+    { label: 'Actual publish Hz', value: `${formatNumber(safeServerSync.actualPublishHz, 1)} Hz` },
+    { label: 'Publish latency', value: safeServerSync.publishLatencyMs != null ? `${formatNumber(safeServerSync.publishLatencyMs, 0)} ms` : '-' },
+    { label: 'Publish count', value: safeServerSync.publishCount ?? 0 },
+    { label: 'Failed publish count', value: safeServerSync.publishFailedCount ?? 0 },
+    { label: 'Skipped/dropped publish', value: `${safeServerSync.skippedPublishCount ?? 0} / ${safeServerSync.droppedPublishCount ?? 0}` },
+  ] : [
+    { label: 'Viewer target Hz', value: `${receiveHz} Hz` },
+    { label: 'Actual receive Hz', value: `${formatNumber(safeServerSync.actualReceiveHz, 1)} Hz` },
+    { label: 'latestSharedPacket age', value: safeServerSync.latestSharedPacketAgeMs != null ? `${Math.round(safeServerSync.latestSharedPacketAgeMs)} ms` : '-' },
+    { label: 'server-to-viewer latency estimate', value: safeServerSync.serverToViewerLatencyMs != null ? `${Math.round(safeServerSync.serverToViewerLatencyMs)} ms` : '-' },
+    { label: 'Data status', value: safeServerSync.liveDataStatus || 'NONE' },
+    { label: 'dropped out-of-order', value: safeServerSync.droppedOutOfOrderCount ?? 0 },
+    { label: 'Skipped receive polls', value: safeServerSync.skippedReceiveCount ?? 0 },
+  ];
+
+  return (
+    <div className="serial-control-card rounded p-3 mb-3">
+      <div className="serial-section-title mb-2">Live Rate Settings</div>
+      <div className="server-small-note mb-3">
+        Live telemetry rate only. Debug, client list, and raw monitor stay low-rate.
+      </div>
+      <Row className="g-2 align-items-end mb-3">
+        <Col xs={12} md={6}>
+          <Form.Label className="serial-mini-label">{isAdmin ? 'Server Publish Rate' : 'Viewer Receive Rate'}</Form.Label>
+          <Form.Select
+            size="sm"
+            value={selectedHz}
+            onChange={(event) => {
+              if (isAdmin) safeServerSync.setServerPublishHz?.(event.target.value);
+              else safeServerSync.setViewerReceiveHz?.(event.target.value);
+            }}
+          >
+            {options.map((value) => (
+              <option key={value} value={value}>{value} Hz</option>
+            ))}
+          </Form.Select>
+        </Col>
+        <Col xs={12} md={6}>
+          <Badge bg={safeServerSync.liveDataStatus === 'LIVE' ? 'success' : safeServerSync.liveDataStatus === 'SLOW' ? 'warning' : 'secondary'}>
+            {safeServerSync.liveDataStatus || 'NONE'}
+          </Badge>
+        </Col>
+      </Row>
+      {Number(selectedHz) === 50 ? (
+        <Alert variant="warning" className="py-2">
+          High rate can consume Render bandwidth quickly.
+        </Alert>
+      ) : null}
+      <ValueGrid title={isAdmin ? 'Publish Status' : 'Receive Status'} rows={rows} />
+    </div>
+  );
+}
+
 function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialConnected, webSerialLatestPacketUpdatedAt }) {
   const safeServerSync = serverSync || {};
   const safeStatus = status || {};
@@ -1766,7 +1808,7 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
   );
 }
 
-export default function ServerPanel({ serverSync, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, onChangeDisplayName = null, isActive = true }) {
+export default function ServerPanel({ serverSync, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, webSerialInputHz = null, onChangeDisplayName = null, isActive = true }) {
   const safeServerSync = serverSync || {};
   const serial = safeServerSync.serverSerial || {};
   const status = serial.status || {};
@@ -1800,6 +1842,7 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
         isAdmin={isAdmin}
         webSerialConnected={webSerialConnected}
       />
+      <LiveRateSettingsSection serverSync={safeServerSync} isAdmin={isAdmin} webSerialInputHz={webSerialInputHz} />
       {isAdmin ? (
         <WebSerialBridgeDebugSection
           serverSync={safeServerSync}
