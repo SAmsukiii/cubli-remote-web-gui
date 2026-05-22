@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { EULER_SEQUENCES, eulerDegToQuat, normalizeEulerSequence, normalizeLivePacket } from './telemetryNormalize';
+import {
+  DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE,
+  EULER_SEQUENCES,
+  eulerDegToQuat,
+  normalizeEulerSequence,
+  normalizeLivePacket,
+} from './telemetryNormalize';
 
 const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
 const SERVER_URL_KEY = 'cubliServerUrl';
 const IMU_EULER_SEQUENCE_KEY = 'cubliImuEulerSequence';
 const ENCODER_EULER_SEQUENCE_KEY = 'cubliEncoderEulerSequence';
+const ENCODER_ANGLE_TO_QUAT_SEQUENCE_KEY = 'cubliEncoderAngleToQuatSequence';
 const TARGET_RPY_SEQUENCE_KEY = 'cubliTargetRpySequence';
 const SERVER_PUBLISH_HZ_KEY = 'cubliServerPublishHz';
 const VIEWER_RECEIVE_HZ_KEY = 'cubliViewerReceiveHz';
 const DEFAULT_ROLL_SIGN = 1;
 const DEFAULT_PITCH_SIGN = 1;
 const DEFAULT_YAW_SIGN = -1;
+const DEFAULT_ENCODER_YAW_SIGN = 1;
 const DEFAULT_WZ_DISPLAY_SIGN = 1;
 const VISUAL_MIRROR_PRESETS = Object.freeze(['current', 'mirrorX', 'mirrorY', 'mirrorZ', 'mirrorXY', 'mirrorXZ', 'mirrorYZ', 'mirrorXYZ']);
 const DEFAULT_VISUAL_SETTINGS = Object.freeze({
@@ -263,7 +271,8 @@ const ENCODER_PACKET_FIELDS = [
   'encoderQ0', 'encoderQ1', 'encoderQ2', 'encoderQ3',
   'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
   'encoderRawRollDeg', 'encoderRawPitchDeg', 'encoderRawYawDeg',
-  'encoderEulerSequence', 'encoderStatus', 'encoderSource', 'encoderRpySource',
+  'encoderAngleToQuatSequence', 'encoderEulerSequence', 'encoderStatus', 'encoderSource', 'encoderQuatSource', 'encoderRpySource',
+  'encoderHasQuaternion', 'encoderFresh',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
   'enc_age_x', 'enc_age_y', 'enc_age_z',
   'encoderTimerX', 'encoderTimerY', 'encoderTimerZ',
@@ -692,10 +701,14 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     encoderRawYawDeg: firstFinite([src.encoderRawYawDeg, src.encoder?.rawYawDeg], null),
     encoderDisplayRollSign: firstFinite([src.encoderDisplayRollSign, src.encoder?.displayRollSign], DEFAULT_ROLL_SIGN),
     encoderDisplayPitchSign: firstFinite([src.encoderDisplayPitchSign, src.encoder?.displayPitchSign], DEFAULT_PITCH_SIGN),
-    encoderDisplayYawSign: firstFinite([src.encoderDisplayYawSign, src.encoder?.displayYawSign], DEFAULT_YAW_SIGN),
+    encoderDisplayYawSign: firstFinite([src.encoderDisplayYawSign, src.encoder?.displayYawSign], DEFAULT_ENCODER_YAW_SIGN),
+    encoderAngleToQuatSequence: src.encoderAngleToQuatSequence || src.encoder?.angleToQuatSequence || DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE,
     encoderEulerSequence: src.encoderEulerSequence || src.encoder?.eulerSequence || '',
+    encoderQuatSource: src.encoderQuatSource || src.encoder?.quatSource || '',
     encoderRpySource: src.encoderRpySource || src.encoder?.rpySource || '',
     encoderStatus: src.encoderStatus || src.encoder?.status || '',
+    encoderHasQuaternion: Boolean(src.encoderHasQuaternion ?? src.encoder?.hasQuaternion),
+    encoderFresh: Boolean(src.encoderFresh ?? src.encoder?.fresh),
     imuEulerSequence: src.imuEulerSequence || '',
     rpySource: src.rpySource || '',
     qerr_deg: firstFinite([src.qerr_deg, src.qerrDeg, src.qerrTelemetryDeg], null),
@@ -782,12 +795,13 @@ export default function useServerSync() {
   const [serverUrl, setServerUrlState] = useState(DEFAULT_SERVER_URL);
   const [imuEulerSequence, setImuEulerSequenceState] = useState(() => getStoredEulerSequence(IMU_EULER_SEQUENCE_KEY));
   const [encoderEulerSequence, setEncoderEulerSequenceState] = useState(() => getStoredEulerSequence(ENCODER_EULER_SEQUENCE_KEY));
+  const [encoderAngleToQuatSequence, setEncoderAngleToQuatSequenceState] = useState(() => getStoredEulerSequence(ENCODER_ANGLE_TO_QUAT_SEQUENCE_KEY));
   const imuDisplayRollSign = DEFAULT_ROLL_SIGN;
   const imuDisplayPitchSign = DEFAULT_PITCH_SIGN;
   const imuDisplayYawSign = DEFAULT_YAW_SIGN;
   const encoderDisplayRollSign = DEFAULT_ROLL_SIGN;
   const encoderDisplayPitchSign = DEFAULT_PITCH_SIGN;
-  const encoderDisplayYawSign = DEFAULT_YAW_SIGN;
+  const encoderDisplayYawSign = DEFAULT_ENCODER_YAW_SIGN;
   const [targetRpySequence, setTargetRpySequenceState] = useState(() => getStoredEulerSequence(TARGET_RPY_SEQUENCE_KEY));
   const bodyRateWzDisplaySign = DEFAULT_WZ_DISPLAY_SIGN;
   const [visualSettings, setVisualSettingsState] = useState(() => normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS));
@@ -952,6 +966,13 @@ export default function useServerSync() {
     const next = normalizeEulerSequence(value, 'ZYX');
     setEncoderEulerSequenceState(next);
     setLocalStorageValue(ENCODER_EULER_SEQUENCE_KEY, next);
+    return next;
+  }, []);
+
+  const setEncoderAngleToQuatSequence = useCallback((value) => {
+    const next = normalizeEulerSequence(value, DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE);
+    setEncoderAngleToQuatSequenceState(next);
+    setLocalStorageValue(ENCODER_ANGLE_TO_QUAT_SEQUENCE_KEY, next);
     return next;
   }, []);
 
@@ -1311,6 +1332,7 @@ export default function useServerSync() {
       now,
       imuEulerSequence,
       encoderEulerSequence,
+      encoderAngleToQuatSequence,
       imuDisplayRollSign,
       imuDisplayPitchSign,
       imuDisplayYawSign,
@@ -1492,6 +1514,7 @@ export default function useServerSync() {
     encoderDisplayPitchSign,
     encoderDisplayRollSign,
     encoderDisplayYawSign,
+    encoderAngleToQuatSequence,
     encoderEulerSequence,
     imuDisplayPitchSign,
     imuDisplayRollSign,
@@ -2280,6 +2303,8 @@ export default function useServerSync() {
     setImuEulerSequence,
     encoderEulerSequence,
     setEncoderEulerSequence,
+    encoderAngleToQuatSequence,
+    setEncoderAngleToQuatSequence,
     imuDisplayRollSign,
     imuDisplayPitchSign,
     imuDisplayYawSign,

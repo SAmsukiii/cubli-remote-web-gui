@@ -7,9 +7,12 @@ const SOURCE_LABELS = {
 };
 export const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY']);
 const DEFAULT_EULER_SEQUENCE = 'ZYX';
-const DEFAULT_ENCODER_FRESH_MS = 1000;
-const DEFAULT_ENCODER_SYNC_MS = 1000;
+export const DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE = 'ZYX';
+export const DEFAULT_ENCODER_FRESH_MS = 300;
+export const DEFAULT_ENCODER_TIMER_SPREAD_MS = 100;
+const DEFAULT_ENCODER_SYNC_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
+export const DEFAULT_ENCODER_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
 export const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
 
 function finiteNumber(value, fallback = null) {
@@ -284,6 +287,10 @@ export function eulerDegToQuat(rollDeg, pitchDeg, yawDeg, sequence = DEFAULT_EUL
   return normalized.ok ? normalized.q : null;
 }
 
+export function eulerDegToQuaternion(rollDeg, pitchDeg, yawDeg, sequence = DEFAULT_EULER_SEQUENCE) {
+  return eulerDegToQuat(rollDeg, pitchDeg, yawDeg, sequence);
+}
+
 export function eulerDegToQuatZYX(rollDeg, pitchDeg, yawDeg) {
   return eulerDegToQuat(rollDeg, pitchDeg, yawDeg, 'ZYX');
 }
@@ -420,31 +427,28 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const nested = packet?.encoder || {};
   const now = finiteNumber(options.now, Date.now());
   const freshMs = finiteNumber(options.encoderFreshMs, DEFAULT_ENCODER_FRESH_MS);
+  const syncMs = finiteNumber(
+    options.encoderTimerSpreadMs ?? options.encoderSyncMs,
+    DEFAULT_ENCODER_SYNC_MS
+  );
   const encoderEulerSequence = normalizeEulerSequence(
     options.encoderEulerSequence || packet.encoderEulerSequence || nested.eulerSequence
+  );
+  const encoderAngleToQuatSequence = normalizeEulerSequence(
+    options.encoderAngleToQuatSequence
+      || packet.encoderAngleToQuatSequence
+      || nested.angleToQuatSequence
+      || nested.angleSequence,
+    DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
   );
   const encoderDisplaySigns = normalizeRpySigns({
     roll: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign ?? nested.displayRollSign,
     pitch: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign ?? nested.displayPitchSign,
     yaw: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign ?? nested.displayYawSign,
-  }, DEFAULT_RPY_DISPLAY_SIGNS);
+  }, DEFAULT_ENCODER_DISPLAY_SIGNS);
   const encX = firstTelemetryNumber([packet.enc_x_deg, packet.encoderXDeg, nested.x], null);
   const encY = firstTelemetryNumber([packet.enc_y_deg, packet.encoderYDeg, nested.y], null);
   const encZ = firstTelemetryNumber([packet.enc_z_deg, packet.encoderZDeg, nested.z], null);
-  const rawQ0 = firstTelemetryNumber([packet.enc_q0, packet.encoderQ0, nested.q0], null);
-  const rawQ1 = firstTelemetryNumber([packet.enc_q1, packet.encoderQ1, nested.q1], null);
-  const rawQ2 = firstTelemetryNumber([packet.enc_q2, packet.encoderQ2, nested.q2], null);
-  const rawQ3 = firstTelemetryNumber([packet.enc_q3, packet.encoderQ3, nested.q3], null);
-  const normalizedEncoderQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
-    ? normalizeQuaternion([rawQ0, rawQ1, rawQ2, rawQ3])
-    : { ok: false, q: null };
-  const encoderQ = normalizedEncoderQ.ok ? normalizedEncoderQ.q : null;
-  const encQ0 = encoderQ ? encoderQ[0] : null;
-  const encQ1 = encoderQ ? encoderQ[1] : null;
-  const encQ2 = encoderQ ? encoderQ[2] : null;
-  const encQ3 = encoderQ ? encoderQ[3] : null;
-  const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
-  const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
   const timerX = firstTelemetryNumber([packet.enc_timer_x, packet.encoderTimerX, nested.timerX, nested.timer_x], null);
   const timerY = firstTelemetryNumber([packet.enc_timer_y, packet.encoderTimerY, nested.timerY, nested.timer_y], null);
   const timerZ = firstTelemetryNumber([packet.enc_timer_z, packet.encoderTimerZ, nested.timerZ, nested.timer_z], null);
@@ -452,10 +456,13 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const ageY = firstTelemetryNumber([packet.enc_age_y, packet.encoderAgeY, nested.ageY, nested.age_y], null);
   const ageZ = firstTelemetryNumber([packet.enc_age_z, packet.encoderAgeZ, nested.ageZ, nested.age_z], null);
   const encoderUpdatedAt = firstTelemetryNumber([packet.encoderUpdatedAt, nested.updatedAt], null);
+  const rawQ0 = firstTelemetryNumber([packet.enc_q0, packet.encoderQ0, nested.q0], null);
+  const rawQ1 = firstTelemetryNumber([packet.enc_q1, packet.encoderQ1, nested.q1], null);
+  const rawQ2 = firstTelemetryNumber([packet.enc_q2, packet.encoderQ2, nested.q2], null);
+  const rawQ3 = firstTelemetryNumber([packet.enc_q3, packet.encoderQ3, nested.q3], null);
   const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ]
     .some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
-  const hasValidQuaternion = Boolean(encoderQ);
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: packet.encoderStatus || nested.status,
     hasData: hasEncoderData,
@@ -469,11 +476,39 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     updatedAt: encoderUpdatedAt,
     now,
     freshMs,
-    syncMs: finiteNumber(options.encoderSyncMs, DEFAULT_ENCODER_SYNC_MS),
+    syncMs,
   });
-  const encoderSource = packet.encoderSource || nested.source || (hasEncoderData ? 'Gimbal Rotary Encoder packet' : '');
+  const computedQ = encoderStatus === 'LIVE' && hasAllAxes
+    ? eulerDegToQuat(encX, encY, encZ, encoderAngleToQuatSequence)
+    : null;
+  const normalizedRawQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
+    ? normalizeQuaternion([rawQ0, rawQ1, rawQ2, rawQ3])
+    : { ok: false, q: null };
+  const encoderQ = computedQ || (encoderStatus === 'LIVE' && normalizedRawQ.ok ? normalizedRawQ.q : null);
+  const encQ0 = encoderQ ? encoderQ[0] : null;
+  const encQ1 = encoderQ ? encoderQ[1] : null;
+  const encQ2 = encoderQ ? encoderQ[2] : null;
+  const encQ3 = encoderQ ? encoderQ[3] : null;
+  const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
+  const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
+  const hasValidQuaternion = Boolean(encoderQ);
+  const encoderQuatSource = computedQ
+    ? 'web-computed from gimbal encoder angles'
+    : (encoderQ ? 'remote encoder quaternion' : '');
+  const statusSource = !hasEncoderData
+    ? ''
+    : encoderStatus === 'LIVE' && computedQ
+      ? 'web-computed from gimbal encoder angles'
+      : encoderStatus === 'PARTIAL'
+        ? 'partial gimbal encoder angles'
+        : encoderStatus === 'STALE'
+          ? 'stale gimbal encoder angles'
+          : encoderStatus === 'MIXED'
+            ? 'mixed gimbal encoder angles'
+            : 'gimbal encoder angles';
+  const encoderSource = statusSource || packet.encoderSource || nested.source || '';
   const encoderRpySource = encoderEuler
-    ? `encoder quaternion ${encoderEulerSequence}`
+    ? `web-computed encoder quaternion ${encoderEulerSequence}`
     : '';
 
   return {
@@ -506,10 +541,12 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     encoderUpdatedAt,
     encoderSource,
     encoderStatus,
+    encoderAngleToQuatSequence,
     encoderEulerSequence,
     encoderDisplayRollSign: encoderDisplaySigns.roll,
     encoderDisplayPitchSign: encoderDisplaySigns.pitch,
     encoderDisplayYawSign: encoderDisplaySigns.yaw,
+    encoderQuatSource,
     encoderRawRollDeg: encoderEulerRaw?.roll ?? null,
     encoderRawPitchDeg: encoderEulerRaw?.pitch ?? null,
     encoderRawYawDeg: encoderEulerRaw?.yaw ?? null,
@@ -536,10 +573,12 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
       updatedAt: encoderUpdatedAt,
       source: encoderSource,
       status: encoderStatus,
+      angleToQuatSequence: encoderAngleToQuatSequence,
       eulerSequence: encoderEulerSequence,
       displayRollSign: encoderDisplaySigns.roll,
       displayPitchSign: encoderDisplaySigns.pitch,
       displayYawSign: encoderDisplaySigns.yaw,
+      quatSource: encoderQuatSource,
       rawRollDeg: encoderEulerRaw?.roll ?? null,
       rawPitchDeg: encoderEulerRaw?.pitch ?? null,
       rawYawDeg: encoderEulerRaw?.yaw ?? null,
@@ -558,6 +597,10 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const sourceLabel = packet.sourceLabel || SOURCE_LABELS[resolvedSource] || String(resolvedSource);
   const imuEulerSequence = normalizeEulerSequence(options.imuEulerSequence || packet.imuEulerSequence);
   const encoderEulerSequence = normalizeEulerSequence(options.encoderEulerSequence || packet.encoderEulerSequence);
+  const encoderAngleToQuatSequence = normalizeEulerSequence(
+    options.encoderAngleToQuatSequence || packet.encoderAngleToQuatSequence,
+    DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
+  );
   const imuDisplaySigns = normalizeRpySigns({
     roll: options.imuDisplayRollSign ?? packet.imuDisplayRollSign,
     pitch: options.imuDisplayPitchSign ?? packet.imuDisplayPitchSign,
@@ -570,7 +613,9 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
   const encoderTelemetry = normalizeEncoderTelemetry(packet, {
     now: options.now,
     encoderEulerSequence,
+    encoderAngleToQuatSequence,
     encoderFreshMs: options.encoderFreshMs,
+    encoderTimerSpreadMs: options.encoderTimerSpreadMs,
     encoderDisplayRollSign: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign,
     encoderDisplayPitchSign: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign,
     encoderDisplayYawSign: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign,

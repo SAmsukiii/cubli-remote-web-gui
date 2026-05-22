@@ -1382,6 +1382,7 @@ export default function CubliSimulator() {
   const serial = useEsp32Serial({
     imuEulerSequence: serverSync?.imuEulerSequence,
     encoderEulerSequence: serverSync?.encoderEulerSequence,
+    encoderAngleToQuatSequence: serverSync?.encoderAngleToQuatSequence,
     imuDisplayRollSign: serverSync?.imuDisplayRollSign,
     imuDisplayPitchSign: serverSync?.imuDisplayPitchSign,
     imuDisplayYawSign: serverSync?.imuDisplayYawSign,
@@ -1848,6 +1849,7 @@ export default function CubliSimulator() {
       }, 'phone', {
         imuEulerSequence: serverSync?.imuEulerSequence,
         encoderEulerSequence: serverSync?.encoderEulerSequence,
+        encoderAngleToQuatSequence: serverSync?.encoderAngleToQuatSequence,
         imuDisplayRollSign: serverSync?.imuDisplayRollSign,
         imuDisplayPitchSign: serverSync?.imuDisplayPitchSign,
         imuDisplayYawSign: serverSync?.imuDisplayYawSign,
@@ -1875,6 +1877,7 @@ export default function CubliSimulator() {
     isSensorActive,
     publishLivePacket,
     serverSync?.bodyRateWzDisplaySign,
+    serverSync?.encoderAngleToQuatSequence,
     serverSync?.encoderDisplayPitchSign,
     serverSync?.encoderDisplayRollSign,
     serverSync?.encoderDisplayYawSign,
@@ -2602,6 +2605,7 @@ export default function CubliSimulator() {
                 <Tab eventKey="server" title="Server" className="pt-2">
                   <ServerPanel
                     serverSync={serverSync}
+                    localSerial={serial}
                     webSerialConnected={serial.isConnected}
                     webSerialLatestPacketUpdatedAt={serial.latestPacket?.updatedAt}
                     webSerialInputHz={serial.inputHz}

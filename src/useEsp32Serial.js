@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE,
+  DEFAULT_ENCODER_DISPLAY_SIGNS,
+  DEFAULT_ENCODER_FRESH_MS,
+  DEFAULT_ENCODER_TIMER_SPREAD_MS,
   applyEulerDisplaySigns,
+  eulerDegToQuat,
   normalizeEulerSequence,
   normalizeLivePacket,
   normalizeRpySigns,
@@ -14,7 +19,8 @@ const MAX_CHART_POINTS = 90;
 const MAX_CSV_LOG_QUEUE = 5000;
 const BAUD_RATE = 115200;
 const UI_FLUSH_INTERVAL_MS = 100;
-const ENCODER_SYNC_THRESHOLD_MS = 1000;
+const ENCODER_AGE_FRESH_MS = DEFAULT_ENCODER_FRESH_MS;
+const ENCODER_SYNC_THRESHOLD_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 const WEB_SERIAL_UNSUPPORTED_MESSAGE = 'Web Serial is supported only on Chrome/Edge desktop over HTTPS or localhost';
 const PORT_BUSY_MESSAGE = 'Port busy: close Arduino Serial Monitor or another app using the COM port';
 
@@ -62,7 +68,9 @@ const DEFAULT_PACKET = {
   encoderUpdatedAt: null,
   encoderSource: '',
   encoderStatus: 'NONE',
+  encoderAngleToQuatSequence: 'ZYX',
   encoderEulerSequence: 'ZYX',
+  encoderQuatSource: '',
   encoderRollDeg: null,
   encoderPitchDeg: null,
   encoderYawDeg: null,
@@ -78,7 +86,7 @@ const DEFAULT_PACKET = {
   encoderRawYawDeg: null,
   encoderDisplayRollSign: 1,
   encoderDisplayPitchSign: 1,
-  encoderDisplayYawSign: -1,
+  encoderDisplayYawSign: 1,
   wzRaw: null,
   wzDisplay: null,
   bodyRateWzDisplaySign: 1,
@@ -103,7 +111,9 @@ const DEFAULT_PACKET = {
     updatedAt: null,
     source: '',
     status: 'NONE',
+    angleToQuatSequence: 'ZYX',
     eulerSequence: 'ZYX',
+    quatSource: '',
     rollDeg: null,
     pitchDeg: null,
     yawDeg: null,
@@ -158,9 +168,9 @@ function encoderTimerDelta(timerX, timerY, timerZ) {
 
 function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, ageX, ageY, ageZ, updatedAt, now }) {
   if (!hasData) return 'NONE';
-  if (updatedAt && now - updatedAt > 1000) return 'STALE';
+  if (updatedAt && now - updatedAt > ENCODER_AGE_FRESH_MS) return 'STALE';
   const ages = [ageX, ageY, ageZ].map(finiteOrNull).filter((value) => value !== null);
-  if (ages.length > 0 && Math.max(...ages) > 1000) return 'STALE';
+  if (ages.length > 0 && Math.max(...ages) > ENCODER_AGE_FRESH_MS) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
   if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
@@ -192,11 +202,19 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const encoderEulerSequence = normalizeEulerSequence(
     options.encoderEulerSequence || input.encoderEulerSequence || input.encoder?.eulerSequence || fallback.encoderEulerSequence || fallback.encoder?.eulerSequence
   );
+  const encoderAngleToQuatSequence = normalizeEulerSequence(
+    options.encoderAngleToQuatSequence
+      || input.encoderAngleToQuatSequence
+      || input.encoder?.angleToQuatSequence
+      || fallback.encoderAngleToQuatSequence
+      || fallback.encoder?.angleToQuatSequence,
+    DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
+  );
   const encoderDisplaySigns = normalizeRpySigns({
     roll: options.encoderDisplayRollSign ?? input.encoderDisplayRollSign ?? input.encoder?.displayRollSign ?? fallback.encoderDisplayRollSign ?? fallback.encoder?.displayRollSign,
     pitch: options.encoderDisplayPitchSign ?? input.encoderDisplayPitchSign ?? input.encoder?.displayPitchSign ?? fallback.encoderDisplayPitchSign ?? fallback.encoder?.displayPitchSign,
     yaw: options.encoderDisplayYawSign ?? input.encoderDisplayYawSign ?? input.encoder?.displayYawSign ?? fallback.encoderDisplayYawSign ?? fallback.encoder?.displayYawSign,
-  });
+  }, DEFAULT_ENCODER_DISPLAY_SIGNS);
   const fallbackValue = (snakeKey, camelKey, nestedKey, nestedAltKey = nestedKey) => (
     useFallback
       ? (fallback[snakeKey] ?? fallback[camelKey] ?? fallback.encoder?.[nestedKey] ?? fallback.encoder?.[nestedAltKey] ?? null)
@@ -209,18 +227,6 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const encX = incomingX ?? fallbackValue('enc_x_deg', 'encoderXDeg', 'x');
   const encY = incomingY ?? fallbackValue('enc_y_deg', 'encoderYDeg', 'y');
   const encZ = incomingZ ?? fallbackValue('enc_z_deg', 'encoderZDeg', 'z');
-  const rawQ0 = firstFiniteValue([input.enc_q0, input.encoderQ0, input.encoder?.q0], fallbackValue('enc_q0', 'encoderQ0', 'q0'));
-  const rawQ1 = firstFiniteValue([input.enc_q1, input.encoderQ1, input.encoder?.q1], fallbackValue('enc_q1', 'encoderQ1', 'q1'));
-  const rawQ2 = firstFiniteValue([input.enc_q2, input.encoderQ2, input.encoder?.q2], fallbackValue('enc_q2', 'encoderQ2', 'q2'));
-  const rawQ3 = firstFiniteValue([input.enc_q3, input.encoderQ3, input.encoder?.q3], fallbackValue('enc_q3', 'encoderQ3', 'q3'));
-  const normalizedEncoderQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
-    ? normalizeQuaternion([rawQ0, rawQ1, rawQ2, rawQ3])
-    : { ok: false, q: null };
-  const encoderQ = normalizedEncoderQ.ok ? normalizedEncoderQ.q : null;
-  const encQ0 = encoderQ ? encoderQ[0] : null;
-  const encQ1 = encoderQ ? encoderQ[1] : null;
-  const encQ2 = encoderQ ? encoderQ[2] : null;
-  const encQ3 = encoderQ ? encoderQ[3] : null;
   const timerX = firstFiniteValue([input.enc_timer_x, input.encoderTimerX, input.encoder?.timerX, input.encoder?.timer_x], fallbackValue('enc_timer_x', 'encoderTimerX', 'timerX', 'timer_x'));
   const timerY = firstFiniteValue([input.enc_timer_y, input.encoderTimerY, input.encoder?.timerY, input.encoder?.timer_y], fallbackValue('enc_timer_y', 'encoderTimerY', 'timerY', 'timer_y'));
   const timerZ = firstFiniteValue([input.enc_timer_z, input.encoderTimerZ, input.encoder?.timerZ, input.encoder?.timer_z], fallbackValue('enc_timer_z', 'encoderTimerZ', 'timerZ', 'timer_z'));
@@ -228,22 +234,20 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const ageY = firstFiniteValue([input.enc_age_y, input.encoderAgeY, input.encoder?.ageY, input.encoder?.age_y], fallbackValue('enc_age_y', 'encoderAgeY', 'ageY', 'age_y'));
   const ageZ = firstFiniteValue([input.enc_age_z, input.encoderAgeZ, input.encoder?.ageZ, input.encoder?.age_z], fallbackValue('enc_age_z', 'encoderAgeZ', 'ageZ', 'age_z'));
   const updatedAt = firstFiniteValue([input.encoderUpdatedAt, input.encoder?.updatedAt], fallbackValue('encoderUpdatedAt', 'encoderUpdatedAt', 'updatedAt'));
+  const rawQ0 = firstFiniteValue([input.enc_q0, input.encoderQ0, input.encoder?.q0], fallbackValue('enc_q0', 'encoderQ0', 'q0'));
+  const rawQ1 = firstFiniteValue([input.enc_q1, input.encoderQ1, input.encoder?.q1], fallbackValue('enc_q1', 'encoderQ1', 'q1'));
+  const rawQ2 = firstFiniteValue([input.enc_q2, input.encoderQ2, input.encoder?.q2], fallbackValue('enc_q2', 'encoderQ2', 'q2'));
+  const rawQ3 = firstFiniteValue([input.enc_q3, input.encoderQ3, input.encoder?.q3], fallbackValue('enc_q3', 'encoderQ3', 'q3'));
   const hasData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ].some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
-  const hasValidQuaternion = Boolean(encoderQ);
   const heldAxes = [];
   if (useFallback && incomingX === null && encX !== null) heldAxes.push('X');
   if (useFallback && incomingY === null && encY !== null) heldAxes.push('Y');
   if (useFallback && incomingZ === null && encZ !== null) heldAxes.push('Z');
-  const sourceBase = input.encoderSource || input.encoder?.source || (useFallback ? (fallback.encoderSource || fallback.encoder?.source || '') : '');
-  const source = [
-    sourceBase || (hasData ? 'Gimbal Rotary Encoder packet' : ''),
-    heldAxes.length ? `hold last encoder axes ${heldAxes.join('/')}` : '',
-  ].filter(Boolean).join('; ');
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: input.encoderStatus || input.encoder?.status || (useFallback ? (fallback.encoderStatus || fallback.encoder?.status) : ''),
     hasData,
-    hasAllAxes,
+    hasAllAxes: hasAllAxes && heldAxes.length === 0,
     timerX,
     timerY,
     timerZ,
@@ -253,9 +257,36 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     updatedAt,
     now,
   });
+  const computedQ = encoderStatus === 'LIVE' && hasAllAxes && heldAxes.length === 0
+    ? eulerDegToQuat(encX, encY, encZ, encoderAngleToQuatSequence)
+    : null;
+  const normalizedEncoderQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
+    ? normalizeQuaternion([rawQ0, rawQ1, rawQ2, rawQ3])
+    : { ok: false, q: null };
+  const encoderQ = computedQ || (encoderStatus === 'LIVE' && normalizedEncoderQ.ok ? normalizedEncoderQ.q : null);
+  const encQ0 = encoderQ ? encoderQ[0] : null;
+  const encQ1 = encoderQ ? encoderQ[1] : null;
+  const encQ2 = encoderQ ? encoderQ[2] : null;
+  const encQ3 = encoderQ ? encoderQ[3] : null;
   const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
-  const encoderRpySource = encoderEuler ? `encoder quaternion ${encoderEulerSequence}` : '';
+  const hasValidQuaternion = Boolean(encoderQ);
+  const encoderQuatSource = computedQ
+    ? 'web-computed from gimbal encoder angles'
+    : (encoderQ ? 'remote encoder quaternion' : '');
+  const statusSource = !hasData
+    ? ''
+    : encoderStatus === 'LIVE' && computedQ
+      ? 'web-computed from gimbal encoder angles'
+      : encoderStatus === 'PARTIAL'
+        ? 'partial gimbal encoder angles'
+        : encoderStatus === 'STALE'
+          ? 'stale gimbal encoder angles'
+          : encoderStatus === 'MIXED'
+            ? 'mixed gimbal encoder angles'
+            : 'gimbal encoder angles';
+  const source = statusSource || input.encoderSource || input.encoder?.source || (useFallback ? (fallback.encoderSource || fallback.encoder?.source || '') : '');
+  const encoderRpySource = encoderEuler ? `web-computed encoder quaternion ${encoderEulerSequence}` : '';
 
   return {
     enc_x_deg: encX,
@@ -287,10 +318,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     encoderUpdatedAt: updatedAt,
     encoderSource: source,
     encoderStatus,
+    encoderAngleToQuatSequence,
     encoderEulerSequence,
     encoderDisplayRollSign: encoderDisplaySigns.roll,
     encoderDisplayPitchSign: encoderDisplaySigns.pitch,
     encoderDisplayYawSign: encoderDisplaySigns.yaw,
+    encoderQuatSource,
     encoderRawRollDeg: encoderEulerRaw?.roll ?? null,
     encoderRawPitchDeg: encoderEulerRaw?.pitch ?? null,
     encoderRawYawDeg: encoderEulerRaw?.yaw ?? null,
@@ -317,10 +350,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
       updatedAt,
       source,
       status: encoderStatus,
+      angleToQuatSequence: encoderAngleToQuatSequence,
       eulerSequence: encoderEulerSequence,
       displayRollSign: encoderDisplaySigns.roll,
       displayPitchSign: encoderDisplaySigns.pitch,
       displayYawSign: encoderDisplaySigns.yaw,
+      quatSource: encoderQuatSource,
       rawRollDeg: encoderEulerRaw?.roll ?? null,
       rawPitchDeg: encoderEulerRaw?.pitch ?? null,
       rawYawDeg: encoderEulerRaw?.yaw ?? null,
@@ -837,13 +872,17 @@ export function parseSerialLine(line) {
   return { ok: false, ignored: true, reason: 'ignored non-IMU line', cleanLine: clean };
 }
 
-function makeInitialEncoder(encoderEulerSequence = 'ZYX') {
-  return makeEncoderFields({}, {}, { useFallback: false, encoderEulerSequence });
+function makeInitialEncoder(encoderEulerSequence = 'ZYX', encoderAngleToQuatSequence = DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE) {
+  return makeEncoderFields({}, {}, { useFallback: false, encoderEulerSequence, encoderAngleToQuatSequence });
 }
 
 export default function useEsp32Serial(options = {}) {
   const imuEulerSequence = normalizeEulerSequence(options.imuEulerSequence);
   const encoderEulerSequence = normalizeEulerSequence(options.encoderEulerSequence);
+  const encoderAngleToQuatSequence = normalizeEulerSequence(
+    options.encoderAngleToQuatSequence,
+    DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
+  );
   const imuDisplaySigns = normalizeRpySigns({
     roll: options.imuDisplayRollSign,
     pitch: options.imuDisplayPitchSign,
@@ -853,7 +892,7 @@ export default function useEsp32Serial(options = {}) {
     roll: options.encoderDisplayRollSign,
     pitch: options.encoderDisplayPitchSign,
     yaw: options.encoderDisplayYawSign,
-  });
+  }, DEFAULT_ENCODER_DISPLAY_SIGNS);
   const bodyRateWzDisplaySign = normalizeSign(options.bodyRateWzDisplaySign, 1);
   const [isSupported] = useState(
     typeof navigator !== 'undefined' && typeof navigator.serial !== 'undefined'
@@ -876,15 +915,18 @@ export default function useEsp32Serial(options = {}) {
   const [encoderCount, setEncoderCount] = useState(0);
   const [inputHz, setInputHz] = useState(0);
   const [lastCommand, setLastCommand] = useState('');
+  const [serialWriterReady, setSerialWriterReady] = useState(false);
+  const [lastLocalWriteError, setLastLocalWriteError] = useState('');
 
   const portRef = useRef(null);
   const readerRef = useRef(null);
+  const writerRef = useRef(null);
   const keepReadingRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const encoderRef = useRef(new TextEncoder());
   const bufferRef = useRef('');
   const prevQRef = useRef([1, 0, 0, 0]);
-  const latestEncoderRef = useRef(makeInitialEncoder(encoderEulerSequence));
+  const latestEncoderRef = useRef(makeInitialEncoder(encoderEulerSequence, encoderAngleToQuatSequence));
   const commandBusyRef = useRef(false);
 
   const latestPacketRef = useRef(DEFAULT_PACKET);
@@ -967,6 +1009,7 @@ export default function useEsp32Serial(options = {}) {
           useFallback: true,
           now,
           encoderEulerSequence,
+          encoderAngleToQuatSequence,
           encoderDisplayRollSign: encoderDisplaySigns.roll,
           encoderDisplayPitchSign: encoderDisplaySigns.pitch,
           encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -982,6 +1025,7 @@ export default function useEsp32Serial(options = {}) {
           useFallback: false,
           now,
           encoderEulerSequence,
+          encoderAngleToQuatSequence,
           encoderDisplayRollSign: encoderDisplaySigns.roll,
           encoderDisplayPitchSign: encoderDisplaySigns.pitch,
           encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -1019,6 +1063,7 @@ export default function useEsp32Serial(options = {}) {
         useFallback: false,
         now,
         encoderEulerSequence,
+        encoderAngleToQuatSequence,
         encoderDisplayRollSign: encoderDisplaySigns.roll,
         encoderDisplayPitchSign: encoderDisplaySigns.pitch,
         encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -1073,6 +1118,7 @@ export default function useEsp32Serial(options = {}) {
           useFallback: false,
           now,
           encoderEulerSequence,
+          encoderAngleToQuatSequence,
           encoderDisplayRollSign: encoderDisplaySigns.roll,
           encoderDisplayPitchSign: encoderDisplaySigns.pitch,
           encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -1081,6 +1127,7 @@ export default function useEsp32Serial(options = {}) {
           useFallback: false,
           now,
           encoderEulerSequence,
+          encoderAngleToQuatSequence,
           encoderDisplayRollSign: encoderDisplaySigns.roll,
           encoderDisplayPitchSign: encoderDisplaySigns.pitch,
           encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -1146,6 +1193,7 @@ export default function useEsp32Serial(options = {}) {
         useFallback: false,
         now,
         encoderEulerSequence,
+        encoderAngleToQuatSequence,
         encoderDisplayRollSign: encoderDisplaySigns.roll,
         encoderDisplayPitchSign: encoderDisplaySigns.pitch,
         encoderDisplayYawSign: encoderDisplaySigns.yaw,
@@ -1157,6 +1205,7 @@ export default function useEsp32Serial(options = {}) {
     const normalizedPacket = normalizeLivePacket(packet, 'admin-web-serial', {
       imuEulerSequence,
       encoderEulerSequence,
+      encoderAngleToQuatSequence,
       imuDisplayRollSign: imuDisplaySigns.roll,
       imuDisplayPitchSign: imuDisplaySigns.pitch,
       imuDisplayYawSign: imuDisplaySigns.yaw,
@@ -1178,6 +1227,9 @@ export default function useEsp32Serial(options = {}) {
       enc_q1: normalizedPacket.enc_q1,
       enc_q2: normalizedPacket.enc_q2,
       enc_q3: normalizedPacket.enc_q3,
+      enc_age_x: normalizedPacket.enc_age_x,
+      enc_age_y: normalizedPacket.enc_age_y,
+      enc_age_z: normalizedPacket.enc_age_z,
       enc_timer_x: normalizedPacket.enc_timer_x,
       enc_timer_y: normalizedPacket.enc_timer_y,
       enc_timer_z: normalizedPacket.enc_timer_z,
@@ -1191,13 +1243,18 @@ export default function useEsp32Serial(options = {}) {
       encoderTimerX: normalizedPacket.encoderTimerX,
       encoderTimerY: normalizedPacket.encoderTimerY,
       encoderTimerZ: normalizedPacket.encoderTimerZ,
+      encoderAgeX: normalizedPacket.encoderAgeX,
+      encoderAgeY: normalizedPacket.encoderAgeY,
+      encoderAgeZ: normalizedPacket.encoderAgeZ,
       encoderUpdatedAt: normalizedPacket.encoderUpdatedAt,
       encoderSource: normalizedPacket.encoderSource,
       encoderStatus: normalizedPacket.encoderStatus,
+      encoderAngleToQuatSequence: normalizedPacket.encoderAngleToQuatSequence,
       encoderEulerSequence: normalizedPacket.encoderEulerSequence,
       encoderRollDeg: normalizedPacket.encoderRollDeg,
       encoderPitchDeg: normalizedPacket.encoderPitchDeg,
       encoderYawDeg: normalizedPacket.encoderYawDeg,
+      encoderQuatSource: normalizedPacket.encoderQuatSource,
       encoderRpySource: normalizedPacket.encoderRpySource,
       encoder: normalizedPacket.encoder,
       raw: packet.raw,
@@ -1241,6 +1298,7 @@ export default function useEsp32Serial(options = {}) {
     encoderDisplaySigns.pitch,
     encoderDisplaySigns.roll,
     encoderDisplaySigns.yaw,
+    encoderAngleToQuatSequence,
     encoderEulerSequence,
     imuDisplaySigns.pitch,
     imuDisplaySigns.roll,
@@ -1360,11 +1418,42 @@ export default function useEsp32Serial(options = {}) {
     }
   }, [markPendingUiFlush, processChunk]);
 
+  const releaseWriter = useCallback(() => {
+    try { writerRef.current?.releaseLock?.(); } catch (_) {}
+    writerRef.current = null;
+    setSerialWriterReady(false);
+  }, []);
+
+  const prepareWriter = useCallback(() => {
+    const port = portRef.current;
+    if (!port?.writable) {
+      setSerialWriterReady(false);
+      return false;
+    }
+    if (writerRef.current) {
+      setSerialWriterReady(true);
+      return true;
+    }
+    try {
+      writerRef.current = port.writable.getWriter();
+      setSerialWriterReady(true);
+      setLastLocalWriteError('');
+      return true;
+    } catch (err) {
+      const message = serialErrorMessage(err) || 'Serial writer is not ready.';
+      setLastLocalWriteError(message);
+      setError(message);
+      setSerialWriterReady(false);
+      return false;
+    }
+  }, []);
+
   const closeCurrentPort = useCallback(async () => {
     keepReadingRef.current = false;
 
     try { if (readerRef.current) await readerRef.current.cancel(); } catch (_) {}
     try { readerRef.current?.releaseLock?.(); } catch (_) {}
+    releaseWriter();
 
     try {
       if (portRef.current) await portRef.current.close();
@@ -1375,8 +1464,9 @@ export default function useEsp32Serial(options = {}) {
       portRef.current = null;
       readerRef.current = null;
       setIsConnected(false);
+      setSerialWriterReady(false);
     }
-  }, []);
+  }, [releaseWriter]);
 
   const connect = useCallback(async () => {
     if (!isSupported) {
@@ -1396,6 +1486,7 @@ export default function useEsp32Serial(options = {}) {
       await port.open({ baudRate: BAUD_RATE });
 
       portRef.current = port;
+      prepareWriter();
       setBaudRate(BAUD_RATE);
       setIsConnected(true);
       lastInvalidReasonRef.current = 'Port opened, waiting for telemetry... No IMU/TEL/ENC data yet';
@@ -1406,9 +1497,10 @@ export default function useEsp32Serial(options = {}) {
       setError(serialErrorMessage(err));
       await closeCurrentPort();
       setIsConnected(false);
+      setSerialWriterReady(false);
       return false;
     }
-  }, [closeCurrentPort, isSupported, markPendingUiFlush, readLoop]);
+  }, [closeCurrentPort, isSupported, markPendingUiFlush, prepareWriter, readLoop]);
 
   const disconnect = useCallback(async () => {
     try {
@@ -1420,32 +1512,51 @@ export default function useEsp32Serial(options = {}) {
 
   const sendLine = useCallback(async (line) => {
     if (!portRef.current?.writable || !isConnected) {
-      setError('Serial receiver is not connected.');
+      const message = 'Serial receiver is not connected.';
+      setError(message);
+      setLastLocalWriteError(message);
+      return false;
+    }
+
+    if (!writerRef.current && !prepareWriter()) {
+      const message = lastLocalWriteError || 'Serial writer is not ready.';
+      setError(message);
+      setLastLocalWriteError(message);
       return false;
     }
 
     if (commandBusyRef.current) {
-      setError('Command send is already in progress. Try again shortly.');
+      const message = 'Command send is already in progress. Try again shortly.';
+      setError(message);
+      setLastLocalWriteError(message);
       return false;
     }
 
     commandBusyRef.current = true;
-    let writer;
     try {
       const normalizedLine = String(line).trim();
-      writer = portRef.current.writable.getWriter();
-      await writer.write(encoderRef.current.encode(`${normalizedLine}\n`));
+      if (!normalizedLine) {
+        setLastLocalWriteError('Command line is empty.');
+        return false;
+      }
+      await writerRef.current.write(encoderRef.current.encode(`${normalizedLine}\n`));
       setLastCommand(normalizedLine);
+      lastRawLineRef.current = `TX: ${normalizedLine}`;
+      lastInvalidReasonRef.current = '';
+      markPendingUiFlush();
       setError('');
+      setLastLocalWriteError('');
       return true;
     } catch (err) {
-      setError(serialErrorMessage(err) || 'command send failed');
+      const message = serialErrorMessage(err) || 'command send failed';
+      setError(message);
+      setLastLocalWriteError(message);
+      releaseWriter();
       return false;
     } finally {
-      try { writer?.releaseLock(); } catch (_) {}
       commandBusyRef.current = false;
     }
-  }, [isConnected]);
+  }, [isConnected, lastLocalWriteError, markPendingUiFlush, prepareWriter, releaseWriter]);
 
   const sendCommand = useCallback((command) => {
     const body = String(command || '').trim();
@@ -1472,7 +1583,7 @@ export default function useEsp32Serial(options = {}) {
   const clearStats = useCallback(() => {
     bufferRef.current = '';
     prevQRef.current = [1, 0, 0, 0];
-    latestEncoderRef.current = makeInitialEncoder(encoderEulerSequence);
+    latestEncoderRef.current = makeInitialEncoder(encoderEulerSequence, encoderAngleToQuatSequence);
     latestPacketRef.current = DEFAULT_PACKET;
     latestCsvPacketRef.current = null;
     csvLogQueueRef.current = [];
@@ -1502,12 +1613,14 @@ export default function useEsp32Serial(options = {}) {
     setEncoderCount(0);
     setInputHz(0);
     setLastCommand('');
-  }, [encoderEulerSequence]);
+    setLastLocalWriteError('');
+  }, [encoderAngleToQuatSequence, encoderEulerSequence]);
 
   useEffect(() => {
     return () => {
       keepReadingRef.current = false;
       try { readerRef.current?.cancel(); } catch (_) {}
+      try { writerRef.current?.releaseLock?.(); } catch (_) {}
       try { portRef.current?.close(); } catch (_) {}
     };
   }, []);
@@ -1537,6 +1650,8 @@ export default function useEsp32Serial(options = {}) {
     inputHz,
     validRatio,
     lastCommand,
+    serialWriterReady,
+    lastLocalWriteError,
     connect,
     disconnect,
     sendLine,

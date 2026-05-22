@@ -83,7 +83,9 @@ const CSV_COLUMNS = [
   'encoder_display_roll_sign',
   'encoder_display_pitch_sign',
   'encoder_display_yaw_sign',
+  'encoder_angle_to_quat_sequence',
   'encoder_euler_sequence',
+  'encoder_quat_source',
   'encoder_rpy_source',
   'encoder_status',
   'enc_timer_x',
@@ -216,7 +218,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rawYawDeg = encoderNumber(packet, 'encoderRawYawDeg', 'encoderRawYawDeg', 'rawYawDeg');
   const displayYawSign = encoderNumber(packet, 'encoderDisplayYawSign', 'encoderDisplayYawSign', 'displayYawSign');
   const source = encoderText(packet, 'encoderSource', 'source');
+  const angleToQuatSequence = encoderText(packet, 'encoderAngleToQuatSequence', 'angleToQuatSequence', 'ZYX') || 'ZYX';
   const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
+  const quatSource = encoderText(packet, 'encoderQuatSource', 'quatSource');
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
   const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
@@ -224,7 +228,7 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
   const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
-  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 1000 ? 'MIXED' : 'LIVE'))));
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
   return {
     x,
     y,
@@ -245,7 +249,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     updatedAt,
     ageMs,
     source,
+    angleToQuatSequence,
     eulerSequence,
+    quatSource,
     rpySource,
     hasQuaternion,
     rawYawDeg,
@@ -257,26 +263,24 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
 function buildEncoderRows(packet = {}) {
   const encoder = getEncoderSnapshot(packet);
   const rows = [
-    { label: 'Gimbal encoder status', value: encoder.status },
-    { label: 'Gimbal Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
-    { label: 'Gimbal Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
-    { label: 'Gimbal Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+    { label: 'Status', value: encoder.status },
+    { label: 'Enc X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
+    { label: 'Enc Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
+    { label: 'Enc Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+    { label: `Angle to Quaternion [${encoder.angleToQuatSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
+    { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
+    { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
+    { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
   ];
-  if ([encoder.q0, encoder.q1, encoder.q2, encoder.q3].some((value) => value !== null)) {
-    rows.push(
-      { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
-      { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
-      { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
-      { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
-    );
-  }
   rows.push(
     { label: `Gimbal Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
-    { label: 'Gimbal Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
+    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
+    { label: 'Quaternion source', value: encoder.quatSource || '-' },
+    { label: 'RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
     rows.push(
@@ -293,9 +297,9 @@ function buildEncoderRows(packet = {}) {
     );
   }
   rows.push(
-    { label: 'Gimbal Encoder source', value: encoder.source || '-' },
-    { label: 'Gimbal Encoder updated', value: formatDateTime(encoder.updatedAt) },
-    { label: 'Gimbal Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
+    { label: 'Source', value: encoder.source || '-' },
+    { label: 'Updated', value: formatDateTime(encoder.updatedAt) },
+    { label: 'Computed age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
   );
   return rows;
 }
@@ -648,6 +652,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     { label: 'Warning', value: `${serial.warningCount || 0}` },
     { label: 'Last RX', value: formatDateTime(serial.lastReceivedAt) },
     { label: 'Last command', value: serial.lastCommand || '-' },
+    { label: 'Writer ready', value: serial.serialWriterReady ? 'yes' : 'no' },
   ], [latest, serial]);
 
   const startCsvLogging = () => {

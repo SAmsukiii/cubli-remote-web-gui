@@ -67,7 +67,8 @@ const LOG_COLUMNS = [
   'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
   'encoder_raw_roll_deg', 'encoder_raw_pitch_deg', 'encoder_raw_yaw_deg',
   'encoder_display_roll_sign', 'encoder_display_pitch_sign', 'encoder_display_yaw_sign',
-  'encoder_euler_sequence', 'encoder_rpy_source', 'encoder_status',
+  'encoder_angle_to_quat_sequence',
+  'encoder_euler_sequence', 'encoder_quat_source', 'encoder_rpy_source', 'encoder_status',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
   'enc_age_x', 'enc_age_y', 'enc_age_z',
   'encoder_source', 'encoder_updated_at',
@@ -170,7 +171,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rawYawDeg = encoderNumber(packet, 'encoderRawYawDeg', 'encoderRawYawDeg', 'rawYawDeg');
   const displayYawSign = encoderNumber(packet, 'encoderDisplayYawSign', 'encoderDisplayYawSign', 'displayYawSign');
   const source = encoderText(packet, 'encoderSource', 'source');
+  const angleToQuatSequence = encoderText(packet, 'encoderAngleToQuatSequence', 'angleToQuatSequence', 'ZYX') || 'ZYX';
   const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
+  const quatSource = encoderText(packet, 'encoderQuatSource', 'quatSource');
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
   const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
@@ -178,7 +181,7 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
   const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
-  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 1000 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 1000 ? 'MIXED' : 'LIVE'))));
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
   return {
     x,
     y,
@@ -199,7 +202,9 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     updatedAt,
     ageMs,
     source,
+    angleToQuatSequence,
     eulerSequence,
+    quatSource,
     rpySource,
     hasQuaternion,
     rawYawDeg,
@@ -211,26 +216,24 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
 function buildEncoderRows(packet = {}) {
   const encoder = getEncoderSnapshot(packet);
   const rows = [
-    { label: 'Gimbal encoder status', value: encoder.status },
-    { label: 'Gimbal Encoder X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
-    { label: 'Gimbal Encoder Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
-    { label: 'Gimbal Encoder Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+    { label: 'Status', value: encoder.status },
+    { label: 'Enc X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
+    { label: 'Enc Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
+    { label: 'Enc Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
+    { label: `Angle to Quaternion [${encoder.angleToQuatSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
+    { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
+    { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
+    { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
   ];
-  if ([encoder.q0, encoder.q1, encoder.q2, encoder.q3].some((value) => value !== null)) {
-    rows.push(
-      { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
-      { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
-      { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
-      { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
-    );
-  }
   rows.push(
     { label: `Gimbal Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
-    { label: 'Gimbal Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
-    { label: 'Gimbal Encoder RPY source', value: encoder.rpySource || '-' },
+    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : 'unavailable' },
+    { label: 'Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
+    { label: 'Quaternion source', value: encoder.quatSource || '-' },
+    { label: 'RPY source', value: encoder.rpySource || '-' },
   );
   if ([encoder.timerX, encoder.timerY, encoder.timerZ].some((value) => value !== null)) {
     rows.push(
@@ -247,9 +250,9 @@ function buildEncoderRows(packet = {}) {
     );
   }
   rows.push(
-    { label: 'Gimbal Encoder source', value: encoder.source || '-' },
-    { label: 'Gimbal Encoder updated', value: formatDateTime(encoder.updatedAt) },
-    { label: 'Gimbal Encoder age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
+    { label: 'Source', value: encoder.source || '-' },
+    { label: 'Updated', value: formatDateTime(encoder.updatedAt) },
+    { label: 'Computed age', value: encoder.ageMs !== null ? `${formatNumber(encoder.ageMs, 0)} ms` : '-' },
   );
   return rows;
 }
@@ -656,6 +659,7 @@ function RpyConventionSection({ serverSync }) {
   const safeServerSync = serverSync || {};
   const imuSequence = safeServerSync.imuEulerSequence || 'ZYX';
   const encoderSequence = safeServerSync.encoderEulerSequence || 'ZYX';
+  const encoderAngleSequence = safeServerSync.encoderAngleToQuatSequence || 'ZYX';
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
@@ -692,6 +696,24 @@ function RpyConventionSection({ serverSync }) {
       <div className="server-small-note mt-2">
         Current RPY [{imuSequence}] · Source: IMU/TEL quaternion · 3D source: quaternion q0~q3 · Encoder source: Gimbal rotary encoder [{encoderSequence}].
       </div>
+      <div className="serial-subsection-title mt-3 mb-2">Encoder Angle to Quaternion Convention</div>
+      <div className="server-small-note mb-2">
+        This converts gimbal rotary encoder X/Y/Z angles into a reference quaternion. It does not change IMU attitude rendering.
+      </div>
+      <Row className="g-2">
+        <Col xs={12} md={6}>
+          <Form.Label className="serial-mini-label">Sequence</Form.Label>
+          <Form.Select
+            size="sm"
+            value={encoderAngleSequence}
+            onChange={(event) => safeServerSync.setEncoderAngleToQuatSequence?.(event.target.value)}
+          >
+            {EULER_SEQUENCE_OPTIONS.map((sequence) => (
+              <option key={sequence} value={sequence}>{sequence}</option>
+            ))}
+          </Form.Select>
+        </Col>
+      </Row>
     </div>
   );
 }
@@ -858,9 +880,10 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
   );
 }
 
-function CommandSection({ serial, status, role, controllerClientId, isController }) {
+function CommandSection({ serial, status, role, controllerClientId, isController, localSerial }) {
   const safeSerial = serial || {};
   const safeStatus = status || {};
+  const safeLocalSerial = localSerial || {};
   const [targetRoll, setTargetRoll] = useState(0);
   const [targetPitch, setTargetPitch] = useState(0);
   const [targetYaw, setTargetYaw] = useState(0);
@@ -870,6 +893,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const [gainStatus, setGainStatus] = useState('');
   const [rpmCommand, setRpmCommand] = useState({ x: '0', y: '0', z: '0' });
   const [rpmStatus, setRpmStatus] = useState('');
+  const [localCommand, setLocalCommand] = useState('');
+  const [localCommandStatus, setLocalCommandStatus] = useState('');
 
   const isAdmin = role === 'admin';
   const canViewCommand = isAdmin || isController;
@@ -892,11 +917,44 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const latestPacket = safeStatus.latestPacket || safeStatus.latestSharedPacket || {};
   const currentRawYaw = latestPacket.rawYawDeg ?? latestPacket.yawRawDeg ?? latestPacket.remoteYawDeg;
   const qdPreviewText = targetPreview.qd.map((value) => formatNumber(value, 6)).join(', ');
+  const localWriterReady = Boolean(safeLocalSerial.serialWriterReady);
+  const localSerialConnected = Boolean(safeLocalSerial.isConnected);
+  const canSendLocalCommand = isAdmin && localSerialConnected && localWriterReady && typeof safeLocalSerial.sendLine === 'function';
+  const lastRemoteAckErr = /^(ACK|ERR|ERROR|OK|WARN|PONG)(?:,|\s|$)/i.test(String(safeLocalSerial.lastRawLine || ''))
+    ? safeLocalSerial.lastRawLine
+    : '-';
 
   if (!canViewCommand) return null;
 
   const sendShortcut = (commandKey, label, params = {}) => safeSerial.sendEbimuShortcut?.(commandKey, label, params);
   const sendAccFactor = (value) => safeSerial.sendAccFactor?.(Number(value) || 10);
+  const sendLocalLines = async (lines, label = 'Local command') => {
+    const normalizedLines = (Array.isArray(lines) ? lines : [lines])
+      .map((line) => String(line || '').trim())
+      .filter(Boolean);
+    if (!canSendLocalCommand) {
+      setLocalCommandStatus('Local Web Serial writer is not ready.');
+      return false;
+    }
+    if (normalizedLines.length === 0) {
+      setLocalCommandStatus('Enter a command line first.');
+      return false;
+    }
+    for (const line of normalizedLines) {
+      const ok = await safeLocalSerial.sendLine(line);
+      if (!ok) {
+        setLocalCommandStatus(safeLocalSerial.lastLocalWriteError || `Failed to send ${line}.`);
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    setLocalCommandStatus(`${label} sent locally.`);
+    return true;
+  };
+  const sendLocalInput = async () => {
+    const ok = await sendLocalLines(localCommand, 'Direct Web Serial command');
+    if (ok) setLocalCommand('');
+  };
   const applyDefaultImuSetting = async () => {
     await sendShortcut('ebimuDefault', 'EBIMU Default Setup');
     await sendShortcut('magOff', 'Default IMU Magnetometer Off');
@@ -1008,6 +1066,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           <div className="server-small-note mb-2">
             Initialize commands currently use the firmware TARE line until firmware-specific init commands are added.
           </div>
+          <div className="server-small-note mb-2">
+            Mode: Server Command Queue. Controller/Admin commands are queued on the server and relayed by the Admin bridge.
+          </div>
           <CommandGroup>
             <CommandButton label="Cubli Initialize" onClick={safeSerial.sendCubliInitialize} disabled={!canSendCommand} />
             <CommandButton label="Gimbal Encoder Initialize" onClick={safeSerial.sendEncoderInitialize} disabled={!canSendCommand} />
@@ -1016,6 +1077,53 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             <CommandButton label="Emergency Stop" onClick={safeSerial.sendEmergencyStop} disabled={!canSendCommand} />
           </CommandGroup>
         </CommandAccordionItem>
+
+        {isAdmin ? (
+          <CommandAccordionItem eventKey="local-direct" title="Local Web Serial Command">
+            <div className="server-small-note mb-3">
+              Admin-only. Sends command directly to the connected Remote MCU without using the server command queue.
+            </div>
+            <ValueGrid
+              title="Local Writer"
+              rows={[
+                { label: 'Web Serial connected', value: localSerialConnected ? 'yes' : 'no' },
+                { label: 'serialWriterReady', value: localWriterReady ? 'yes' : 'no' },
+                { label: 'Last TX', value: safeLocalSerial.lastCommand || '-' },
+                { label: 'Last local write error', value: safeLocalSerial.lastLocalWriteError || '-' },
+                { label: 'Last ACK/ERR from Remote', value: lastRemoteAckErr },
+              ]}
+            />
+            <Row className="g-2 align-items-end mt-3">
+              <Col xs={12} md={8}>
+                <Form.Label className="serial-mini-label">Direct command</Form.Label>
+                <Form.Control
+                  size="sm"
+                  type="text"
+                  value={localCommand}
+                  onChange={(event) => {
+                    setLocalCommand(event.target.value);
+                    setLocalCommandStatus('');
+                  }}
+                  placeholder="CMD,0 or RPMALL,0,0,0"
+                  disabled={!localSerialConnected}
+                />
+              </Col>
+              <Col xs={12} md={4}>
+                <Button variant="outline-info" className="w-100" onClick={sendLocalInput} disabled={!canSendLocalCommand || !String(localCommand || '').trim()}>
+                  Send
+                </Button>
+              </Col>
+            </Row>
+            {localCommandStatus ? <div className="server-small-note mt-2">{localCommandStatus}</div> : null}
+            <div className="serial-subsection-title mt-3 mb-2">Quick Direct Commands</div>
+            <CommandGroup>
+              <CommandButton label="Cubli Initialize" onClick={() => sendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} disabled={!canSendLocalCommand} />
+              <CommandButton label="Encoder Initialize" onClick={() => sendLocalLines('TARE', 'Encoder Initialize')} disabled={!canSendLocalCommand} />
+              <CommandButton label="Stop / RPM Stop" onClick={() => sendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} disabled={!canSendLocalCommand} />
+              <CommandButton label="Apply Default IMU Setting" onClick={() => sendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} disabled={!canSendLocalCommand} />
+            </CommandGroup>
+          </CommandAccordionItem>
+        ) : null}
 
         <CommandAccordionItem eventKey="target" title="Target Attitude">
           <div className="serial-subsection-title mb-2">Target RPY Command Convention</div>
@@ -1808,7 +1916,7 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
   );
 }
 
-export default function ServerPanel({ serverSync, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, webSerialInputHz = null, onChangeDisplayName = null, isActive = true }) {
+export default function ServerPanel({ serverSync, localSerial = null, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, webSerialInputHz = null, onChangeDisplayName = null, isActive = true }) {
   const safeServerSync = serverSync || {};
   const serial = safeServerSync.serverSerial || {};
   const status = serial.status || {};
@@ -1871,6 +1979,7 @@ export default function ServerPanel({ serverSync, webSerialConnected = false, we
         role={role}
         controllerClientId={controllerClientId}
         isController={Boolean(isController)}
+        localSerial={localSerial}
       />
 
       <MonitoringSection status={status} isActive={isActive} isAdmin={isAdmin} />
