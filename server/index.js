@@ -31,6 +31,7 @@ const ENV_ADMIN_CREDENTIAL = process.env.CUBLI_ADMIN_ID && process.env.CUBLI_ADM
   : null;
 const CLIENT_STALE_MS = Number(process.env.CUBLI_CLIENT_STALE_MS || 7000);
 const LIVE_STALE_MS = Number(process.env.CUBLI_LIVE_STALE_MS || 1000);
+const PUBLISHER_TTL_MS = Number(process.env.CUBLI_PUBLISHER_TTL_MS || 10000);
 const MAX_CHART_POINTS = 240;
 const MAX_RAW_LINES = 60;
 const MAX_BRIDGE_COMMANDS = 80;
@@ -75,6 +76,7 @@ const accessState = {
   adminClientId: null,
   adminLoginId: '',
   adminLabel: '',
+  adminSessions: new Map(),
   controllerClientId: null,
   clients: new Map(),
   log: [],
@@ -89,6 +91,7 @@ const sharedState = {
   publisherClientId: '',
   publisherDisplayName: '',
   publisherRole: '',
+  publishSessionId: '',
   publishedAt: null,
   latestDesiredAttitude: null,
   lastCommandInfo: null,
@@ -99,6 +102,10 @@ const sharedState = {
   visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
   droppedOutOfOrderCount: 0,
   lastOutOfOrderAt: null,
+  droppedWrongPublisherCount: 0,
+  lastWrongPublisherAt: null,
+  droppedWrongSessionCount: 0,
+  lastWrongSessionAt: null,
 };
 
 const serialState = {
@@ -128,6 +135,12 @@ const bridgeState = {
 
 let activeSessionId = '';
 let activeSessionStartedAtMs = null;
+let activePublisher = null;
+
+const publisherCleanupTimer = setInterval(() => {
+  cleanupStaleActivePublisher();
+}, Math.max(1000, Math.min(3000, Math.floor(PUBLISHER_TTL_MS / 3))));
+if (publisherCleanupTimer.unref) publisherCleanupTimer.unref();
 
 function sendLiveStreamEvent(res, eventName, payload) {
   try {
@@ -343,8 +356,17 @@ const COMPACT_LIVE_PACKET_KEYS = Object.freeze([
   'serverReceivedAt',
   'serverReceivedAtMs',
   'serverSentAt',
+  'publisherClientId',
+  'publisherDisplayName',
+  'publisherName',
+  'publisherRole',
+  'publishSessionId',
   'droppedOutOfOrderCount',
   'lastOutOfOrderAt',
+  'droppedWrongPublisherCount',
+  'lastWrongPublisherAt',
+  'droppedWrongSessionCount',
+  'lastWrongSessionAt',
 ]);
 
 const ENCODER_ONLY_PACKET_FIELDS = Object.freeze([
@@ -439,6 +461,264 @@ function mergeEncoderOnlyPacket(previousPacket, nextPacket, publishedAt) {
   return merged;
 }
 
+function sanitizePublishSessionId(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^\w:.-]+/g, '')
+    .slice(0, 140);
+}
+
+function makePublishSessionId(clientId = '') {
+  const compactClientId = String(clientId || 'publisher')
+    .replace(/[^\w.-]+/g, '')
+    .slice(0, 72) || 'publisher';
+  return `${compactClientId}-${Date.now()}`;
+}
+
+function publisherHeartbeatAgeMs(now = Date.now()) {
+  if (!activePublisher?.lastHeartbeatAt) return null;
+  return Math.max(0, now - Number(activePublisher.lastHeartbeatAt));
+}
+
+function activePublisherStatus(now = Date.now()) {
+  if (!activePublisher?.clientId) return 'NONE';
+  const ageMs = publisherHeartbeatAgeMs(now);
+  return ageMs !== null && ageMs > PUBLISHER_TTL_MS ? 'STALE' : 'ACTIVE';
+}
+
+function sanitizeActivePublisher(value = activePublisher, { includeDebug = false } = {}) {
+  const publisher = value || null;
+  if (!publisher?.clientId) {
+    return {
+      clientId: includeDebug ? null : '',
+      clientIdShort: '',
+      displayName: '',
+      sessionId: includeDebug ? '' : '',
+      sessionIdShort: '',
+      startedAt: null,
+      startedAtMs: null,
+      lastHeartbeatAt: null,
+      lastHeartbeatAtMs: null,
+      heartbeatAgeMs: null,
+      source: '',
+      status: 'NONE',
+      ttlMs: PUBLISHER_TTL_MS,
+    };
+  }
+  const now = Date.now();
+  const heartbeatAge = publisher.lastHeartbeatAt ? Math.max(0, now - Number(publisher.lastHeartbeatAt)) : null;
+  const sessionId = sanitizePublishSessionId(publisher.sessionId || '');
+  return {
+    clientId: includeDebug ? publisher.clientId : '',
+    clientIdShort: shortClientId(publisher.clientId),
+    displayName: sanitizeClientName(publisher.displayName || getStoredClientName(publisher.clientId) || shortClientId(publisher.clientId)),
+    sessionId: includeDebug ? sessionId : '',
+    sessionIdShort: sessionId ? sessionId.slice(-12) : '',
+    startedAt: publisher.startedAt || null,
+    startedAtMs: publisher.startedAtMs || null,
+    lastHeartbeatAt: publisher.lastHeartbeatAtIso || (publisher.lastHeartbeatAt ? new Date(publisher.lastHeartbeatAt).toISOString() : null),
+    lastHeartbeatAtMs: publisher.lastHeartbeatAt || null,
+    heartbeatAgeMs: heartbeatAge,
+    source: publisher.source || 'admin-web-serial',
+    status: heartbeatAge !== null && heartbeatAge > PUBLISHER_TTL_MS ? 'STALE' : 'ACTIVE',
+    ttlMs: PUBLISHER_TTL_MS,
+  };
+}
+
+function resetLiveTelemetry(reason = '', now = Date.now()) {
+  sharedState.latestSharedPacket = null;
+  sharedState.activeSharedSource = '';
+  sharedState.sourceLabel = '';
+  sharedState.publisherClientId = '';
+  sharedState.publisherDisplayName = '';
+  sharedState.publisherRole = '';
+  sharedState.publishSessionId = '';
+  sharedState.publishedAt = null;
+  sharedState.chartData = [];
+  sharedState.rawLines = [];
+  sharedState.previousRatePacket = null;
+  sharedState.omegaEstimate = null;
+  sharedState.lastLiveTelemetryResetAt = now;
+  sharedState.lastLiveTelemetryResetReason = reason;
+}
+
+function broadcastPublisherState() {
+  broadcastLiveStream('state', {
+    ok: true,
+    ...sanitizeSharedState(),
+    bridge: bridgeStatus({ includeDebug: false }),
+  });
+}
+
+function clearActivePublisher(reason = 'released', options = {}) {
+  const previous = activePublisher;
+  if (!previous?.clientId) {
+    resetLiveTelemetry(reason, options.now || Date.now());
+    return null;
+  }
+  activePublisher = null;
+  resetLiveTelemetry(reason, options.now || Date.now());
+  appendAccessLog({
+    type: 'PUBLISHER_RELEASED',
+    reason,
+    previousPublisherClientId: previous.clientId,
+    previousPublisherDisplayName: sanitizeClientName(previous.displayName || getStoredClientName(previous.clientId)),
+    previousPublishSessionId: previous.sessionId || '',
+    releasedByClientId: options.releasedByClientId || '',
+    releasedByDisplayName: sanitizeClientName(options.releasedByDisplayName || ''),
+  });
+  if (options.broadcast !== false) broadcastPublisherState();
+  return previous;
+}
+
+function cleanupStaleActivePublisher(now = Date.now()) {
+  if (!activePublisher?.clientId) return false;
+  const ageMs = publisherHeartbeatAgeMs(now);
+  if (ageMs === null || ageMs <= PUBLISHER_TTL_MS) return false;
+  clearActivePublisher('publisher heartbeat stale', { now });
+  return true;
+}
+
+function claimActivePublisher(identity, options = {}) {
+  cleanupStaleActivePublisher();
+  const clientId = String(identity?.clientId || '').trim();
+  if (!clientId) return { ok: false, status: 400, error: 'CLIENT_ID_REQUIRED' };
+  if (identity?.role !== 'admin') return { ok: false, status: 403, error: 'ADMIN_REQUIRED' };
+
+  const now = Date.now();
+  const requestedSessionId = sanitizePublishSessionId(options.sessionId) || makePublishSessionId(clientId);
+  const source = normalizeSourceKey(options.source || 'admin-web-serial');
+  const displayName = sanitizeClientName(identity.displayName || getStoredClientName(clientId) || shortClientId(clientId));
+
+  if (activePublisher?.clientId && activePublisher.clientId !== clientId && !options.force) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'ACTIVE_PUBLISHER_CONFLICT',
+      activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    };
+  }
+
+  const previous = activePublisher;
+  const publisherChanged = !previous?.clientId
+    || previous.clientId !== clientId
+    || previous.sessionId !== requestedSessionId
+    || Boolean(options.force);
+
+  if (publisherChanged) {
+    resetLiveTelemetry(options.force ? 'publisher force takeover' : 'publisher claimed', now);
+  }
+
+  activePublisher = {
+    clientId,
+    displayName,
+    sessionId: requestedSessionId,
+    startedAt: publisherChanged ? new Date(now).toISOString() : (previous.startedAt || new Date(now).toISOString()),
+    startedAtMs: publisherChanged ? now : (previous.startedAtMs || now),
+    lastHeartbeatAt: now,
+    lastHeartbeatAtIso: new Date(now).toISOString(),
+    source: source || 'admin-web-serial',
+  };
+
+  appendAccessLog({
+    type: options.force ? 'PUBLISHER_FORCE_TAKEOVER' : (publisherChanged ? 'PUBLISHER_CLAIMED' : 'PUBLISHER_REFRESHED'),
+    publisherClientId: clientId,
+    publisherDisplayName: displayName,
+    publishSessionId: requestedSessionId,
+    previousPublisherClientId: previous?.clientId || null,
+    previousPublisherDisplayName: previous ? sanitizeClientName(previous.displayName || getStoredClientName(previous.clientId)) : '',
+  });
+
+  broadcastPublisherState();
+  return {
+    ok: true,
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    publisherChanged,
+  };
+}
+
+function touchActivePublisher(now = Date.now()) {
+  if (!activePublisher?.clientId) return;
+  activePublisher.lastHeartbeatAt = now;
+  activePublisher.lastHeartbeatAtIso = new Date(now).toISOString();
+}
+
+function readPublishSessionId(req, packet = {}) {
+  return sanitizePublishSessionId(
+    req.body?.publishSessionId
+    || req.body?.publisherSessionId
+    || req.body?.sessionId
+    || packet.publishSessionId
+    || packet.publisherSessionId
+    || ''
+  );
+}
+
+function validateActivePublisherForRequest(req, identity, packet = {}) {
+  cleanupStaleActivePublisher();
+  const clientId = String(identity?.clientId || '').trim();
+  if (!clientId) return { ok: false, status: 400, error: 'CLIENT_ID_REQUIRED' };
+  if (identity?.role !== 'admin') return { ok: false, status: 403, error: 'ADMIN_REQUIRED' };
+
+  const packetPublisherClientId = String(packet.publisherClientId || req.body?.publisherClientId || clientId).trim();
+  if (packetPublisherClientId && packetPublisherClientId !== clientId) {
+    sharedState.droppedWrongPublisherCount += 1;
+    sharedState.lastWrongPublisherAt = Date.now();
+    return { ok: false, status: 409, error: 'PUBLISHER_CLIENT_ID_MISMATCH', activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }) };
+  }
+
+  let publishSessionId = readPublishSessionId(req, packet);
+  if (!activePublisher?.clientId) {
+    const claimed = claimActivePublisher(identity, {
+      sessionId: publishSessionId || makePublishSessionId(clientId),
+      source: req.body?.source || packet.source || 'admin-web-serial',
+      force: false,
+    });
+    if (!claimed.ok) return claimed;
+    publishSessionId = activePublisher.sessionId;
+  }
+
+  if (activePublisher.clientId !== clientId) {
+    sharedState.droppedWrongPublisherCount += 1;
+    sharedState.lastWrongPublisherAt = Date.now();
+    return {
+      ok: false,
+      status: 409,
+      error: 'ACTIVE_PUBLISHER_CONFLICT',
+      activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    };
+  }
+
+  if (!publishSessionId) {
+    sharedState.droppedWrongSessionCount += 1;
+    sharedState.lastWrongSessionAt = Date.now();
+    return {
+      ok: false,
+      status: 409,
+      error: 'PUBLISH_SESSION_REQUIRED',
+      activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    };
+  }
+
+  if (activePublisher.sessionId && publishSessionId !== activePublisher.sessionId) {
+    sharedState.droppedWrongSessionCount += 1;
+    sharedState.lastWrongSessionAt = Date.now();
+    return {
+      ok: false,
+      status: 409,
+      error: 'ACTIVE_PUBLISHER_SESSION_CONFLICT',
+      activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    };
+  }
+
+  touchActivePublisher();
+  return {
+    ok: true,
+    publishSessionId: activePublisher.sessionId,
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+  };
+}
+
 function compactLivePacket(packet, options = {}) {
   const includeDebug = Boolean(options.includeDebug);
   const sanitized = sanitizeSharedPacket(packet, { includeDebug });
@@ -453,16 +733,28 @@ function compactLivePacket(packet, options = {}) {
   compact.sourceLabel = sanitized.sourceLabel || SOURCE_LABELS[compact.source] || compact.source;
   compact.droppedOutOfOrderCount = sharedState.droppedOutOfOrderCount;
   compact.lastOutOfOrderAt = sharedState.lastOutOfOrderAt;
+  compact.droppedWrongPublisherCount = sharedState.droppedWrongPublisherCount;
+  compact.lastWrongPublisherAt = sharedState.lastWrongPublisherAt;
+  compact.droppedWrongSessionCount = sharedState.droppedWrongSessionCount;
+  compact.lastWrongSessionAt = sharedState.lastWrongSessionAt;
   if (Array.isArray(sanitized.q) && sanitized.q.length === 4) compact.q = sanitized.q;
   return compact;
 }
 
 function buildLivePayload(packet, options = {}) {
   const includeDebug = Boolean(options.includeDebug);
+  cleanupStaleActivePublisher();
   const serverSentAt = Date.now();
-  const compactPacket = compactLivePacket(packet, { includeDebug });
+  const compactPacket = compactLivePacket(sharedState.latestSharedPacket || null, { includeDebug });
   if (compactPacket) compactPacket.serverSentAt = serverSentAt;
   const ageMs = compactPacket?.publishedAt ? serverSentAt - compactPacket.publishedAt : null;
+  const publicPublisher = sanitizeActivePublisher(activePublisher, { includeDebug });
+  const publisherStatus = publicPublisher.status || 'NONE';
+  const liveStatus = publisherStatus === 'NONE'
+    ? 'NO_ACTIVE_PUBLISHER'
+    : !compactPacket
+      ? 'STALE'
+      : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE';
   return {
     ok: true,
     latestSharedPacket: compactPacket,
@@ -472,10 +764,18 @@ function buildLivePayload(packet, options = {}) {
     activeSharedSource: sharedState.activeSharedSource || '',
     publisherDisplayName: sharedState.publisherDisplayName || '',
     publisherRole: sharedState.publisherRole || '',
+    publishSessionId: includeDebug ? (sharedState.latestSharedPacket?.publishSessionId || activePublisher?.sessionId || '') : '',
+    activePublisher: publicPublisher,
+    activePublisherStatus: publisherStatus,
+    activePublisherHeartbeatAgeMs: publicPublisher.heartbeatAgeMs,
     publishedAt: sharedState.publishedAt || null,
-    liveStatus: !compactPacket ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
+    liveStatus,
     droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
     lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
+    droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+    lastWrongPublisherAt: sharedState.lastWrongPublisherAt,
+    droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    lastWrongSessionAt: sharedState.lastWrongSessionAt,
     serverSentAt,
   };
 }
@@ -1063,7 +1363,7 @@ function lowPassRate(previous, next, alpha = 0.28) {
   };
 }
 
-function normalizePublishedPacket(packet, source, identity) {
+function normalizePublishedPacket(packet, source, identity, publishMeta = {}) {
   if (!packet || typeof packet !== 'object' || Array.isArray(packet)) {
     return { ok: false, error: 'packet object is required' };
   }
@@ -1071,6 +1371,8 @@ function normalizePublishedPacket(packet, source, identity) {
   const now = Date.now();
   const resolvedSource = normalizeSourceKey(source || packet.source || 'admin-web-serial');
   if (!SOURCE_LABELS[resolvedSource]) return { ok: false, error: 'Unsupported live packet source' };
+  const publishSessionId = sanitizePublishSessionId(publishMeta.publishSessionId || packet.publishSessionId || packet.publisherSessionId || '');
+  const publisherDisplayName = sanitizeClientName(identity.displayName || identity.clientName || packet.publisherDisplayName || packet.publisherName || '');
   const imuEulerSequence = normalizeEulerSequence(packet.imuEulerSequence);
   const encoderEulerSequence = normalizeEulerSequence(packet.encoderEulerSequence);
   const encoderAngleToQuatSequence = normalizeEulerSequence(
@@ -1158,8 +1460,10 @@ function normalizePublishedPacket(packet, source, identity) {
     rawPrefix,
     raw_prefix: rawPrefix,
     publisherClientId: identity.clientId || packet.publisherClientId || '',
-    publisherDisplayName: identity.displayName || identity.clientName || packet.publisherDisplayName || '',
+    publisherDisplayName,
+    publisherName: publisherDisplayName,
     publisherRole: identity.role || packet.publisherRole || '',
+    publishSessionId,
 
     q0: q[0], q1: q[1], q2: q[2], q3: q[3], q,
     norm: Math.sqrt(rawQ.map(Number).reduce((sum, value) => sum + value * value, 0)),
@@ -1295,12 +1599,12 @@ function getServerInfo() {
 }
 
 function getBaseRole(clientId) {
-  return clientId && clientId === accessState.adminClientId ? 'admin' : 'viewer';
+  return clientId && accessState.adminSessions.has(clientId) ? 'admin' : 'viewer';
 }
 
 function getEffectiveRole(clientId) {
   if (!clientId) return 'viewer';
-  if (clientId === accessState.adminClientId) return 'admin';
+  if (accessState.adminSessions.has(clientId)) return 'admin';
   if (clientId === accessState.controllerClientId) return 'controller';
   return 'viewer';
 }
@@ -1356,6 +1660,18 @@ function isClientConnected(client, now = Date.now()) {
   return Boolean(lastSeenMs && now - lastSeenMs <= CLIENT_STALE_MS);
 }
 
+function syncPrimaryAdmin() {
+  const connectedAdmins = Array.from(accessState.adminSessions.values())
+    .filter((admin) => admin?.clientId && isClientConnected(accessState.clients.get(admin.clientId)));
+  const currentStillActive = connectedAdmins.some((admin) => admin.clientId === accessState.adminClientId);
+  const nextAdmin = currentStillActive
+    ? accessState.adminSessions.get(accessState.adminClientId)
+    : connectedAdmins[0];
+  accessState.adminClientId = nextAdmin?.clientId || null;
+  accessState.adminLoginId = nextAdmin?.adminLoginId || '';
+  accessState.adminLabel = nextAdmin?.adminLabel || '';
+}
+
 function rememberClient(identity) {
   const safeIdentity = identity || {};
   const clientId = String(safeIdentity.clientId || '').trim();
@@ -1384,22 +1700,27 @@ function cleanupStaleController() {
 }
 
 function cleanupStaleAdmin() {
-  const adminId = accessState.adminClientId;
-  if (!adminId) return false;
-  const admin = accessState.clients.get(adminId);
-  if (admin && isClientConnected(admin)) return false;
-  accessState.adminClientId = null;
-  accessState.adminLoginId = '';
-  accessState.adminLabel = '';
-  if (accessState.controllerClientId === adminId) accessState.controllerClientId = null;
-  appendAccessLog({ type: 'ADMIN_AUTO_LOGOUT', previousAdminClientId: adminId, previousAdminDisplayName: getClientLabel(adminId), reason: admin ? 'admin heartbeat stale' : 'admin client missing' });
-  return true;
+  let changed = false;
+  Array.from(accessState.adminSessions.keys()).forEach((adminId) => {
+    const admin = accessState.clients.get(adminId);
+    if (admin && isClientConnected(admin)) return;
+    accessState.adminSessions.delete(adminId);
+    if (accessState.controllerClientId === adminId) accessState.controllerClientId = null;
+    appendAccessLog({ type: 'ADMIN_AUTO_LOGOUT', previousAdminClientId: adminId, previousAdminDisplayName: getClientLabel(adminId), reason: admin ? 'admin heartbeat stale' : 'admin client missing' });
+    changed = true;
+  });
+  if (changed || (accessState.adminClientId && !accessState.adminSessions.has(accessState.adminClientId))) {
+    syncPrimaryAdmin();
+    changed = true;
+  }
+  return changed;
 }
 
 function readClientIdentity(req) {
   const clientId = String(req.get('x-cubli-client-id') || req.body?.clientId || req.query?.clientId || '').trim();
   const displayName = readClientName(req, clientId);
   cleanupStaleAdmin();
+  cleanupStaleActivePublisher();
   const identity = {
     clientId,
     displayName,
@@ -1426,6 +1747,7 @@ function readIdentity(req) {
 function publicAccessState(forClientId = '') {
   cleanupStaleAdmin();
   cleanupStaleController();
+  cleanupStaleActivePublisher();
   const now = Date.now();
   const safeForClientId = String(forClientId || '').trim();
   const role = getEffectiveRole(safeForClientId);
@@ -1453,6 +1775,15 @@ function publicAccessState(forClientId = '') {
   const selfName = getStoredClientName(safeForClientId);
   const controllerDisplayName = includeDebug ? getStoredClientName(accessState.controllerClientId) : '';
   const adminDisplayName = includeDebug ? getStoredClientName(accessState.adminClientId) : '';
+  const adminClients = includeDebug ? Array.from(accessState.adminSessions.values()).map((admin) => ({
+    clientId: admin.clientId,
+    clientIdShort: shortClientId(admin.clientId),
+    displayName: getStoredClientName(admin.clientId) || sanitizeClientName(admin.displayName || ''),
+    adminLoginId: admin.adminLoginId || '',
+    adminLabel: admin.adminLabel || '',
+    loggedInAt: admin.loggedInAt || null,
+    connected: isClientConnected(accessState.clients.get(admin.clientId), now),
+  })) : [];
   return {
     clientId: includeDebug ? safeForClientId : '',
     displayName: selfName,
@@ -1467,6 +1798,7 @@ function publicAccessState(forClientId = '') {
     adminClientName: adminDisplayName,
     adminLoginId: includeDebug ? (accessState.adminLoginId || '') : '',
     adminLabel: includeDebug ? (accessState.adminLabel || '') : '',
+    adminClients,
     controllerClientId: includeDebug ? accessState.controllerClientId : null,
     controllerDisplayName,
     controllerClientName: controllerDisplayName,
@@ -1474,6 +1806,9 @@ function publicAccessState(forClientId = '') {
     connectedClientCount: includeDebug
       ? clients.filter((client) => client.connected).length
       : Array.from(accessState.clients.values()).filter((client) => isClientConnected(client, now)).length,
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug }),
+    activePublisherStatus: activePublisherStatus(now),
+    activePublisherHeartbeatAgeMs: publisherHeartbeatAgeMs(now),
     clients,
     accessLog: includeDebug ? accessState.log.slice(-20) : [],
   };
@@ -1552,6 +1887,28 @@ function setLatestSharedPacket(packet, meta = {}) {
   const publishedAt = meta.publishedAt || Date.now();
   const sourceLabel = meta.sourceLabel || SOURCE_LABELS[source] || packet.sourceLabel || source;
   const previousPacket = sharedState.latestSharedPacket;
+  const publisherClientId = String(meta.publisherClientId ?? packet.publisherClientId ?? '').trim();
+  const publishSessionId = sanitizePublishSessionId(meta.publishSessionId ?? packet.publishSessionId ?? packet.publisherSessionId ?? '');
+  if (activePublisher?.clientId && publisherClientId && publisherClientId !== activePublisher.clientId) {
+    sharedState.droppedWrongPublisherCount += 1;
+    sharedState.lastWrongPublisherAt = publishedAt;
+    return previousPacket;
+  }
+  if (activePublisher?.sessionId && publishSessionId && publishSessionId !== activePublisher.sessionId) {
+    sharedState.droppedWrongSessionCount += 1;
+    sharedState.lastWrongSessionAt = publishedAt;
+    return previousPacket;
+  }
+  if (previousPacket?.publisherClientId && publisherClientId && previousPacket.publisherClientId !== publisherClientId) {
+    sharedState.droppedWrongPublisherCount += 1;
+    sharedState.lastWrongPublisherAt = publishedAt;
+    return previousPacket;
+  }
+  if (previousPacket?.publishSessionId && publishSessionId && previousPacket.publishSessionId !== publishSessionId) {
+    sharedState.droppedWrongSessionCount += 1;
+    sharedState.lastWrongSessionAt = publishedAt;
+    return previousPacket;
+  }
   if (isOutOfOrderAttitudePacket(packet, previousPacket)) {
     sharedState.droppedOutOfOrderCount += 1;
     sharedState.lastOutOfOrderAt = publishedAt;
@@ -1581,14 +1938,20 @@ function setLatestSharedPacket(packet, meta = {}) {
     source,
     sourceLabel,
     publishedAt,
-    publisherClientId: meta.publisherClientId ?? packetForStorage.publisherClientId ?? '',
+    publisherClientId,
     publisherDisplayName: sanitizeClientName(meta.publisherDisplayName ?? packetForStorage.publisherDisplayName ?? ''),
+    publisherName: sanitizeClientName(meta.publisherName ?? meta.publisherDisplayName ?? packetForStorage.publisherName ?? packetForStorage.publisherDisplayName ?? ''),
     publisherRole: meta.publisherRole ?? packetForStorage.publisherRole ?? '',
+    publishSessionId,
     Roll_deg: packetForStorage.Roll_deg ?? packetForStorage.roll_deg ?? packetForStorage.rollDeg ?? null,
     Pitch_deg: packetForStorage.Pitch_deg ?? packetForStorage.pitch_deg ?? packetForStorage.pitchDeg ?? null,
     Yaw_deg: packetForStorage.Yaw_deg ?? packetForStorage.yaw_deg ?? packetForStorage.yawDeg ?? null,
     droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
     lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
+    droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+    lastWrongPublisherAt: sharedState.lastWrongPublisherAt,
+    droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    lastWrongSessionAt: sharedState.lastWrongSessionAt,
   }, { includeDebug: true });
   sharedState.latestSharedPacket = sharedPacket;
   sharedState.activeSharedSource = source;
@@ -1596,6 +1959,7 @@ function setLatestSharedPacket(packet, meta = {}) {
   sharedState.publisherClientId = sharedPacket.publisherClientId;
   sharedState.publisherDisplayName = sharedPacket.publisherDisplayName;
   sharedState.publisherRole = sharedPacket.publisherRole;
+  sharedState.publishSessionId = sharedPacket.publishSessionId;
   sharedState.publishedAt = publishedAt;
   pushLimited(sharedState.chartData, {
     sample: sharedState.chartData.length + 1,
@@ -1626,6 +1990,7 @@ function setLatestSharedPacket(packet, meta = {}) {
 }
 
 function sanitizeSharedState(clientId = '') {
+  cleanupStaleActivePublisher();
   const includeDebug = getEffectiveRole(clientId) === 'admin';
   const storedPacket = sharedState.latestSharedPacket;
   const packet = storedPacket
@@ -1642,6 +2007,13 @@ function sanitizeSharedState(clientId = '') {
       }, { includeDebug })
     : null;
   const ageMs = packet?.publishedAt ? Date.now() - packet.publishedAt : null;
+  const publicPublisher = sanitizeActivePublisher(activePublisher, { includeDebug });
+  const publisherStatus = publicPublisher.status || 'NONE';
+  const liveStatus = publisherStatus === 'NONE'
+    ? 'NO_ACTIVE_PUBLISHER'
+    : !packet
+      ? 'STALE'
+      : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE';
   return {
     latestSharedPacket: packet,
     latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug }),
@@ -1651,12 +2023,20 @@ function sanitizeSharedState(clientId = '') {
     publisherClientId: includeDebug ? (sharedState.publisherClientId || '') : '',
     publisherDisplayName: sharedState.publisherDisplayName || '',
     publisherRole: sharedState.publisherRole || '',
+    publishSessionId: includeDebug ? (sharedState.publishSessionId || activePublisher?.sessionId || '') : '',
+    activePublisher: publicPublisher,
+    activePublisherStatus: publisherStatus,
+    activePublisherHeartbeatAgeMs: publicPublisher.heartbeatAgeMs,
     publishedAt: sharedState.publishedAt || null,
     latestSharedPacketAgeMs: ageMs,
     ageMs,
-    liveStatus: !packet ? 'NONE' : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE',
+    liveStatus,
     droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
     lastOutOfOrderAt: sharedState.lastOutOfOrderAt,
+    droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+    lastWrongPublisherAt: sharedState.lastWrongPublisherAt,
+    droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    lastWrongSessionAt: sharedState.lastWrongSessionAt,
     chartData: [],
     rawLines: [],
     visualSettings: publicVisualSettings(),
@@ -1699,12 +2079,22 @@ function sanitizeSerialStatus(clientId = '') {
     publisherClientId: shared.publisherClientId,
     publisherDisplayName: shared.publisherDisplayName,
     publisherRole: shared.publisherRole,
+    publishSessionId: shared.publishSessionId,
+    activePublisher: shared.activePublisher,
+    activePublisherStatus: shared.activePublisherStatus,
+    activePublisherHeartbeatAgeMs: shared.activePublisherHeartbeatAgeMs,
     publishedAt: shared.publishedAt,
     liveStatus: shared.liveStatus,
     latestSharedPacketAgeMs: shared.latestSharedPacketAgeMs,
     ageMs: shared.ageMs,
     latestDesiredAttitude: shared.latestDesiredAttitude,
     lastCommandInfo: shared.lastCommandInfo,
+    droppedOutOfOrderCount: shared.droppedOutOfOrderCount,
+    lastOutOfOrderAt: shared.lastOutOfOrderAt,
+    droppedWrongPublisherCount: shared.droppedWrongPublisherCount,
+    lastWrongPublisherAt: shared.lastWrongPublisherAt,
+    droppedWrongSessionCount: shared.droppedWrongSessionCount,
+    lastWrongSessionAt: shared.lastWrongSessionAt,
     visualSettings: shared.visualSettings,
     recentPackets: includeDebug ? serialState.recentPackets : [],
     chartData: [],
@@ -1840,13 +2230,23 @@ function publicBridgeCommand(command) {
 function bridgeStatus(options = {}) {
   const includeDebug = Boolean(options.includeDebug);
   const now = Date.now();
-  const adminBridgeLive = Boolean(sharedState.latestSharedPacket?.source === 'admin-web-serial' && sharedState.publishedAt && now - sharedState.publishedAt <= LIVE_STALE_MS);
+  cleanupStaleActivePublisher(now);
+  const publisherState = sanitizeActivePublisher(activePublisher, { includeDebug });
+  const adminBridgeLive = Boolean(
+    activePublisher?.clientId
+    && sharedState.latestSharedPacket?.source === 'admin-web-serial'
+    && sharedState.publishedAt
+    && now - sharedState.publishedAt <= LIVE_STALE_MS
+  );
   const pendingCount = bridgeState.commandQueue.filter((command) => command.status === 'pending' || command.status === 'dispatching').length;
   const summary = {
     enabledByServer: true,
     source: 'admin-web-serial',
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
     adminBridgeLive,
+    activePublisher: publisherState,
+    activePublisherStatus: publisherState.status,
+    activePublisherHeartbeatAgeMs: publisherState.heartbeatAgeMs,
     pendingCount,
   };
   if (!includeDebug) return summary;
@@ -1940,8 +2340,15 @@ function statePayload(clientId = '') {
     publisherClientId: shared.publisherClientId,
     publisherDisplayName: shared.publisherDisplayName,
     publisherRole: shared.publisherRole,
+    publishSessionId: shared.publishSessionId,
+    activePublisher: shared.activePublisher,
+    activePublisherStatus: shared.activePublisherStatus,
+    activePublisherHeartbeatAgeMs: shared.activePublisherHeartbeatAgeMs,
     publishedAt: shared.publishedAt,
     liveStatus: shared.liveStatus,
+    droppedOutOfOrderCount: shared.droppedOutOfOrderCount,
+    droppedWrongPublisherCount: shared.droppedWrongPublisherCount,
+    droppedWrongSessionCount: shared.droppedWrongSessionCount,
     visualSettings: shared.visualSettings,
     bridge: bridgeStatus({ includeDebug }),
     serialStatus: serialState.isConnected ? 'connected' : serialState.isOpening ? 'opening' : 'disconnected',
@@ -1955,11 +2362,14 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     service: 'cubli-server-sync',
-    apiVersion: 'web-serial-bridge-v5-visual-settings',
+    apiVersion: 'web-serial-bridge-v6-active-publisher-lock',
     endpoints: {
       health: true,
       livePublish: true,
       liveLatest: true,
+      livePublisher: true,
+      claimPublisher: true,
+      releasePublisher: true,
       state: true,
       visualSettings: true,
       adminLogin: true,
@@ -2059,6 +2469,90 @@ app.get('/api/live/latest', (req, res) => {
   res.json(buildLivePayload(sharedState.latestSharedPacket, { includeDebug }));
 });
 
+app.get('/api/live/publisher', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const identity = readIdentity(req);
+  const includeDebug = getEffectiveRole(identity.clientId) === 'admin';
+  cleanupStaleActivePublisher();
+  res.json({
+    ok: true,
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug }),
+    activePublisherStatus: activePublisherStatus(),
+    activePublisherHeartbeatAgeMs: publisherHeartbeatAgeMs(),
+    ttlMs: PUBLISHER_TTL_MS,
+    access: publicAccessState(identity.clientId),
+  });
+});
+
+app.post('/api/live/claim-publisher', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const identity = requireAdmin(req, res);
+  if (!identity) return;
+  const claimed = claimActivePublisher(identity, {
+    sessionId: req.body?.publishSessionId || req.body?.publisherSessionId || req.body?.sessionId,
+    source: req.body?.source || 'admin-web-serial',
+    force: Boolean(req.body?.force),
+  });
+  if (!claimed.ok) {
+    return res.status(claimed.status || 409).json({
+      ok: false,
+      error: claimed.error || 'ACTIVE_PUBLISHER_CONFLICT',
+      activePublisher: claimed.activePublisher || sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+      access: publicAccessState(identity.clientId),
+    });
+  }
+  const shared = sanitizeSharedState(identity.clientId);
+  return res.json({
+    ok: true,
+    activePublisher: claimed.activePublisher,
+    activePublisherStatus: claimed.activePublisher.status,
+    activePublisherHeartbeatAgeMs: claimed.activePublisher.heartbeatAgeMs,
+    publishSessionId: activePublisher?.sessionId || '',
+    publisherChanged: claimed.publisherChanged,
+    latestSharedPacket: null,
+    liveStatus: shared.liveStatus,
+    bridge: bridgeStatus({ includeDebug: true }),
+    access: publicAccessState(identity.clientId),
+  });
+});
+
+app.post('/api/live/release-publisher', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const identity = readIdentity(req);
+  if (!identity.clientId) {
+    return res.status(400).json({ ok: false, error: 'CLIENT_ID_REQUIRED', access: publicAccessState(identity.clientId) });
+  }
+  cleanupStaleActivePublisher();
+  const isOwner = Boolean(activePublisher?.clientId && activePublisher.clientId === identity.clientId);
+  const isAdmin = identity.role === 'admin';
+  if (activePublisher?.clientId && !isOwner && !isAdmin) {
+    return res.status(403).json({
+      ok: false,
+      error: 'PUBLISHER_RELEASE_FORBIDDEN',
+      activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: false }),
+      access: publicAccessState(identity.clientId),
+    });
+  }
+  const previous = activePublisher ? sanitizeActivePublisher(activePublisher, { includeDebug: true }) : null;
+  clearActivePublisher('publisher released by client', {
+    releasedByClientId: identity.clientId,
+    releasedByDisplayName: identity.displayName,
+  });
+  const includeDebug = getEffectiveRole(identity.clientId) === 'admin';
+  const shared = sanitizeSharedState(identity.clientId);
+  return res.json({
+    ok: true,
+    previousPublisher: includeDebug ? previous : null,
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug }),
+    activePublisherStatus: activePublisherStatus(),
+    activePublisherHeartbeatAgeMs: publisherHeartbeatAgeMs(),
+    latestSharedPacket: null,
+    liveStatus: shared.liveStatus,
+    bridge: bridgeStatus({ includeDebug }),
+    access: publicAccessState(identity.clientId),
+  });
+});
+
 app.post('/api/live/publish-fast', (req, res) => {
   res.set('Cache-Control', 'no-store');
   const identity = requireAdmin(req, res);
@@ -2067,7 +2561,20 @@ app.post('/api/live/publish-fast', (req, res) => {
     return res.status(400).json({ ok: false, error: 'packet is required' });
   }
 
-  const normalized = normalizePublishedPacket(req.body.packet, req.body.source || req.body.packet.source || 'admin-web-serial', identity);
+  const publisherCheck = validateActivePublisherForRequest(req, identity, req.body.packet);
+  if (!publisherCheck.ok) {
+    return res.status(publisherCheck.status || 409).json({
+      ok: false,
+      error: publisherCheck.error || 'ACTIVE_PUBLISHER_CONFLICT',
+      activePublisher: publisherCheck.activePublisher || sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+      droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+      droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    });
+  }
+
+  const normalized = normalizePublishedPacket(req.body.packet, req.body.source || req.body.packet.source || 'admin-web-serial', identity, {
+    publishSessionId: publisherCheck.publishSessionId,
+  });
   if (!normalized.ok) {
     return res.status(400).json({ ok: false, error: normalized.error || 'Invalid live packet' });
   }
@@ -2077,18 +2584,28 @@ app.post('/api/live/publish-fast', (req, res) => {
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
     publisherClientId: identity.clientId,
     publisherDisplayName: identity.displayName,
+    publisherName: identity.displayName,
     publisherRole: 'admin',
+    publishSessionId: publisherCheck.publishSessionId,
     publishedAt: Date.now(),
   });
 
   return res.json({
     ok: true,
+    latestSharedPacket: compactLivePacket(latestSharedPacket, { includeDebug: true }),
+    activePublisher: sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+    activePublisherStatus: activePublisherStatus(),
+    activePublisherHeartbeatAgeMs: publisherHeartbeatAgeMs(),
+    publishSessionId: publisherCheck.publishSessionId,
+    liveStatus: sanitizeSharedState(identity.clientId).liveStatus,
     updatedAt: latestSharedPacket?.updatedAt ?? null,
     seq: latestSharedPacket?.seq ?? null,
     timestamp: latestSharedPacket?.timestamp ?? latestSharedPacket?.ebimu_timestamp_ms ?? null,
     serverReceivedAt: latestSharedPacket?.serverReceivedAt ?? null,
     serverSentAt: Date.now(),
     droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
+    droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+    droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
   });
 });
 
@@ -2100,7 +2617,22 @@ app.post('/api/live/publish', (req, res) => {
     return res.status(400).json({ ok: false, error: 'packet is required', latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }), access: publicAccessState(identity.clientId) });
   }
 
-  const normalized = normalizePublishedPacket(req.body.packet, req.body.source || req.body.packet.source || 'admin-web-serial', identity);
+  const publisherCheck = validateActivePublisherForRequest(req, identity, req.body.packet);
+  if (!publisherCheck.ok) {
+    return res.status(publisherCheck.status || 409).json({
+      ok: false,
+      error: publisherCheck.error || 'ACTIVE_PUBLISHER_CONFLICT',
+      activePublisher: publisherCheck.activePublisher || sanitizeActivePublisher(activePublisher, { includeDebug: true }),
+      latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }),
+      access: publicAccessState(identity.clientId),
+      droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
+      droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    });
+  }
+
+  const normalized = normalizePublishedPacket(req.body.packet, req.body.source || req.body.packet.source || 'admin-web-serial', identity, {
+    publishSessionId: publisherCheck.publishSessionId,
+  });
   if (!normalized.ok) {
     return res.status(400).json({ ok: false, error: normalized.error || 'Invalid live packet', latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }), access: publicAccessState(identity.clientId) });
   }
@@ -2110,7 +2642,9 @@ app.post('/api/live/publish', (req, res) => {
     sourceLabel: SOURCE_LABELS['admin-web-serial'],
     publisherClientId: identity.clientId,
     publisherDisplayName: identity.displayName,
+    publisherName: identity.displayName,
     publisherRole: 'admin',
+    publishSessionId: publisherCheck.publishSessionId,
     publishedAt: Date.now(),
   });
   const shared = sanitizeSharedState(identity.clientId);
@@ -2122,9 +2656,16 @@ app.post('/api/live/publish', (req, res) => {
     publisherClientId: shared.publisherClientId,
     publisherDisplayName: shared.publisherDisplayName,
     publisherRole: shared.publisherRole,
+    publishSessionId: shared.publishSessionId,
+    activePublisher: shared.activePublisher,
+    activePublisherStatus: shared.activePublisherStatus,
+    activePublisherHeartbeatAgeMs: shared.activePublisherHeartbeatAgeMs,
     publishedAt: shared.publishedAt,
     latestSharedPacketAgeMs: shared.latestSharedPacketAgeMs,
     liveStatus: shared.liveStatus,
+    droppedOutOfOrderCount: shared.droppedOutOfOrderCount,
+    droppedWrongPublisherCount: shared.droppedWrongPublisherCount,
+    droppedWrongSessionCount: shared.droppedWrongSessionCount,
     bridge: bridgeStatus({ includeDebug: true }),
     access: publicAccessState(identity.clientId),
   });
@@ -2254,52 +2795,57 @@ app.post('/api/admin/login', (req, res) => {
     appendAccessLog({ type: 'ADMIN_LOGIN_FAILED', clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName });
     return res.status(403).json({ ok: false, error: 'Invalid Admin ID or password', access: publicAccessState(identity.clientId) });
   }
-  if (accessState.adminClientId && accessState.adminClientId !== identity.clientId) {
-    const currentAdmin = accessState.clients.get(accessState.adminClientId);
-    if (currentAdmin && isClientConnected(currentAdmin)) {
-      appendAccessLog({
-        type: 'ADMIN_LOGIN_BLOCKED',
-        clientId: identity.clientId,
-        displayName: identity.displayName,
-        clientName: identity.displayName,
-        currentAdminClientId: accessState.adminClientId,
-        currentAdminDisplayName: getClientLabel(accessState.adminClientId),
-      });
-      return res.status(409).json({ ok: false, error: 'Another Admin is already logged in', access: publicAccessState(identity.clientId) });
-    }
-    cleanupStaleAdmin();
+  const previousAdminClientId = accessState.adminClientId || null;
+  const wasAdmin = accessState.adminSessions.has(identity.clientId);
+  const loggedInAt = new Date().toISOString();
+  accessState.adminSessions.set(identity.clientId, {
+    clientId: identity.clientId,
+    displayName: identity.displayName,
+    clientName: identity.displayName,
+    adminLoginId: credential.id,
+    adminLabel: credential.label || 'Admin',
+    loggedInAt,
+  });
+  if (!accessState.adminClientId || !accessState.adminSessions.has(accessState.adminClientId)) {
+    accessState.adminClientId = identity.clientId;
+    accessState.adminLoginId = credential.id;
+    accessState.adminLabel = credential.label || 'Admin';
   }
-  const previousAdminClientId = accessState.adminClientId && accessState.adminClientId !== identity.clientId
-    ? accessState.adminClientId
-    : null;
-  accessState.adminClientId = identity.clientId;
-  accessState.adminLoginId = credential.id;
-  accessState.adminLabel = credential.label || 'Admin';
-  if (accessState.controllerClientId === identity.clientId || accessState.controllerClientId === previousAdminClientId) {
+  if (accessState.controllerClientId === identity.clientId) {
     accessState.controllerClientId = null;
   }
   rememberClient(identity);
+  syncPrimaryAdmin();
   appendAccessLog({
-    type: previousAdminClientId ? 'ADMIN_TAKEOVER_LOGIN' : 'ADMIN_LOGIN',
+    type: wasAdmin ? 'ADMIN_LOGIN_REFRESHED' : 'ADMIN_LOGIN',
     adminClientId: identity.clientId,
     adminDisplayName: identity.displayName,
     adminClientName: identity.displayName,
     adminLoginId: credential.id,
     adminLabel: credential.label || 'Admin',
-    previousAdminClientId,
-    previousAdminDisplayName: getClientLabel(previousAdminClientId),
+    previousPrimaryAdminClientId: previousAdminClientId,
+    previousPrimaryAdminDisplayName: getClientLabel(previousAdminClientId),
   });
   res.json({ ok: true, access: publicAccessState(identity.clientId) });
 });
 
 app.post('/api/admin/logout', (req, res) => {
   const identity = readIdentity(req);
-  if (identity.clientId && accessState.adminClientId === identity.clientId) {
-    appendAccessLog({ type: 'ADMIN_LOGOUT', adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, previousControllerClientId: accessState.controllerClientId || null, previousControllerDisplayName: getClientLabel(accessState.controllerClientId) });
-    accessState.adminClientId = null;
-    accessState.adminLoginId = '';
-    accessState.adminLabel = '';
-    accessState.controllerClientId = null;
+  if (identity.clientId && accessState.adminSessions.has(identity.clientId)) {
+    const wasPrimaryAdmin = accessState.adminClientId === identity.clientId;
+    const previousControllerClientId = wasPrimaryAdmin ? (accessState.controllerClientId || null) : null;
+    appendAccessLog({ type: 'ADMIN_LOGOUT', adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, previousControllerClientId, previousControllerDisplayName: getClientLabel(previousControllerClientId) });
+    if (activePublisher?.clientId === identity.clientId) {
+      clearActivePublisher('admin logout', {
+        releasedByClientId: identity.clientId,
+        releasedByDisplayName: identity.displayName,
+      });
+    }
+    accessState.adminSessions.delete(identity.clientId);
+    if (wasPrimaryAdmin) {
+      accessState.controllerClientId = null;
+    }
+    syncPrimaryAdmin();
     rememberClient(identity);
   }
   res.json({ ok: true, access: publicAccessState(identity.clientId) });
@@ -2365,7 +2911,18 @@ app.post('/api/access/reset', (req, res) => {
   const previousControllerDisplayName = getClientLabel(previousControllerClientId);
   accessState.controllerClientId = null;
   accessState.clients.clear();
+  accessState.adminSessions.clear();
+  accessState.adminSessions.set(identity.clientId, {
+    clientId: identity.clientId,
+    displayName: identity.displayName,
+    clientName: identity.displayName,
+    adminLoginId: accessState.adminLoginId || 'admin',
+    adminLabel: accessState.adminLabel || 'Admin',
+    loggedInAt: new Date().toISOString(),
+  });
+  accessState.adminClientId = identity.clientId;
   rememberClient(identity);
+  syncPrimaryAdmin();
   appendAccessLog({ type: 'ACCESS_RESET', adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, previousControllerClientId: previousControllerClientId || null, previousControllerDisplayName });
   res.json({ ok: true, access: publicAccessState(identity.clientId) });
 });

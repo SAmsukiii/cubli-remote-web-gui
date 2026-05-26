@@ -48,6 +48,9 @@ const MAX_LOCAL_CHART_POINTS = 240;
 const DEFAULT_SERVER_URL = getDefaultServerUrl();
 const LIVE_PUBLISH_PATH = '/api/live/publish';
 const LIVE_PUBLISH_FAST_PATH = '/api/live/publish-fast';
+const LIVE_CLAIM_PUBLISHER_PATH = '/api/live/claim-publisher';
+const LIVE_RELEASE_PUBLISHER_PATH = '/api/live/release-publisher';
+const LIVE_PUBLISHER_PATH = '/api/live/publisher';
 const LIVE_PUBLISH_404_MESSAGE = 'HTTP 404: /api/live/publish endpoint not found. Check that npm run server is running and server/index.js includes POST /api/live/publish.';
 const LIVE_PUBLISH_404_BACKOFF_MS = 5000;
 const LIVE_PUBLISH_MIN_INTERVAL_MS = 10;
@@ -61,6 +64,11 @@ function makeClientId() {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `client-${random}`;
+}
+
+function makePublishSessionId(clientId = '') {
+  const compactClientId = String(clientId || 'publisher').replace(/[^\w.-]+/g, '').slice(0, 72) || 'publisher';
+  return `${compactClientId}-${Date.now()}`;
 }
 
 function getStoredClientId() {
@@ -251,8 +259,23 @@ function isEncoderOnlyPacket(packet = {}) {
   return sampleTypeFromPacket(packet) === 'ENC';
 }
 
+function publishStreamKey(packet = {}) {
+  const publisherClientId = String(packet.publisherClientId || '').trim();
+  const publishSessionId = String(packet.publishSessionId || packet.publisherSessionId || '').trim();
+  return `${publisherClientId}|${publishSessionId}`;
+}
+
+function isDifferentPublishStream(nextPacket, previousPacket) {
+  if (!nextPacket || !previousPacket) return false;
+  const nextKey = publishStreamKey(nextPacket);
+  const previousKey = publishStreamKey(previousPacket);
+  if (nextKey === '|' || previousKey === '|') return false;
+  return nextKey !== previousKey;
+}
+
 function isOlderAttitudePacket(nextPacket, previousPacket) {
   if (!nextPacket || !previousPacket || isEncoderOnlyPacket(nextPacket)) return false;
+  if (isDifferentPublishStream(nextPacket, previousPacket)) return false;
   const next = packetOrderValue(nextPacket);
   const previous = packetOrderValue(previousPacket);
   if (next.seq !== null && previous.seq !== null && next.seq < previous.seq) return true;
@@ -816,6 +839,8 @@ export default function useServerSync() {
   const [skippedReceiveCount, setSkippedReceiveCount] = useState(0);
   const [serverToViewerLatencyMs, setServerToViewerLatencyMs] = useState(null);
   const [droppedOutOfOrderCount, setDroppedOutOfOrderCount] = useState(0);
+  const [droppedWrongPublisherCount, setDroppedWrongPublisherCount] = useState(0);
+  const [droppedWrongSessionCount, setDroppedWrongSessionCount] = useState(0);
   const [liveDataStatus, setLiveDataStatus] = useState('NONE');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastError, setLastError] = useState('');
@@ -831,7 +856,9 @@ export default function useServerSync() {
   const [failedUploadCount, setFailedUploadCount] = useState(0);
   const [lastUploadAt, setLastUploadAt] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [bridgeEnabled, setBridgeEnabled] = useState(false);
+  const [bridgeEnabled, setBridgeEnabledState] = useState(false);
+  const [activePublisher, setActivePublisher] = useState(null);
+  const [publishSessionId, setPublishSessionId] = useState('');
   const [lastPublishAt, setLastPublishAt] = useState(null);
   const [lastPublishError, setLastPublishError] = useState('');
   const [lastPublishHttpStatus, setLastPublishHttpStatus] = useState(null);
@@ -861,18 +888,27 @@ export default function useServerSync() {
     publisherClientId: '',
     publisherDisplayName: '',
     publisherRole: '',
+    publishSessionId: '',
+    activePublisher: null,
+    activePublisherStatus: 'NONE',
+    activePublisherHeartbeatAgeMs: null,
     publishedAt: null,
     latestSharedPacketAgeMs: null,
     liveStatus: 'NONE',
     receiveStatus: 'NONE',
     serverToViewerLatencyMs: null,
     droppedOutOfOrderCount: 0,
+    droppedWrongPublisherCount: 0,
+    droppedWrongSessionCount: 0,
     visualSettings: normalizeVisualSettings(DEFAULT_VISUAL_SETTINGS),
     bridge: {
       enabledByServer: true,
       source: 'admin-web-serial',
       sourceLabel: 'Admin Web Serial Bridge',
       adminBridgeLive: false,
+      activePublisher: null,
+      activePublisherStatus: 'NONE',
+      activePublisherHeartbeatAgeMs: null,
       pendingCount: 0,
       recentCommands: [],
       lastBridgeCommand: null,
@@ -915,6 +951,10 @@ export default function useServerSync() {
   const liveStreamReconnectTimerRef = useRef(null);
   const liveStateFlushTimerRef = useRef(null);
   const pendingLiveStateRef = useRef(null);
+  const bridgeEnabledRef = useRef(false);
+  const publishSessionIdRef = useRef('');
+  const activePublisherRef = useRef(null);
+  const lastLivePayloadServerSentAtRef = useRef(0);
   const safeDisplayName = sanitizeDisplayName(displayName);
   const hasDisplayName = Boolean(safeDisplayName);
 
@@ -925,6 +965,18 @@ export default function useServerSync() {
   useEffect(() => {
     autoUploadRef.current = autoUpload;
   }, [autoUpload]);
+
+  useEffect(() => {
+    bridgeEnabledRef.current = bridgeEnabled;
+  }, [bridgeEnabled]);
+
+  useEffect(() => {
+    publishSessionIdRef.current = publishSessionId;
+  }, [publishSessionId]);
+
+  useEffect(() => {
+    activePublisherRef.current = activePublisher;
+  }, [activePublisher]);
 
   useEffect(() => {
     const normalized = normalizeServerUrlForCurrentLocation(serverUrl);
@@ -1146,6 +1198,190 @@ export default function useServerSync() {
     return detectedUrl || current;
   }, [clientId, discoverServerUrl, safeDisplayName, hasDisplayName]);
 
+  const applyPublisherState = useCallback((data = {}) => {
+    const nextPublisher = data.activePublisher
+      || data.access?.activePublisher
+      || data.bridge?.activePublisher
+      || data.serial?.activePublisher
+      || null;
+    const nextStatus = data.activePublisherStatus
+      || data.access?.activePublisherStatus
+      || data.bridge?.activePublisherStatus
+      || data.serial?.activePublisherStatus
+      || nextPublisher?.status
+      || 'NONE';
+    const heartbeatAgeMs = data.activePublisherHeartbeatAgeMs
+      ?? data.access?.activePublisherHeartbeatAgeMs
+      ?? data.bridge?.activePublisherHeartbeatAgeMs
+      ?? data.serial?.activePublisherHeartbeatAgeMs
+      ?? nextPublisher?.heartbeatAgeMs
+      ?? null;
+    const nextSessionId = data.publishSessionId
+      || nextPublisher?.sessionId
+      || '';
+
+    const publisherBelongsToMe = !nextPublisher?.clientId || nextPublisher.clientId === clientId;
+    setActivePublisher(nextPublisher);
+    if (nextSessionId && publisherBelongsToMe) setPublishSessionId(nextSessionId);
+    if (!publisherBelongsToMe) setPublishSessionId('');
+    if (nextStatus === 'NONE') {
+      setPublishSessionId('');
+      if (bridgeEnabledRef.current) setBridgeEnabledState(false);
+    } else if (nextPublisher?.clientId && nextPublisher.clientId !== clientId && bridgeEnabledRef.current) {
+      setBridgeEnabledState(false);
+    }
+    if (data.droppedWrongPublisherCount != null) setDroppedWrongPublisherCount(Number(data.droppedWrongPublisherCount) || 0);
+    if (data.droppedWrongSessionCount != null) setDroppedWrongSessionCount(Number(data.droppedWrongSessionCount) || 0);
+
+    setServerSerialStatus((prev) => ({
+      ...prev,
+      activePublisher: nextPublisher || (nextStatus === 'NONE' ? null : prev.activePublisher),
+      activePublisherStatus: nextStatus,
+      activePublisherHeartbeatAgeMs: heartbeatAgeMs,
+      publishSessionId: publisherBelongsToMe ? (nextSessionId || (nextStatus === 'NONE' ? '' : prev.publishSessionId)) : '',
+      droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
+      droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
+    }));
+  }, [clientId]);
+
+  const resetPublishCountersForSession = useCallback(() => {
+    publishPrevPacketRef.current = null;
+    latestServerSerialPacketRef.current = null;
+    localChartSampleRef.current = 0;
+    setPublishCount(0);
+    setPublishFailedCount(0);
+    setSkippedPublishCount(0);
+    setDroppedPublishCount(0);
+    setPublishLatencyMs(null);
+    setLastPublishAt(null);
+    setLastPublishError('');
+    setLastPublishHttpStatus(null);
+    setDroppedOutOfOrderCount(0);
+    setDroppedWrongPublisherCount(0);
+    setDroppedWrongSessionCount(0);
+    setServerSerialStatus((prev) => ({
+      ...prev,
+      latestSharedPacket: null,
+      latestPacket: null,
+      publishedAt: null,
+      latestSharedPacketAgeMs: null,
+      liveStatus: 'STALE',
+      chartData: [],
+      droppedOutOfOrderCount: 0,
+      droppedWrongPublisherCount: 0,
+      droppedWrongSessionCount: 0,
+    }));
+  }, []);
+
+  const claimPublisher = useCallback(async ({ force = false } = {}) => {
+    if (!safeDisplayName) {
+      setLastPublishError('Enter a display name before enabling Server Sharing.');
+      return false;
+    }
+    const nextPublishSessionId = makePublishSessionId(clientId);
+    const firstBaseUrl = await ensureApiServerUrl(serverUrlRef.current);
+    try {
+      const data = await requestJson(`${cleanServerUrl(firstBaseUrl)}${LIVE_CLAIM_PUBLISHER_PATH}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          clientId,
+          displayName: safeDisplayName,
+          publisherClientId: clientId,
+          publisherName: safeDisplayName,
+          publishSessionId: nextPublishSessionId,
+          source: 'admin-web-serial',
+          force,
+        }),
+      });
+      setPublishSessionId(data.publishSessionId || nextPublishSessionId);
+      publishSessionIdRef.current = data.publishSessionId || nextPublishSessionId;
+      setBridgeEnabledState(true);
+      resetPublishCountersForSession();
+      applyPublisherState({ ...data, publishSessionId: data.publishSessionId || nextPublishSessionId });
+      setConnectionStatus('connected');
+      setLastError('');
+      setLastPublishError('');
+      return true;
+    } catch (err) {
+      applyPublisherState(err?.data || {});
+      setBridgeEnabledState(false);
+      const message = err?.data?.error === 'ACTIVE_PUBLISHER_CONFLICT'
+        ? 'ACTIVE_PUBLISHER_CONFLICT'
+        : (err?.message || 'Claim publisher failed');
+      setLastPublishHttpStatus(err?.status || null);
+      setLastPublishError(message);
+      setLastError(message);
+      setConnectionStatus('error');
+      return false;
+    }
+  }, [applyPublisherState, clientId, ensureApiServerUrl, requestJson, resetPublishCountersForSession, safeDisplayName]);
+
+  const releasePublisher = useCallback(async () => {
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
+    const currentSessionId = publishSessionIdRef.current;
+    try {
+      const data = await requestJson(`${baseUrl}${LIVE_RELEASE_PUBLISHER_PATH}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          clientId,
+          displayName: safeDisplayName,
+          publishSessionId: currentSessionId,
+        }),
+      });
+      setBridgeEnabledState(false);
+      setPublishSessionId('');
+      publishSessionIdRef.current = '';
+      publishPrevPacketRef.current = null;
+      applyPublisherState({ ...data, activePublisher: data.activePublisher || null, activePublisherStatus: data.activePublisherStatus || 'NONE' });
+      setServerSerialStatus((prev) => ({
+        ...prev,
+        latestSharedPacket: null,
+        latestPacket: null,
+        publishedAt: null,
+        latestSharedPacketAgeMs: null,
+        liveStatus: data.liveStatus || 'NO_ACTIVE_PUBLISHER',
+        chartData: [],
+        access: data.access || prev.access,
+        bridge: data.bridge || prev.bridge,
+        lastError: '',
+      }));
+      setConnectionStatus('connected');
+      setLastPublishError('');
+      return true;
+    } catch (err) {
+      setBridgeEnabledState(false);
+      setPublishSessionId('');
+      publishSessionIdRef.current = '';
+      setLastPublishError(err?.message || 'Release publisher failed');
+      setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Release publisher failed' }));
+      return false;
+    }
+  }, [applyPublisherState, clientId, requestJson, safeDisplayName]);
+
+  const setBridgeEnabled = useCallback((enabled) => {
+    if (enabled) return claimPublisher({ force: false });
+    if (!bridgeEnabledRef.current && !publishSessionIdRef.current) {
+      setBridgeEnabledState(false);
+      return Promise.resolve(true);
+    }
+    return releasePublisher();
+  }, [claimPublisher, releasePublisher]);
+
+  const forceTakeOverPublisher = useCallback(() => (
+    claimPublisher({ force: true })
+  ), [claimPublisher]);
+
+  const refreshPublisherState = useCallback(async () => {
+    const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
+    try {
+      const data = await requestJson(`${baseUrl}${LIVE_PUBLISHER_PATH}`, { method: 'GET' });
+      applyPublisherState(data);
+      return data.activePublisher || null;
+    } catch (_) {
+      return null;
+    }
+  }, [applyPublisherState, requestJson]);
+
   const setUploadRateHz = useCallback((value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return;
@@ -1304,6 +1540,15 @@ export default function useServerSync() {
       return false;
     }
     if (!packet) return false;
+    const normalizedSourceKey = String(source || 'admin-web-serial').trim() || 'admin-web-serial';
+    const currentPublishSessionId = publishSessionIdRef.current;
+    if (!currentPublishSessionId) {
+      if (normalizedSourceKey === 'admin-web-serial' || bridgeEnabledRef.current) {
+        setLastPublishError('Server Sharing is not claimed by this Admin.');
+        setPublishFailedCount((prev) => prev + 1);
+      }
+      return false;
+    }
     const now = Date.now();
     const targetHz = normalizeLiveRateHz(options.publishHz ?? serverPublishHz);
     const minIntervalMs = Number(options.minIntervalMs ?? Math.max(LIVE_PUBLISH_MIN_INTERVAL_MS, Math.round(1000 / targetHz)));
@@ -1328,6 +1573,8 @@ export default function useServerSync() {
       prevPacket: publishPrevPacketRef.current,
       desiredAttitude: serverSerialStatus.latestDesiredAttitude,
       publisherClientId: clientId,
+      publisherName: safeDisplayName,
+      publishSessionId: currentPublishSessionId,
       publisherRole: 'admin',
       now,
       imuEulerSequence,
@@ -1361,7 +1608,9 @@ export default function useServerSync() {
         publishedAt,
         publisherClientId: clientId,
         publisherDisplayName: safeDisplayName,
+        publisherName: safeDisplayName,
         publisherRole: 'admin',
+        publishSessionId: currentPublishSessionId,
       };
       return {
         ok: true,
@@ -1370,6 +1619,7 @@ export default function useServerSync() {
         publisherClientId: clientId,
         publisherDisplayName: safeDisplayName,
         publisherRole: 'admin',
+        publishSessionId: currentPublishSessionId,
         publishedAt,
         latestSharedPacketAgeMs: 0,
         liveStatus: 'LIVE',
@@ -1377,6 +1627,8 @@ export default function useServerSync() {
     };
 
     const handlePublishSuccess = (data = makeSyntheticPublishData()) => {
+      applyPublisherState(data);
+      if (data.droppedOutOfOrderCount != null) setDroppedOutOfOrderCount(Number(data.droppedOutOfOrderCount) || 0);
       const latestSharedPacket = data.latestSharedPacket || makeSyntheticPublishData().latestSharedPacket;
       if (latestSharedPacket) {
         publishPrevPacketRef.current = latestSharedPacket;
@@ -1389,6 +1641,10 @@ export default function useServerSync() {
           publisherClientId: data.publisherClientId || latestSharedPacket.publisherClientId || prev.publisherClientId,
           publisherDisplayName: data.publisherDisplayName || latestSharedPacket.publisherDisplayName || prev.publisherDisplayName,
           publisherRole: data.publisherRole || latestSharedPacket.publisherRole || prev.publisherRole,
+          publishSessionId: data.publishSessionId || latestSharedPacket.publishSessionId || prev.publishSessionId,
+          activePublisher: data.activePublisher || prev.activePublisher,
+          activePublisherStatus: data.activePublisherStatus || prev.activePublisherStatus,
+          activePublisherHeartbeatAgeMs: data.activePublisherHeartbeatAgeMs ?? prev.activePublisherHeartbeatAgeMs,
           publishedAt: data.publishedAt || latestSharedPacket.publishedAt || prev.publishedAt,
           latestSharedPacketAgeMs: data.latestSharedPacketAgeMs ?? prev.latestSharedPacketAgeMs,
           liveStatus: data.liveStatus || prev.liveStatus,
@@ -1396,6 +1652,9 @@ export default function useServerSync() {
           lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
           latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
           access: data.access || prev.access,
+          droppedOutOfOrderCount: data.droppedOutOfOrderCount != null ? Number(data.droppedOutOfOrderCount) || 0 : prev.droppedOutOfOrderCount,
+          droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
+          droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
         }));
       }
       consecutivePublish404Ref.current = 0;
@@ -1417,8 +1676,19 @@ export default function useServerSync() {
       clientId,
       clientName: safeDisplayName,
       displayName: safeDisplayName,
+      publisherClientId: clientId,
+      publisherName: safeDisplayName,
+      publishSessionId: currentPublishSessionId,
       source: 'admin-web-serial',
-      packet: { ...packetForPublish, source: 'admin-web-serial', sourceLabel: 'Admin Web Serial Bridge' },
+      packet: {
+        ...packetForPublish,
+        source: 'admin-web-serial',
+        sourceLabel: 'Admin Web Serial Bridge',
+        publisherClientId: clientId,
+        publisherDisplayName: safeDisplayName,
+        publisherName: safeDisplayName,
+        publishSessionId: currentPublishSessionId,
+      },
     });
 
     const postPublish = async (baseUrl) => {
@@ -1484,10 +1754,22 @@ export default function useServerSync() {
       }
 
       const is404 = Number(publishError?.status) === 404;
+      const isPublisherConflict = Number(publishError?.status) === 409
+        && String(publishError?.data?.error || '').includes('PUBLISH');
+      if (Number(publishError?.status) === 409) {
+        applyPublisherState(publishError?.data || {});
+        setBridgeEnabledState(false);
+        if (publishError?.data?.error !== 'PUBLISH_SESSION_REQUIRED') {
+          setPublishSessionId('');
+          publishSessionIdRef.current = '';
+        }
+      }
       const endpointText = `${normalizeServerUrlForCurrentLocation(serverUrlRef.current)}${LIVE_PUBLISH_PATH}`;
       const errorMessage = is404
         ? `${LIVE_PUBLISH_404_MESSAGE} Current endpoint: ${endpointText}`
-        : (publishError?.message || 'Live publish failed');
+        : isPublisherConflict
+          ? (publishError?.data?.error || publishError?.message || 'ACTIVE_PUBLISHER_CONFLICT')
+          : (publishError?.message || 'Live publish failed');
       if (is404) {
         consecutivePublish404Ref.current += 1;
         if (consecutivePublish404Ref.current >= 2) {
@@ -1508,6 +1790,7 @@ export default function useServerSync() {
       publishInFlightRef.current = false;
     }
   }, [
+    applyPublisherState,
     bodyRateWzDisplaySign,
     clientId,
     discoverServerUrl,
@@ -1673,6 +1956,7 @@ export default function useServerSync() {
 
   const updateServerSerialStatusState = useCallback((data) => {
     if (!data) return data;
+    applyPublisherState(data);
     const nextVisualSettings = applyVisualSettings(data.visualSettings);
     setServerSerialStatus((prev) => ({
       ...prev,
@@ -1688,7 +1972,7 @@ export default function useServerSync() {
     if (data.path) setServerSerialPath(data.path);
     if (data.baudRate) setServerSerialBaudRateState(data.baudRate);
     return data;
-  }, [applyVisualSettings]);
+  }, [applyPublisherState, applyVisualSettings]);
 
   const refreshServerSerialStatus = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
@@ -1931,6 +2215,9 @@ export default function useServerSync() {
   const logoutAdmin = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
+      if (bridgeEnabledRef.current || activePublisherRef.current?.clientId === clientId) {
+        await releasePublisher();
+      }
       const data = await requestJson(`${baseUrl}/api/admin/logout`, {
         method: 'POST',
         body: JSON.stringify({ clientId }),
@@ -1941,12 +2228,13 @@ export default function useServerSync() {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Admin logout failed' }));
       return false;
     }
-  }, [clientId, requestJson]);
+  }, [clientId, releasePublisher, requestJson]);
 
   const refreshAccessState = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/state`, { method: 'GET' });
+      applyPublisherState(data);
       const nextVisualSettings = applyVisualSettings(data.visualSettings || data.serial?.visualSettings);
       setServerSerialStatus((prev) => ({
         ...prev,
@@ -1968,21 +2256,68 @@ export default function useServerSync() {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Access state refresh failed' }));
       return null;
     }
-  }, [applyVisualSettings, requestJson]);
+  }, [applyPublisherState, applyVisualSettings, requestJson]);
 
   const applyLivePayload = useCallback((data, { updateState = true } = {}) => {
     if (!data || typeof data !== 'object') return null;
+    const serverSentAt = Number(data.serverSentAt);
+    if (Number.isFinite(serverSentAt) && serverSentAt > 0) {
+      if (serverSentAt < lastLivePayloadServerSentAtRef.current) {
+        return latestServerSerialPacketRef.current;
+      }
+      lastLivePayloadServerSentAtRef.current = serverSentAt;
+    }
+    applyPublisherState(data);
     const nextVisualSettings = applyVisualSettings(data.visualSettings);
 
     const incomingPacket = data.latestSharedPacket || data.packet || null;
     const previousPacket = latestServerSerialPacketRef.current;
     let packet = incomingPacket;
     let outOfOrder = false;
-    if (packet && isOlderAttitudePacket(packet, previousPacket)) {
+    const streamChanged = Boolean(packet && previousPacket && isDifferentPublishStream(packet, previousPacket));
+    if (streamChanged) {
+      localChartSampleRef.current = 0;
+    }
+    const shouldClearLivePacket = Object.prototype.hasOwnProperty.call(data, 'latestSharedPacket')
+      && data.latestSharedPacket === null
+      && !data.packet;
+    if (shouldClearLivePacket) {
+      latestServerSerialPacketRef.current = null;
+      setLiveDataStatus(data.liveStatus || 'NO_ACTIVE_PUBLISHER');
+      if (!updateState) return null;
+      setServerSerialStatus((prev) => ({
+        ...prev,
+        latestSharedPacket: null,
+        latestPacket: null,
+        activeSharedSource: data.activeSharedSource || '',
+        publisherClientId: data.publisherClientId || '',
+        publisherDisplayName: data.publisherDisplayName || '',
+        publisherRole: data.publisherRole || '',
+        publishSessionId: data.publishSessionId || '',
+        activePublisher: data.activePublisher || null,
+        activePublisherStatus: data.activePublisherStatus || 'NONE',
+        activePublisherHeartbeatAgeMs: data.activePublisherHeartbeatAgeMs ?? null,
+        publishedAt: null,
+        latestSharedPacketAgeMs: null,
+        liveStatus: data.liveStatus || 'NO_ACTIVE_PUBLISHER',
+        receiveStatus: data.liveStatus || 'NO_ACTIVE_PUBLISHER',
+        chartData: [],
+        bridge: data.bridge || prev.bridge,
+        access: data.access || prev.access,
+        visualSettings: nextVisualSettings || prev.visualSettings,
+        droppedOutOfOrderCount: Number(data.droppedOutOfOrderCount) || prev.droppedOutOfOrderCount,
+        droppedWrongPublisherCount: Number(data.droppedWrongPublisherCount) || prev.droppedWrongPublisherCount,
+        droppedWrongSessionCount: Number(data.droppedWrongSessionCount) || prev.droppedWrongSessionCount,
+        lastError: '',
+      }));
+      return null;
+    }
+
+    if (packet && !streamChanged && isOlderAttitudePacket(packet, previousPacket)) {
       outOfOrder = true;
       setDroppedOutOfOrderCount((prev) => Math.max(prev + 1, Number(data.droppedOutOfOrderCount) || 0));
       packet = previousPacket;
-    } else if (packet && previousPacket && isEncoderOnlyPacket(packet)) {
+    } else if (packet && previousPacket && !streamChanged && isEncoderOnlyPacket(packet)) {
       packet = mergeEncoderPacket(previousPacket, packet);
     }
 
@@ -1994,8 +2329,14 @@ export default function useServerSync() {
     if (data.droppedOutOfOrderCount != null) {
       setDroppedOutOfOrderCount(Number(data.droppedOutOfOrderCount) || 0);
     }
+    if (data.droppedWrongPublisherCount != null) {
+      setDroppedWrongPublisherCount(Number(data.droppedWrongPublisherCount) || 0);
+    }
+    if (data.droppedWrongSessionCount != null) {
+      setDroppedWrongSessionCount(Number(data.droppedWrongSessionCount) || 0);
+    }
     setServerToViewerLatencyMs(receiveLatencyMs);
-    setLiveDataStatus(liveDataStatusFromAge(packetAgeMs));
+    setLiveDataStatus(data.liveStatus || liveDataStatusFromAge(packetAgeMs));
     recordRateSample(receiveTimesRef, setActualReceiveHz, now);
 
     if (packet?.updatedAt || packet?.publishedAt) {
@@ -2015,25 +2356,31 @@ export default function useServerSync() {
       publisherClientId: data.publisherClientId || packet?.publisherClientId || prev.publisherClientId,
       publisherDisplayName: data.publisherDisplayName || packet?.publisherDisplayName || prev.publisherDisplayName,
       publisherRole: data.publisherRole || packet?.publisherRole || prev.publisherRole,
+      publishSessionId: data.publishSessionId || packet?.publishSessionId || prev.publishSessionId,
+      activePublisher: data.activePublisher || prev.activePublisher,
+      activePublisherStatus: data.activePublisherStatus || prev.activePublisherStatus,
+      activePublisherHeartbeatAgeMs: data.activePublisherHeartbeatAgeMs ?? prev.activePublisherHeartbeatAgeMs,
       publishedAt: data.publishedAt || packet?.publishedAt || prev.publishedAt,
       latestSharedPacketAgeMs: packetAgeMs ?? prev.latestSharedPacketAgeMs,
-      liveStatus: liveDataStatusFromAge(packetAgeMs) || data.liveStatus || prev.liveStatus,
+      liveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs) || prev.liveStatus,
       bridge: data.bridge || prev.bridge,
       visualSettings: nextVisualSettings || prev.visualSettings,
       lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
       latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
       access: data.access || prev.access,
       droppedOutOfOrderCount: Number(data.droppedOutOfOrderCount) || droppedOutOfOrderCount,
+      droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
+      droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
       serverToViewerLatencyMs: receiveLatencyMs,
-      receiveStatus: liveDataStatusFromAge(packetAgeMs),
+      receiveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs),
       chartData: packet && !outOfOrder
-        ? [...(Array.isArray(prev.chartData) ? prev.chartData : []), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
+        ? [...(streamChanged ? [] : (Array.isArray(prev.chartData) ? prev.chartData : [])), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
         : (Array.isArray(prev.chartData) ? prev.chartData : []),
       lastError: '',
     }));
 
     return packet;
-  }, [applyVisualSettings, droppedOutOfOrderCount, recordRateSample]);
+  }, [applyPublisherState, applyVisualSettings, droppedOutOfOrderCount, recordRateSample]);
 
   const scheduleLiveStateFlush = useCallback((data) => {
     applyLivePayload(data, { updateState: false });
@@ -2287,6 +2634,40 @@ export default function useServerSync() {
     return () => window.clearInterval(timer);
   }, [hasDisplayName, refreshAccessState]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const releaseOnUnload = () => {
+      if (!bridgeEnabledRef.current && activePublisherRef.current?.clientId !== clientId) return;
+      const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
+      const body = JSON.stringify({
+        clientId,
+        displayName: safeDisplayName,
+        publishSessionId: publishSessionIdRef.current,
+      });
+      try {
+        fetch(`${baseUrl}${LIVE_RELEASE_PUBLISHER_PATH}`, {
+          method: 'POST',
+          headers: makeClientHeaders(clientId, safeDisplayName, { 'Content-Type': 'application/json' }),
+          body,
+          keepalive: true,
+        });
+      } catch (_) {
+        try {
+          if (navigator.sendBeacon) {
+            const blob = new Blob([body], { type: 'application/json' });
+            navigator.sendBeacon(`${baseUrl}${LIVE_RELEASE_PUBLISHER_PATH}`, blob);
+          }
+        } catch (_) {}
+      }
+    };
+    window.addEventListener('pagehide', releaseOnUnload);
+    window.addEventListener('beforeunload', releaseOnUnload);
+    return () => {
+      window.removeEventListener('pagehide', releaseOnUnload);
+      window.removeEventListener('beforeunload', releaseOnUnload);
+    };
+  }, [clientId, safeDisplayName]);
+
   const downloadUrl = useMemo(() => {
     if (!sessionId) return '';
     return `${normalizeServerUrlForCurrentLocation(serverUrl)}/api/sessions/${encodeURIComponent(sessionId)}/download`;
@@ -2332,6 +2713,8 @@ export default function useServerSync() {
     skippedReceiveCount,
     serverToViewerLatencyMs,
     droppedOutOfOrderCount,
+    droppedWrongPublisherCount,
+    droppedWrongSessionCount,
     liveDataStatus,
     recordWebSerialInputPacket,
     notePublishSkipped,
@@ -2347,6 +2730,14 @@ export default function useServerSync() {
     lastError,
     bridgeEnabled,
     setBridgeEnabled,
+    activePublisher,
+    activePublisherStatus: serverSerialStatus.activePublisherStatus,
+    activePublisherHeartbeatAgeMs: serverSerialStatus.activePublisherHeartbeatAgeMs,
+    publishSessionId,
+    claimPublisher,
+    releasePublisher,
+    forceTakeOverPublisher,
+    refreshPublisherState,
     publishEndpointUrl,
     lastPublishAt,
     lastPublishError,
@@ -2389,6 +2780,10 @@ export default function useServerSync() {
       latestPacket: serverSerialStatus.latestPacket,
       latestPacketRef: latestServerSerialPacketRef,
       bridge: serverSerialStatus.bridge,
+      activePublisher: serverSerialStatus.activePublisher,
+      activePublisherStatus: serverSerialStatus.activePublisherStatus,
+      activePublisherHeartbeatAgeMs: serverSerialStatus.activePublisherHeartbeatAgeMs,
+      publishSessionId: serverSerialStatus.publishSessionId || publishSessionId,
       lastBridgeCommand: serverSerialStatus.lastBridgeCommand,
       listPorts: listServerSerialPorts,
       connect: connectServerSerial,
@@ -2425,6 +2820,10 @@ export default function useServerSync() {
       sendEbimuRuntime: (cmdId, value = 0, label = 'EBIMU Runtime') => sendServerControllerCommand(50, cmdId, value, 0, { eventType: 'EBIMU_RUNTIME', label, detail: { cmdId, value } }),
       clearStats: clearServerSerialStats,
       refreshAccessState,
+      refreshPublisherState,
+      claimPublisher,
+      releasePublisher,
+      forceTakeOverPublisher,
       grantControl,
       revokeControl,
       resetAccessState,

@@ -329,6 +329,26 @@ function shortClientId(clientId = '') {
   return text ? text.slice(0, 8) : '-';
 }
 
+function shortSessionId(sessionId = '') {
+  const text = String(sessionId || '').trim();
+  return text ? text.slice(-12) : '-';
+}
+
+function formatAgeMs(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return '-';
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
+}
+
+function publisherLabel(publisher = {}) {
+  const safePublisher = publisher || {};
+  const name = String(safePublisher.displayName || safePublisher.publisherName || '').trim();
+  const idShort = safePublisher.clientIdShort || shortClientId(safePublisher.clientId);
+  if (name && idShort && idShort !== '-') return `${name} (${idShort})`;
+  return name || idShort || '-';
+}
+
 function clientDisplayName(client = {}) {
   const safeClient = client || {};
   return String(safeClient?.displayName || safeClient?.clientName || '').trim();
@@ -780,6 +800,28 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
   const controllerValue = controllerClientId
     ? `${controllerName || shortClientId(controllerClientId)} (${shortClientId(controllerClientId)})`
     : '-';
+  const activePublisher = safeStatus.activePublisher
+    || safeServerSync.activePublisher
+    || safeAccess.activePublisher
+    || safeStatus.bridge?.activePublisher
+    || null;
+  const activePublisherStatus = safeStatus.activePublisherStatus
+    || safeServerSync.activePublisherStatus
+    || safeAccess.activePublisherStatus
+    || safeStatus.bridge?.activePublisherStatus
+    || activePublisher?.status
+    || 'NONE';
+  const heartbeatAgeMs = safeStatus.activePublisherHeartbeatAgeMs
+    ?? safeServerSync.activePublisherHeartbeatAgeMs
+    ?? safeAccess.activePublisherHeartbeatAgeMs
+    ?? safeStatus.bridge?.activePublisherHeartbeatAgeMs
+    ?? activePublisher?.heartbeatAgeMs
+    ?? null;
+  const publishSession = safeStatus.publishSessionId
+    || safeServerSync.publishSessionId
+    || activePublisher?.sessionId
+    || activePublisher?.sessionIdShort
+    || '';
   const myName = String(safeServerSync?.displayName || safeServerSync?.clientName || safeAccess?.displayName || safeAccess?.clientName || '').trim()
     || shortClientId(safeServerSync?.clientId)
     || 'Unnamed';
@@ -794,8 +836,25 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
         <ValueRow label="My clientId" value={shortClientId(safeServerSync.clientId)} />
         <ValueRow label="Current controller" value={controllerValue} />
         <ValueRow label="Command owner" value={commandOwner} />
+        <ValueRow label="Active publisher" value={activePublisherStatus === 'NONE' ? 'NONE' : publisherLabel(activePublisher)} />
+        <ValueRow label="Publisher heartbeat age" value={formatAgeMs(heartbeatAgeMs)} />
+        <ValueRow label="Publisher status" value={activePublisherStatus} />
+        <ValueRow label="Publish session" value={shortSessionId(publishSession)} />
         <ValueRow label="Connected clients" value={safeAccess.connectedClientCount ?? connectedClients.length} />
       </div>
+
+      <Alert variant="warning" className="py-2">
+        Use only when another Admin bridge is stale or interfering.
+      </Alert>
+
+      <Button
+        variant="outline-danger"
+        className="w-100 mb-3 fw-bold"
+        onClick={safeSerial.forceTakeOverPublisher || safeServerSync.forceTakeOverPublisher}
+        disabled={!safeSerial.forceTakeOverPublisher && !safeServerSync.forceTakeOverPublisher}
+      >
+        Force Take Over Publisher
+      </Button>
 
       <Button
         variant="danger"
@@ -1371,8 +1430,10 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
     { label: 'Shared Live Data', value: safeStatus.liveStatus || (latest?.publishedAt ? 'LIVE' : 'NONE') },
     { label: 'Published source', value: latest.sourceLabel || latest.source || '-' },
     { label: 'Publisher', value: latest.publisherDisplayName || safeStatus.publisherDisplayName || (latest.source === 'server-serial' ? 'server' : '-') },
+    { label: 'latestSharedPacket age', value: safeStatus.latestSharedPacketAgeMs != null ? formatAgeMs(safeStatus.latestSharedPacketAgeMs) : '-' },
+    { label: 'Active publisher status', value: safeStatus.activePublisherStatus || safeStatus.activePublisher?.status || 'NONE' },
     { label: 'Last publish time', value: formatDateTime(latest.publishedAt || safeStatus.publishedAt) },
-  ], [latest, safeStatus.liveStatus, safeStatus.publishedAt, safeStatus.publisherDisplayName]);
+  ], [latest, safeStatus.activePublisher, safeStatus.activePublisherStatus, safeStatus.latestSharedPacketAgeMs, safeStatus.liveStatus, safeStatus.publishedAt, safeStatus.publisherDisplayName]);
 
   const quaternionRows = useMemo(() => [
     { label: 'q0 / qw', value: formatNumber(latest.q0, 6) },
@@ -1760,6 +1821,15 @@ function DataLoggingSection({ latestPacket }) {
 function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
   const safeServerSync = serverSync || {};
   const bridgeEnabled = Boolean(safeServerSync.bridgeEnabled);
+  const activePublisher = safeServerSync.activePublisher || safeServerSync.serverSerial?.status?.activePublisher || null;
+  const activePublisherStatus = safeServerSync.activePublisherStatus
+    || safeServerSync.serverSerial?.status?.activePublisherStatus
+    || activePublisher?.status
+    || 'NONE';
+  const heartbeatAgeMs = safeServerSync.activePublisherHeartbeatAgeMs
+    ?? safeServerSync.serverSerial?.status?.activePublisherHeartbeatAgeMs
+    ?? activePublisher?.heartbeatAgeMs
+    ?? null;
   if (!isAdmin) return null;
 
   return (
@@ -1769,6 +1839,9 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
           <div className="serial-section-title">Server Sharing</div>
           <div className="server-small-note">
             Share Admin Web Serial data with Viewer and Controller clients.
+          </div>
+          <div className="server-small-note">
+            Active publisher {activePublisherStatus === 'NONE' ? 'NONE' : publisherLabel(activePublisher)} / {activePublisherStatus} / heartbeat {formatAgeMs(heartbeatAgeMs)}
           </div>
           <div className="server-small-note">
             Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
@@ -1782,6 +1855,11 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
           onChange={(event) => safeServerSync.setBridgeEnabled?.(event.target.checked)}
         />
       </div>
+      {safeServerSync.lastPublishError === 'ACTIVE_PUBLISHER_CONFLICT' ? (
+        <Alert variant="warning" className="py-2 mt-3 mb-0">
+          Active publisher conflict. Server Sharing was not started.
+        </Alert>
+      ) : null}
     </div>
   );
 }
@@ -1794,6 +1872,11 @@ function LiveRateSettingsSection({ serverSync, isAdmin, webSerialInputHz = null 
   const publishHz = safeServerSync.serverPublishHz || 30;
   const receiveHz = safeServerSync.viewerReceiveHz || 30;
   const selectedHz = isAdmin ? publishHz : receiveHz;
+  const activePublisher = safeServerSync.activePublisher || safeServerSync.serverSerial?.status?.activePublisher || null;
+  const activePublisherStatus = safeServerSync.activePublisherStatus
+    || safeServerSync.serverSerial?.status?.activePublisherStatus
+    || activePublisher?.status
+    || 'NONE';
   const rows = isAdmin ? [
     { label: 'Web Serial input Hz', value: `${formatNumber(webSerialInputHz ?? safeServerSync.webSerialInputHz, 1)} Hz` },
     { label: 'Publish target Hz', value: `${publishHz} Hz` },
@@ -1802,6 +1885,10 @@ function LiveRateSettingsSection({ serverSync, isAdmin, webSerialInputHz = null 
     { label: 'Publish count', value: safeServerSync.publishCount ?? 0 },
     { label: 'Failed publish count', value: safeServerSync.publishFailedCount ?? 0 },
     { label: 'Skipped/dropped publish', value: `${safeServerSync.skippedPublishCount ?? 0} / ${safeServerSync.droppedPublishCount ?? 0}` },
+    { label: 'Dropped wrong publisher', value: safeServerSync.droppedWrongPublisherCount ?? safeServerSync.serverSerial?.status?.droppedWrongPublisherCount ?? 0 },
+    { label: 'Dropped wrong session', value: safeServerSync.droppedWrongSessionCount ?? safeServerSync.serverSerial?.status?.droppedWrongSessionCount ?? 0 },
+    { label: 'Dropped out-of-order', value: safeServerSync.droppedOutOfOrderCount ?? safeServerSync.serverSerial?.status?.droppedOutOfOrderCount ?? 0 },
+    { label: 'Active publisher status', value: activePublisherStatus },
   ] : [
     { label: 'Viewer target Hz', value: `${receiveHz} Hz` },
     { label: 'Actual receive Hz', value: `${formatNumber(safeServerSync.actualReceiveHz, 1)} Hz` },
@@ -1809,6 +1896,7 @@ function LiveRateSettingsSection({ serverSync, isAdmin, webSerialInputHz = null 
     { label: 'server-to-viewer latency estimate', value: safeServerSync.serverToViewerLatencyMs != null ? `${Math.round(safeServerSync.serverToViewerLatencyMs)} ms` : '-' },
     { label: 'Data status', value: safeServerSync.liveDataStatus || 'NONE' },
     { label: 'dropped out-of-order', value: safeServerSync.droppedOutOfOrderCount ?? 0 },
+    { label: 'dropped wrong publisher', value: safeServerSync.droppedWrongPublisherCount ?? 0 },
     { label: 'Skipped receive polls', value: safeServerSync.skippedReceiveCount ?? 0 },
   ];
 
@@ -1864,10 +1952,15 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
     { label: 'Last publish HTTP status', value: safeServerSync.lastPublishHttpStatus ?? '-' },
     { label: 'Last publish time', value: formatDateTime(safeServerSync.lastPublishAt) },
     { label: 'Last publish error message', value: safeServerSync.lastPublishError || '-' },
+    { label: 'Publish session', value: shortSessionId(safeServerSync.publishSessionId || safeStatus.publishSessionId) },
     { label: 'Publish count', value: safeServerSync.publishCount ?? 0 },
     { label: 'Failed publish count', value: safeServerSync.publishFailedCount ?? 0 },
+    { label: 'Dropped wrong publisher', value: safeServerSync.droppedWrongPublisherCount ?? safeStatus.droppedWrongPublisherCount ?? 0 },
+    { label: 'Dropped wrong session', value: safeServerSync.droppedWrongSessionCount ?? safeStatus.droppedWrongSessionCount ?? 0 },
+    { label: 'Dropped out-of-order', value: safeServerSync.droppedOutOfOrderCount ?? safeStatus.droppedOutOfOrderCount ?? 0 },
     { label: 'latestSharedPacket age', value: latestSharedPacketAgeMs != null ? `${Math.round(latestSharedPacketAgeMs)} ms` : '-' },
     { label: 'bridgeEnabled', value: bridgeEnabled ? 'true' : 'false' },
+    { label: 'Active publisher status', value: safeServerSync.activePublisherStatus || safeStatus.activePublisherStatus || 'NONE' },
     { label: 'Web Serial connected', value: webSerialConnected ? 'yes' : 'no' },
     { label: 'serial.latestPacket.updatedAt', value: formatDateTime(webSerialLatestPacketUpdatedAt) },
   ];
