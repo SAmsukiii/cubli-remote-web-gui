@@ -279,6 +279,21 @@ const COMPACT_LIVE_PACKET_KEYS = Object.freeze([
   'qerr_deg',
   'qerrDeg',
   'qerrSource',
+  'desired_roll_deg',
+  'desired_pitch_deg',
+  'desired_yaw_deg',
+  'desiredRollDeg',
+  'desiredPitchDeg',
+  'desiredYawDeg',
+  'targetInputRollDeg',
+  'targetInputPitchDeg',
+  'targetInputYawDeg',
+  'targetRpySequence',
+  'targetQd0',
+  'targetQd1',
+  'targetQd2',
+  'targetQd3',
+  'latestDesiredAttitude',
   'wx',
   'wy',
   'wz',
@@ -2163,14 +2178,31 @@ function buildSerialCommandFromKey(commandKey, params = {}) {
     }
     case 'wheelRpmStop': return makeCommandDescriptor(key, 'Stop RPM Test', 'RPMSTOP');
     case 'targetAttitude': {
-      const roll = Number(params.roll ?? params.target1 ?? 0) || 0;
-      const pitch = Number(params.pitch ?? params.target2 ?? 0) || 0;
-      const yaw = Number(params.yaw ?? params.target3 ?? 0) || 0;
+      const inputRoll = strictFiniteNumber(params.inputRoll ?? params.inputRollDeg ?? params.roll ?? params.target1, 0);
+      const inputPitch = strictFiniteNumber(params.inputPitch ?? params.inputPitchDeg ?? params.pitch ?? params.target2, 0);
+      const inputYaw = strictFiniteNumber(params.inputYaw ?? params.inputYawDeg ?? params.yaw ?? params.target3, 0);
+      const roll = inputRoll;
+      const pitch = inputPitch;
+      const yaw = inputYaw;
+      const targetRpySequence = normalizeEulerSequence(params.targetRpySequence || params.targetSequence || 'ZYX', 'ZYX');
+      const existingQd = [params.qd0, params.qd1, params.qd2, params.qd3].map((value) => strictFiniteNumber(value, null));
+      const qd = existingQd.every((value) => value !== null)
+        ? existingQd
+        : (eulerDegToQuat(roll, pitch, yaw, targetRpySequence) || [1, 0, 0, 0]);
       return makeCommandDescriptor(key, 'Send Target Attitude', `CMD,1,${roll},${pitch},${yaw},0`, {
         ...params,
+        inputRoll,
+        inputPitch,
+        inputYaw,
         roll,
         pitch,
         yaw,
+        targetRpySequence,
+        qd0: qd[0],
+        qd1: qd[1],
+        qd2: qd[2],
+        qd3: qd[3],
+        targetConventionApplied: true,
       });
     }
     case 'ebimuDefault': return makeCommandDescriptor(key, 'EBIMU Default Setup', 'EBIMU_DEFAULT');
@@ -2278,14 +2310,17 @@ function setLastCommandInfo(command, options = {}) {
     bridgeStatus: command.status,
   };
   sharedState.lastCommandInfo = info;
-  if (options.ok === true && command.commandKey === 'targetAttitude') {
+  if (options.ok !== false && command.commandKey === 'targetAttitude') {
+    const rollDeg = firstStrictFinite([command.params.roll, command.params.target1], 0);
+    const pitchDeg = firstStrictFinite([command.params.pitch, command.params.target2], 0);
+    const yawDeg = firstStrictFinite([command.params.yaw, command.params.target3], 0);
     sharedState.latestDesiredAttitude = {
-      rollDeg: Number(command.params.roll) || 0,
-      pitchDeg: Number(command.params.pitch) || 0,
-      yawDeg: Number(command.params.yaw) || 0,
-      inputRollDeg: Number(command.params.inputRoll) || 0,
-      inputPitchDeg: Number(command.params.inputPitch) || 0,
-      inputYawDeg: Number(command.params.inputYaw) || 0,
+      rollDeg,
+      pitchDeg,
+      yawDeg,
+      inputRollDeg: firstStrictFinite([command.params.inputRollDeg, command.params.inputRoll, rollDeg], 0),
+      inputPitchDeg: firstStrictFinite([command.params.inputPitchDeg, command.params.inputPitch, pitchDeg], 0),
+      inputYawDeg: firstStrictFinite([command.params.inputYawDeg, command.params.inputYaw, yawDeg], 0),
       targetRpySequence: command.params.targetRpySequence || command.params.targetSequence || 'ZYX',
       qd0: strictFiniteNumber(command.params.qd0, null),
       qd1: strictFiniteNumber(command.params.qd1, null),
@@ -2308,6 +2343,14 @@ function setLastCommandInfo(command, options = {}) {
       desiredRollDeg: sharedState.latestDesiredAttitude?.rollDeg ?? sharedState.latestSharedPacket.desiredRollDeg ?? null,
       desiredPitchDeg: sharedState.latestDesiredAttitude?.pitchDeg ?? sharedState.latestSharedPacket.desiredPitchDeg ?? null,
       desiredYawDeg: sharedState.latestDesiredAttitude?.yawDeg ?? sharedState.latestSharedPacket.desiredYawDeg ?? null,
+      targetInputRollDeg: sharedState.latestDesiredAttitude?.inputRollDeg ?? sharedState.latestSharedPacket.targetInputRollDeg ?? null,
+      targetInputPitchDeg: sharedState.latestDesiredAttitude?.inputPitchDeg ?? sharedState.latestSharedPacket.targetInputPitchDeg ?? null,
+      targetInputYawDeg: sharedState.latestDesiredAttitude?.inputYawDeg ?? sharedState.latestSharedPacket.targetInputYawDeg ?? null,
+      targetRpySequence: sharedState.latestDesiredAttitude?.targetRpySequence ?? sharedState.latestSharedPacket.targetRpySequence ?? '',
+      targetQd0: sharedState.latestDesiredAttitude?.qd0 ?? sharedState.latestSharedPacket.targetQd0 ?? null,
+      targetQd1: sharedState.latestDesiredAttitude?.qd1 ?? sharedState.latestSharedPacket.targetQd1 ?? null,
+      targetQd2: sharedState.latestDesiredAttitude?.qd2 ?? sharedState.latestSharedPacket.targetQd2 ?? null,
+      targetQd3: sharedState.latestDesiredAttitude?.qd3 ?? sharedState.latestSharedPacket.targetQd3 ?? null,
       lastCommandKey: info.commandKey,
       lastCommandLabel: info.label,
       lastCommandParams: info.params,

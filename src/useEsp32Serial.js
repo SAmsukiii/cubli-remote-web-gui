@@ -19,6 +19,8 @@ const MAX_CHART_POINTS = 90;
 const MAX_CSV_LOG_QUEUE = 5000;
 const BAUD_RATE = 115200;
 const UI_FLUSH_INTERVAL_MS = 100;
+const CSV_TARGET_HZ = 50;
+const CSV_TARGET_INTERVAL_MS = 1000 / CSV_TARGET_HZ;
 const ENCODER_AGE_FRESH_MS = DEFAULT_ENCODER_FRESH_MS;
 const ENCODER_SYNC_THRESHOLD_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 const WEB_SERIAL_UNSUPPORTED_MESSAGE = 'Web Serial is supported only on Chrome/Edge desktop over HTTPS or localhost';
@@ -36,6 +38,13 @@ const DEFAULT_PACKET = {
   roll_deg: 0,
   pitch_deg: 0,
   yaw_deg: 0,
+  desired_roll_deg: null,
+  desired_pitch_deg: null,
+  desired_yaw_deg: null,
+  desiredRollDeg: null,
+  desiredPitchDeg: null,
+  desiredYawDeg: null,
+  latestDesiredAttitude: null,
   ebimu_timestamp_ms: 0,
   seq: 0,
   rxCount: 0,
@@ -148,6 +157,103 @@ function firstFiniteValue(values, fallback = null) {
     if (number !== null) return number;
   }
   return fallback;
+}
+
+function detectCsvSampleType(packet = {}) {
+  const explicit = String(packet.sample_type || packet.sampleType || '').trim().toUpperCase();
+  if (explicit === 'TEL' || explicit === 'IMU' || explicit === 'ENC' || explicit === 'COMMAND') return explicit;
+
+  const rawPrefix = String(packet.raw_prefix || packet.rawPrefix || '').trim().toUpperCase();
+  if (rawPrefix === 'TEL' || rawPrefix === 'IMU' || rawPrefix === 'ENC') return rawPrefix;
+  if (rawPrefix === 'CMD' || rawPrefix === 'COMMAND') return 'COMMAND';
+
+  if (packet.encoderOnly || String(packet.source || '').toUpperCase().includes('ENC')) return 'ENC';
+  if (String(packet.source || '').toUpperCase().includes('COMMAND')) return 'COMMAND';
+  if ([packet.q0, packet.q1, packet.q2, packet.q3].every((value) => finiteOrNull(value) !== null)) return 'TEL';
+  return '';
+}
+
+function resolveCsvSampleClock(packet = {}, lastClock = null, now = Date.now()) {
+  const packetTime = firstFiniteValue([
+    packet.timestamp,
+    packet.ebimu_timestamp_ms,
+    packet.ebimuTimestampMs,
+  ], null);
+  const pcTime = firstFiniteValue([
+    packet.pcTimeMs,
+    packet.pc_time_ms,
+  ], null);
+  const previousPacketTime = lastClock?.packetTimeMs ?? null;
+  const previousPcTime = lastClock?.pcTimeMs ?? null;
+  const baseClock = {
+    packetTimeMs: packetTime ?? previousPacketTime,
+    pcTimeMs: pcTime ?? previousPcTime,
+  };
+
+  if (packetTime !== null && packetTime >= 0) {
+    if (previousPacketTime === null || packetTime > previousPacketTime) {
+      return { ...baseClock, source: 'packet', timeMs: packetTime };
+    }
+  }
+
+  if (pcTime !== null && pcTime >= 0) {
+    if (previousPcTime === null || pcTime > previousPcTime) {
+      return { ...baseClock, source: 'pc', timeMs: pcTime };
+    }
+  }
+
+  const receivedTime = firstFiniteValue([packet.updatedAt, now], now);
+  return {
+    ...baseClock,
+    source: 'received',
+    timeMs: Math.max(0, receivedTime),
+  };
+}
+
+function buildDesiredAttitude(roll, pitch, yaw, sequence = 'ZYX', now = Date.now()) {
+  const inputRoll = finiteOrNull(roll) ?? 0;
+  const inputPitch = finiteOrNull(pitch) ?? 0;
+  const inputYaw = finiteOrNull(yaw) ?? 0;
+  const targetRpySequence = normalizeEulerSequence(sequence, 'ZYX');
+  const qd = eulerDegToQuat(inputRoll, inputPitch, inputYaw, targetRpySequence) || [1, 0, 0, 0];
+  return {
+    rollDeg: inputRoll,
+    pitchDeg: inputPitch,
+    yawDeg: inputYaw,
+    inputRollDeg: inputRoll,
+    inputPitchDeg: inputPitch,
+    inputYawDeg: inputYaw,
+    targetRpySequence,
+    qd0: qd[0],
+    qd1: qd[1],
+    qd2: qd[2],
+    qd3: qd[3],
+    updatedAt: new Date(now).toISOString(),
+    updatedAtMs: now,
+    source: 'local_target_attitude_command',
+  };
+}
+
+function patchPacketWithDesired(packet = {}, desired = null) {
+  if (!desired) return packet;
+  return {
+    ...packet,
+    latestDesiredAttitude: desired,
+    desired_roll_deg: desired.rollDeg,
+    desired_pitch_deg: desired.pitchDeg,
+    desired_yaw_deg: desired.yawDeg,
+    desiredRollDeg: desired.rollDeg,
+    desiredPitchDeg: desired.pitchDeg,
+    desiredYawDeg: desired.yawDeg,
+    targetInputRollDeg: desired.inputRollDeg,
+    targetInputPitchDeg: desired.inputPitchDeg,
+    targetInputYawDeg: desired.inputYawDeg,
+    targetRpySequence: desired.targetRpySequence,
+    targetQd0: desired.qd0,
+    targetQd1: desired.qd1,
+    targetQd2: desired.qd2,
+    targetQd3: desired.qd3,
+  };
 }
 
 function hasIncomingEncoderData(encoder = {}) {
@@ -883,6 +989,7 @@ export default function useEsp32Serial(options = {}) {
     options.encoderAngleToQuatSequence,
     DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
   );
+  const targetRpySequence = normalizeEulerSequence(options.targetRpySequence || 'ZYX', 'ZYX');
   const imuDisplaySigns = normalizeRpySigns({
     roll: options.imuDisplayRollSign,
     pitch: options.imuDisplayPitchSign,
@@ -905,6 +1012,7 @@ export default function useEsp32Serial(options = {}) {
   const [lastReceivedAt, setLastReceivedAt] = useState(null);
   const [latestPacket, setLatestPacket] = useState(DEFAULT_PACKET);
   const [latestCsvPacket, setLatestCsvPacket] = useState(null);
+  const [latestDesiredAttitude, setLatestDesiredAttitude] = useState(null);
   const [csvLogVersion, setCsvLogVersion] = useState(0);
   const [recentPackets, setRecentPackets] = useState([]);
   const [chartData, setChartData] = useState([]);
@@ -914,6 +1022,7 @@ export default function useEsp32Serial(options = {}) {
   const [warningCount, setWarningCount] = useState(0);
   const [encoderCount, setEncoderCount] = useState(0);
   const [inputHz, setInputHz] = useState(0);
+  const [csvLoggedHz, setCsvLoggedHz] = useState(0);
   const [lastCommand, setLastCommand] = useState('');
   const [serialWriterReady, setSerialWriterReady] = useState(false);
   const [lastLocalWriteError, setLastLocalWriteError] = useState('');
@@ -931,7 +1040,11 @@ export default function useEsp32Serial(options = {}) {
 
   const latestPacketRef = useRef(DEFAULT_PACKET);
   const latestCsvPacketRef = useRef(null);
+  const latestDesiredAttitudeRef = useRef(null);
   const csvLogQueueRef = useRef([]);
+  const csvCaptureEnabledRef = useRef(false);
+  const lastCsvSampleClockRef = useRef(null);
+  const csvLoggedRateWindowRef = useRef([]);
   const recentPacketsRef = useRef([]);
   const chartDataRef = useRef([]);
   const countersRef = useRef({ valid: 0, invalid: 0, ignored: 0, warning: 0 });
@@ -960,10 +1073,90 @@ export default function useEsp32Serial(options = {}) {
   }, []);
 
   const pushCsvLogPacket = useCallback((packet) => {
-    if (!packet) return;
-    latestCsvPacketRef.current = packet;
-    csvLogQueueRef.current = [...csvLogQueueRef.current, packet].slice(-MAX_CSV_LOG_QUEUE);
+    if (!csvCaptureEnabledRef.current || !packet) return false;
+    const sampleType = detectCsvSampleType(packet);
+    if (sampleType !== 'TEL' && sampleType !== 'IMU' && sampleType !== 'ENC' && sampleType !== 'COMMAND') return false;
+
+    const now = Date.now();
+    const nextClock = resolveCsvSampleClock(packet, lastCsvSampleClockRef.current, now);
+    const lastClock = lastCsvSampleClockRef.current;
+    if (
+      sampleType !== 'COMMAND'
+      &&
+      lastClock
+      && (
+        (
+          lastClock.source === nextClock.source
+          && nextClock.timeMs - lastClock.timeMs < CSV_TARGET_INTERVAL_MS
+        )
+        || (
+          lastClock.source !== nextClock.source
+          && now - (lastClock.loggedAtMs ?? now) < CSV_TARGET_INTERVAL_MS
+        )
+      )
+    ) {
+      return false;
+    }
+
+    const acceptedClock = { ...nextClock, loggedAtMs: now };
+    const csvPacket = {
+      ...packet,
+      csvSampleTimeMs: nextClock.timeMs,
+      csvSampleClock: nextClock.source,
+      sample_type: packet.sample_type || packet.sampleType || sampleType,
+      sampleType: packet.sampleType || packet.sample_type || sampleType,
+    };
+    lastCsvSampleClockRef.current = acceptedClock;
+    latestCsvPacketRef.current = csvPacket;
+    csvLogQueueRef.current = [...csvLogQueueRef.current, csvPacket].slice(-MAX_CSV_LOG_QUEUE);
+    csvLoggedRateWindowRef.current = [
+      ...csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000),
+      now,
+    ];
+    return true;
   }, []);
+
+  const applyLatestDesiredAttitude = useCallback((desired) => {
+    if (!desired) return null;
+    latestDesiredAttitudeRef.current = desired;
+    latestPacketRef.current = patchPacketWithDesired(latestPacketRef.current || DEFAULT_PACKET, desired);
+    if (latestCsvPacketRef.current) {
+      latestCsvPacketRef.current = patchPacketWithDesired(latestCsvPacketRef.current, desired);
+    }
+    recentPacketsRef.current = recentPacketsRef.current.map((packet, index) => (
+      index === 0 ? patchPacketWithDesired(packet, desired) : packet
+    ));
+    setLatestDesiredAttitude(desired);
+    markPendingUiFlush();
+    return desired;
+  }, [markPendingUiFlush]);
+
+  const recordTargetAttitudeCommand = useCallback((roll, pitch, yaw, line = '') => {
+    const desired = buildDesiredAttitude(roll, pitch, yaw, targetRpySequence);
+    applyLatestDesiredAttitude(desired);
+    pushCsvLogPacket(patchPacketWithDesired({
+      ok: true,
+      source: 'local-web-serial-command',
+      sourceLabel: 'Local Web Serial Command',
+      sample_type: 'COMMAND',
+      sampleType: 'COMMAND',
+      rawPrefix: 'CMD',
+      raw_prefix: 'CMD',
+      raw: line,
+      cleanLine: line,
+      pc_time_ms: desired.updatedAtMs,
+      pcTimeMs: desired.updatedAtMs,
+      updatedAt: desired.updatedAtMs,
+      lastCommandKey: 'targetAttitude',
+      lastCommandLabel: 'Send Target Attitude',
+      lastCommandParams: { roll: desired.rollDeg, pitch: desired.pitchDeg, yaw: desired.yawDeg },
+      lastCommandLineSent: line,
+      lastCommandAt: desired.updatedAt,
+      lastCommandAllowed: true,
+      lastCommandDenied: false,
+    }, desired));
+    return desired;
+  }, [applyLatestDesiredAttitude, pushCsvLogPacket, targetRpySequence]);
 
   const drainCsvLogSamples = useCallback(() => {
     const samples = csvLogQueueRef.current;
@@ -971,8 +1164,35 @@ export default function useEsp32Serial(options = {}) {
     return samples;
   }, []);
 
+  const startCsvLogCapture = useCallback(() => {
+    csvLogQueueRef.current = [];
+    latestCsvPacketRef.current = null;
+    lastCsvSampleClockRef.current = null;
+    csvLoggedRateWindowRef.current = [];
+    csvCaptureEnabledRef.current = true;
+    setLatestCsvPacket(null);
+    setCsvLoggedHz(0);
+    setCsvLogVersion((version) => version + 1);
+  }, []);
+
+  const stopCsvLogCapture = useCallback(() => {
+    csvCaptureEnabledRef.current = false;
+    const samples = drainCsvLogSamples();
+    lastCsvSampleClockRef.current = null;
+    csvLoggedRateWindowRef.current = [];
+    setCsvLoggedHz(0);
+    return samples;
+  }, [drainCsvLogSamples]);
+
   useEffect(() => {
     const timer = setInterval(() => {
+      const now = Date.now();
+      csvLoggedRateWindowRef.current = csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000);
+      setCsvLoggedHz((prev) => {
+        const next = csvCaptureEnabledRef.current ? csvLoggedRateWindowRef.current.length : 0;
+        return prev === next ? prev : next;
+      });
+
       if (!pendingUiFlushRef.current) return;
       pendingUiFlushRef.current = false;
 
@@ -988,7 +1208,7 @@ export default function useEsp32Serial(options = {}) {
       setIgnoredCount(countersRef.current.ignored);
       setWarningCount(countersRef.current.warning);
       setEncoderCount(encoderCountRef.current);
-      inputRateWindowRef.current = inputRateWindowRef.current.filter((time) => Date.now() - time <= 1000);
+      inputRateWindowRef.current = inputRateWindowRef.current.filter((time) => now - time <= 1000);
       setInputHz(inputRateWindowRef.current.length);
       setLastRawLine(lastRawLineRef.current);
       setLastInvalidReason(lastInvalidReasonRef.current);
@@ -1031,7 +1251,7 @@ export default function useEsp32Serial(options = {}) {
           encoderDisplayYawSign: encoderDisplaySigns.yaw,
         }
       );
-      pushCsvLogPacket({
+      pushCsvLogPacket(patchPacketWithDesired({
         ...encoderLogFields,
         ok: true,
         encoderOnly: true,
@@ -1048,7 +1268,7 @@ export default function useEsp32Serial(options = {}) {
         timestamp: Number.isFinite(parsed.timestamp) ? parsed.timestamp : undefined,
         seq: Number.isFinite(parsed.seq) ? parsed.seq : undefined,
         updatedAt: now,
-      });
+      }, latestDesiredAttitudeRef.current));
 
       const currentPacket = latestPacketRef.current || DEFAULT_PACKET;
       latestPacketRef.current = mergeEncoderIntoPacket({
@@ -1203,6 +1423,7 @@ export default function useEsp32Serial(options = {}) {
     }
 
     const normalizedPacket = normalizeLivePacket(packet, 'admin-web-serial', {
+      desiredAttitude: latestDesiredAttitudeRef.current,
       imuEulerSequence,
       encoderEulerSequence,
       encoderAngleToQuatSequence,
@@ -1215,7 +1436,7 @@ export default function useEsp32Serial(options = {}) {
       bodyRateWzDisplaySign,
       now,
     }) || packet;
-    const commonPacket = {
+    const commonPacket = patchPacketWithDesired({
       ...packet,
       ...normalizedPacket,
       source: 'admin-web-serial',
@@ -1263,7 +1484,7 @@ export default function useEsp32Serial(options = {}) {
       sample_type: parsed.sample_type || parsed.sampleType || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
       sampleType: parsed.sampleType || parsed.sample_type || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
       updatedAt: now,
-    };
+    }, latestDesiredAttitudeRef.current);
 
     latestPacketRef.current = commonPacket;
     pushCsvLogPacket(commonPacket);
@@ -1573,8 +1794,10 @@ export default function useEsp32Serial(options = {}) {
     const v1 = Number(target1) || 0;
     const v2 = Number(target2) || 0;
     const v3 = Number(target3) || 0;
-    return sendLine(`${type} ${v1} ${v2} ${v3}`);
-  }, [sendLine]);
+    const line = `${type} ${v1} ${v2} ${v3}`;
+    if (type === 1) recordTargetAttitudeCommand(v1, v2, v3, line);
+    return sendLine(line);
+  }, [recordTargetAttitudeCommand, sendLine]);
 
   const sendTare = useCallback(() => sendControllerCommand(2, 0, 0, 0), [sendControllerCommand]);
   const sendStop = useCallback(() => sendControllerCommand(0, 0, 0, 0), [sendControllerCommand]);
@@ -1586,7 +1809,11 @@ export default function useEsp32Serial(options = {}) {
     latestEncoderRef.current = makeInitialEncoder(encoderEulerSequence, encoderAngleToQuatSequence);
     latestPacketRef.current = DEFAULT_PACKET;
     latestCsvPacketRef.current = null;
+    latestDesiredAttitudeRef.current = null;
     csvLogQueueRef.current = [];
+    csvCaptureEnabledRef.current = false;
+    lastCsvSampleClockRef.current = null;
+    csvLoggedRateWindowRef.current = [];
     recentPacketsRef.current = [];
     chartDataRef.current = [];
     countersRef.current = { valid: 0, invalid: 0, ignored: 0, warning: 0 };
@@ -1603,6 +1830,7 @@ export default function useEsp32Serial(options = {}) {
     setLastReceivedAt(null);
     setLatestPacket(DEFAULT_PACKET);
     setLatestCsvPacket(null);
+    setLatestDesiredAttitude(null);
     setCsvLogVersion(0);
     setRecentPackets([]);
     setChartData([]);
@@ -1612,6 +1840,7 @@ export default function useEsp32Serial(options = {}) {
     setWarningCount(0);
     setEncoderCount(0);
     setInputHz(0);
+    setCsvLoggedHz(0);
     setLastCommand('');
     setLastLocalWriteError('');
   }, [encoderAngleToQuatSequence, encoderEulerSequence]);
@@ -1639,7 +1868,11 @@ export default function useEsp32Serial(options = {}) {
     lastReceivedAt,
     latestPacket,
     latestCsvPacket,
+    latestDesiredAttitude,
     csvLogVersion,
+    csvTargetHz: CSV_TARGET_HZ,
+    csvTargetIntervalMs: CSV_TARGET_INTERVAL_MS,
+    csvLoggedHz,
     recentPackets,
     chartData,
     validCount,
@@ -1662,5 +1895,7 @@ export default function useEsp32Serial(options = {}) {
     sendTarget,
     clearStats,
     drainCsvLogSamples,
+    startCsvLogCapture,
+    stopCsvLogCapture,
   };
 }

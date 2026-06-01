@@ -11,6 +11,13 @@ import SerialPanel from './SerialPanel';
 import BlePanel from './BlePanel';
 import ServerPanel from './ServerPanel';
 import useServerSync from './useServerSync';
+import TutorialModal from './TutorialModal';
+import {
+  TUTORIAL_STORAGE_KEYS,
+  TUTORIAL_VERSION,
+  getTutorialGuideModeForRole,
+  normalizeTutorialGuideMode,
+} from './tutorialSteps';
 import { normalizeLivePacket, normalizeQuaternion } from './telemetryNormalize';
 import {
   DEFAULT_FRAME_DEBUG_CONFIG,
@@ -56,37 +63,6 @@ const IDENTITY_LIVE_PACKET = Object.freeze({
   stale: true,
   updatedAt: 0,
 });
-
-const TUTORIAL_STEPS = Object.freeze([
-  {
-    title: 'Open Web App',
-    body: 'Open cubli-remote-web-gui-920k.onrender.com, then enter a display name.',
-  },
-  {
-    title: 'Admin / Viewer Role',
-    body: 'Viewer can monitor only. Admin login is required for Web Serial, Server Sharing, and control.',
-  },
-  {
-    title: 'Web Serial Connect',
-    body: 'On the Admin PC, connect the ESP32 Remote MCU by USB, then click Connect Receiver.',
-  },
-  {
-    title: 'Enable Server Sharing',
-    body: 'Admin Web Serial data is published to the Node server so Viewer and Controller clients see the same live data.',
-  },
-  {
-    title: '3D Cubli / RPY / Encoder',
-    body: '3D attitude uses quaternion q0~q3. RPY is display-only. The gimbal rotary encoder is reference data.',
-  },
-  {
-    title: 'Commands',
-    body: 'Admin or an authorized Controller can send PID Gain, RPM, Cubli Initialize, and Encoder Initialize commands.',
-  },
-  {
-    title: 'CSV Logging',
-    body: 'Use Start CSV Logging, then Stop & Download CSV to save samples from the moment logging started.',
-  },
-]);
 
 // This transform fixes the displayed Cubli model layout only.
 // It must not change telemetry quaternion interpretation.
@@ -363,6 +339,33 @@ function sanitizeDisplayNameInput(value) {
     .slice(0, 30);
 }
 
+function readTutorialStorage(key, fallback = '') {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    return window.localStorage.getItem(key) || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeTutorialStorage(key, value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch (_) {}
+}
+
+function shouldAutoShowTutorial() {
+  const dontShowAgain = readTutorialStorage(TUTORIAL_STORAGE_KEYS.dontShowAgain, '') === 'true';
+  const storedVersion = readTutorialStorage(TUTORIAL_STORAGE_KEYS.version, '');
+  return !(dontShowAgain && storedVersion === TUTORIAL_VERSION);
+}
+
+function getStoredTutorialGuideMode(fallbackRole = 'viewer') {
+  const fallbackMode = getTutorialGuideModeForRole(fallbackRole);
+  return normalizeTutorialGuideMode(readTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, fallbackMode));
+}
+
 function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
   if (!sourceQuat || !targetQuat) return targetQuat || new THREE.Quaternion();
 
@@ -374,35 +377,6 @@ function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
 
   return targetQuat;
 }
-
-function TutorialModal({ show, onHide }) {
-  return (
-    <Modal show={show} onHide={onHide} centered size="lg" contentClassName="tutorial-modal">
-      <Modal.Header closeButton className="border-secondary">
-        <Modal.Title className="h5 fw-bold">Cubli Web GUI Tutorial</Modal.Title>
-      </Modal.Header>
-      <Modal.Body>
-        {/* screenshot can be added later */}
-        <div className="tutorial-step-grid">
-          {TUTORIAL_STEPS.map((step, index) => (
-            <div key={step.title} className="tutorial-step-card">
-              <div className="tutorial-step-index">Step {index + 1}</div>
-              <div className="tutorial-step-title">{step.title}</div>
-              <div className="tutorial-step-body">{step.body}</div>
-            </div>
-          ))}
-        </div>
-        <div className="tutorial-note mt-3">
-          Admin visual settings are shared to viewers. RPY sequence changes displayed Euler angles only.
-        </div>
-      </Modal.Body>
-      <Modal.Footer className="border-secondary">
-        <Button variant="outline-light" size="sm" onClick={onHide}>Close</Button>
-      </Modal.Footer>
-    </Modal>
-  );
-}
-
 
 /* =========================
    1. Sub Components
@@ -1372,9 +1346,11 @@ export default function CubliSimulator() {
     return Math.round(Math.min(680, Math.max(440, width * 0.36)));
   });
   const [showTutorial, setShowTutorial] = useState(false);
+  const [tutorialGuideMode, setTutorialGuideMode] = useState(() => getStoredTutorialGuideMode('viewer'));
   const [frameDebug, setFrameDebug] = useState(() => getStoredFrameDebugConfig());
 
   const panelDragActiveRef = useRef(false);
+  const tutorialAutoCheckedRef = useRef(false);
   const [isPanelDragging, setIsPanelDragging] = useState(false);
 
   const rawServerSync = useServerSync();
@@ -1390,6 +1366,7 @@ export default function CubliSimulator() {
     encoderDisplayPitchSign: serverSync?.encoderDisplayPitchSign,
     encoderDisplayYawSign: serverSync?.encoderDisplayYawSign,
     bodyRateWzDisplaySign: serverSync?.bodyRateWzDisplaySign,
+    targetRpySequence: serverSync?.targetRpySequence,
   });
   const ble = useEsp32Ble();
   const {
@@ -1400,7 +1377,8 @@ export default function CubliSimulator() {
   } = serverSync;
   const [showNameModal, setShowNameModal] = useState(!serverSync?.hasDisplayName);
   const serverSerial = serverSync?.serverSerial ?? EMPTY_OBJECT;
-  const isAdmin = serverSync?.role === 'admin';
+  const effectiveRole = String(serverSync?.role || serverSerial?.status?.access?.myEffectiveRole || 'viewer').toLowerCase();
+  const isAdmin = effectiveRole === 'admin';
   const showFrameDebug = isAdmin;
   const normalizedFrameDebug = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
   const axisLength = normalizedFrameDebug.bodyAxisLength;
@@ -1412,6 +1390,46 @@ export default function CubliSimulator() {
   const suggestedDisplayName = useMemo(() => (
     serverSync?.getSuggestedDisplayName?.(isAdmin ? 'Admin' : 'Viewer') || ''
   ), [isAdmin, serverSync]);
+
+  const handleTutorialGuideModeChange = React.useCallback((mode) => {
+    const nextMode = normalizeTutorialGuideMode(mode);
+    setTutorialGuideMode(nextMode);
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, nextMode);
+  }, []);
+
+  const handleOpenTutorial = React.useCallback(() => {
+    const nextMode = getTutorialGuideModeForRole(effectiveRole);
+    setTutorialGuideMode(nextMode);
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, nextMode);
+    setShowTutorial(true);
+  }, [effectiveRole]);
+
+  const handleCloseTutorial = React.useCallback(() => {
+    if (readTutorialStorage(TUTORIAL_STORAGE_KEYS.dontShowAgain, '') === 'true') {
+      writeTutorialStorage(TUTORIAL_STORAGE_KEYS.version, TUTORIAL_VERSION);
+    }
+    setShowTutorial(false);
+  }, []);
+
+  const handleDontShowTutorialAgain = React.useCallback(() => {
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.dontShowAgain, 'true');
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.version, TUTORIAL_VERSION);
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, tutorialGuideMode);
+    setShowTutorial(false);
+  }, [tutorialGuideMode]);
+
+  useEffect(() => {
+    if (tutorialAutoCheckedRef.current) return;
+    if (!serverSync?.hasDisplayName) return;
+    tutorialAutoCheckedRef.current = true;
+
+    const nextMode = getTutorialGuideModeForRole(effectiveRole);
+    setTutorialGuideMode(nextMode);
+    writeTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, nextMode);
+    if (shouldAutoShowTutorial()) {
+      setShowTutorial(true);
+    }
+  }, [effectiveRole, serverSync?.hasDisplayName]);
 
   const serverVisualSettingsKey = useMemo(() => (
     serverSync?.visualSettings
@@ -2384,7 +2402,7 @@ export default function CubliSimulator() {
           type="button"
           className="app-tutorial-button"
           title="Open Tutorial"
-          onClick={() => setShowTutorial(true)}
+          onClick={handleOpenTutorial}
         >
           Tutorial
         </button>
@@ -2621,7 +2639,13 @@ export default function CubliSimulator() {
         </aside>
       </div>
 
-      <TutorialModal show={showTutorial} onHide={() => setShowTutorial(false)} />
+      <TutorialModal
+        show={showTutorial}
+        guideMode={tutorialGuideMode}
+        onGuideModeChange={handleTutorialGuideModeChange}
+        onHide={handleCloseTutorial}
+        onDontShowAgain={handleDontShowTutorialAgain}
+      />
 
       <NameEntryModal
         show={showNameModal || !serverSync?.hasDisplayName}

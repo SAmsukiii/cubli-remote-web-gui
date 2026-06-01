@@ -158,20 +158,42 @@
   background: #111418 !important;
   color: #eef2f6 !important;
   border: 1px solid #2a3138 !important;
+  max-width: min(1040px, calc(100vw - 1rem));
 }
 
-.tutorial-step-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 0.7rem;
+.tutorial-modal-header,
+.tutorial-modal-footer {
+  background: #111418;
+  border-color: #2a3138 !important;
 }
 
-.tutorial-step-card {
-  background: #171d24;
-  border: 1px solid #2f3944;
-  border-radius: 0.5rem;
-  padding: 0.85rem;
-  min-height: 132px;
+.tutorial-modal-body {
+  max-height: min(78vh, 820px);
+  overflow-y: auto;
+}
+
+.tutorial-version,
+.tutorial-guide-summary,
+.tutorial-note {
+  color: #aeb7c2;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.tutorial-guide-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+
+.tutorial-progress-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
 }
 
 .tutorial-step-index {
@@ -184,16 +206,99 @@
 
 .tutorial-step-title {
   color: #f8fafc;
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 850;
   margin-top: 0.25rem;
 }
 
-.tutorial-step-body,
-.tutorial-note {
-  color: #c7d0da;
+.tutorial-step-count {
+  color: #f8fafc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 5.5ch;
+  text-align: right;
+}
+
+.tutorial-current-step {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.7fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.tutorial-current-step.is-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tutorial-current-step.is-expanded .tutorial-copy {
+  max-width: 760px;
+}
+
+.tutorial-image-shell {
+  display: block;
+  width: 100%;
+  padding: 0;
+  background: #05070a;
+  border: 1px solid #303946;
+  border-radius: 0.45rem;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.tutorial-current-step.is-expanded .tutorial-image-shell {
+  cursor: zoom-out;
+}
+
+.tutorial-image-shell img {
+  display: block;
+  width: 100%;
+  max-height: 52vh;
+  object-fit: contain;
+  background: #05070a;
+}
+
+.tutorial-current-step.is-expanded .tutorial-image-shell img {
+  max-height: 68vh;
+}
+
+.tutorial-copy {
+  background: #151a20;
+  border: 1px solid #2a333d;
+  border-radius: 0.45rem;
+  padding: 0.9rem 1rem;
+}
+
+.tutorial-copy ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.tutorial-copy li {
+  color: #d4dbe4;
   font-size: 0.9rem;
-  line-height: 1.4;
+  line-height: 1.52;
+  margin-bottom: 0.45rem;
+}
+
+.tutorial-footer-spacer {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 768px) {
+  .tutorial-guide-switch,
+  .tutorial-modal-footer {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .tutorial-current-step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tutorial-image-shell img {
+    max-height: 42vh;
+  }
 }
 
 .cubli-layout-desktop {
@@ -979,6 +1084,20 @@
   color: #adb5bd;
   font-size: 0.86rem;
   line-height: 1.45;
+}
+
+.receiver-info-text {
+  color: #d8dee9;
+  background: #0b0f14;
+  border: 1px solid #26313a;
+  border-radius: 0.35rem;
+  padding: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-x: auto;
 }
 
 .server-panel .serial-value-row strong {

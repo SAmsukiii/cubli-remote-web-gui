@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Accordion, Alert, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
-  CSV_LOG_METADATA_COLUMNS,
   CSV_LOG_NOTE,
+  DEFAULT_CSV_LOG_COLUMNS,
   appendCsvLogSample,
   csvRowFromPacket,
   finalizeCsvLogRows,
@@ -42,39 +42,7 @@ const ATTITUDE_GAIN_STEP = 0.001;
 const WHEEL_RPM_MIN = -800;
 const WHEEL_RPM_MAX = 800;
 const WHEEL_RPM_STEP = 10;
-const LOG_COLUMNS = [
-  ...CSV_LOG_METADATA_COLUMNS,
-  'time_local',
-  'pc_time_ms', 'published_at', 'source', 'source_label',
-  'imu_euler_sequence', 'rpy_source',
-  'q0', 'q1', 'q2', 'q3', 'norm',
-  'raw_roll_deg', 'raw_pitch_deg', 'raw_yaw_deg',
-  'roll_deg', 'pitch_deg', 'yaw_deg',
-  'imu_display_roll_sign', 'imu_display_pitch_sign', 'imu_display_yaw_sign',
-  'Roll_deg', 'Pitch_deg', 'Yaw_deg',
-  'desired_roll_deg', 'desired_pitch_deg', 'desired_yaw_deg',
-  'qerr_deg',
-  'qerr_source',
-  'wx', 'wy', 'wz', 'wz_raw', 'wz_display', 'body_rate_wz_display_sign', 'angular_rate_source',
-  'RPM1', 'RPM2', 'RPM3', 'RPMcmd1', 'RPMcmd2', 'RPMcmd3',
-  'PWM1', 'PWM2', 'PWM3',
-  'Tbodycmd_x_Nm', 'Tbodycmd_y_Nm', 'Tbodycmd_z_Nm',
-  'Tmotor1_Nm', 'Tmotor2_Nm', 'Tmotor3_Nm',
-  'control_mode', 'EBIMU_status', 'logging_status',
-  'timestamp', 'seq',
-  'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
-  'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
-  'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
-  'encoder_raw_roll_deg', 'encoder_raw_pitch_deg', 'encoder_raw_yaw_deg',
-  'encoder_display_roll_sign', 'encoder_display_pitch_sign', 'encoder_display_yaw_sign',
-  'encoder_angle_to_quat_sequence',
-  'encoder_euler_sequence', 'encoder_quat_source', 'encoder_rpy_source', 'encoder_status',
-  'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
-  'enc_age_x', 'enc_age_y', 'enc_age_z',
-  'encoder_source', 'encoder_updated_at',
-  'lastCommandKey', 'lastCommandLabel',
-  'raw',
-];
+const LOG_COLUMNS = DEFAULT_CSV_LOG_COLUMNS;
 const EMPTY_OBJECT = Object.freeze({});
 
 function formatDateTime(msOrIso) {
@@ -339,6 +307,12 @@ function formatAgeMs(ms) {
   if (!Number.isFinite(value) || value < 0) return '-';
   if (value < 1000) return `${Math.round(value)} ms`;
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
+}
+
+function formatFixedMs(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return '---- ms';
+  return `${String(Math.round(value)).padStart(4, '0')} ms`;
 }
 
 function publisherLabel(publisher = {}) {
@@ -1818,6 +1792,93 @@ function DataLoggingSection({ latestPacket }) {
   );
 }
 
+function ReceiverInfoSection({ serverSync, localSerial, isAdmin, webSerialConnected }) {
+  const safeServerSync = serverSync || {};
+  const safeStatus = safeServerSync.serverSerial?.status || {};
+  const [isOpen, setIsOpen] = useState(false);
+  const bridgeEnabled = Boolean(safeServerSync.bridgeEnabled);
+  const activePublisher = safeServerSync.activePublisher
+    || safeStatus.activePublisher
+    || safeStatus.bridge?.activePublisher
+    || null;
+  const activePublisherStatus = safeServerSync.activePublisherStatus
+    || safeStatus.activePublisherStatus
+    || safeStatus.bridge?.activePublisherStatus
+    || activePublisher?.status
+    || 'NONE';
+  const heartbeatAgeMs = safeServerSync.activePublisherHeartbeatAgeMs
+    ?? safeStatus.activePublisherHeartbeatAgeMs
+    ?? safeStatus.bridge?.activePublisherHeartbeatAgeMs
+    ?? activePublisher?.heartbeatAgeMs
+    ?? null;
+  const latestPacketAgeMs = safeServerSync.latestSharedPacketAgeMs
+    ?? safeStatus.latestSharedPacketAgeMs
+    ?? null;
+  const pendingCount = safeStatus.bridge?.pendingCount
+    ?? safeServerSync.serverSerial?.bridge?.pendingCount
+    ?? 0;
+  const publishSession = safeServerSync.publishSessionId
+    || safeStatus.publishSessionId
+    || activePublisher?.sessionId
+    || '';
+  const summaryPublisher = activePublisherStatus === 'NONE'
+    ? 'NONE'
+    : publisherLabel(activePublisher);
+  const summaryStatus = activePublisherStatus || 'NONE';
+  const line = (label, value) => `${label.padEnd(24)}: ${value}`;
+  const lines = [
+    line('Active publisher', activePublisherStatus === 'NONE' ? 'NONE' : (activePublisher?.displayName || activePublisher?.publisherName || publisherLabel(activePublisher))),
+    line('Client ID short', shortClientId(activePublisher?.clientId || activePublisher?.publisherClientId || '')),
+    line('Status', summaryStatus),
+    line('Heartbeat age', formatFixedMs(heartbeatAgeMs)),
+    line('Bridge', bridgeEnabled ? 'ON' : 'OFF'),
+    line('Web Serial', webSerialConnected ? 'connected' : 'not connected'),
+  ];
+
+  if (isAdmin) {
+    lines.push(
+      line('Session ID short', shortSessionId(publishSession)),
+      line('Writer ready', localSerial?.serialWriterReady ? 'yes' : 'no'),
+      line('Pending commands', pendingCount),
+      line('Dropped wrong publisher', safeServerSync.droppedWrongPublisherCount ?? safeStatus.droppedWrongPublisherCount ?? 0),
+      line('Dropped wrong session', safeServerSync.droppedWrongSessionCount ?? safeStatus.droppedWrongSessionCount ?? 0),
+      line('Dropped out-of-order', safeServerSync.droppedOutOfOrderCount ?? safeStatus.droppedOutOfOrderCount ?? 0),
+      line('Latest packet age', formatFixedMs(latestPacketAgeMs))
+    );
+  }
+
+  return (
+    <div className="serial-control-card rounded p-3 mb-3">
+      <div className="d-flex justify-content-between align-items-start gap-3">
+        <div style={{ minWidth: 0 }}>
+          <div className="server-small-note">
+            Active publisher: {summaryPublisher} / {summaryStatus}
+          </div>
+          <div className="server-small-note">
+            Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline-secondary"
+          size="sm"
+          onClick={() => setIsOpen((prev) => !prev)}
+          aria-expanded={isOpen}
+          aria-controls="receiver-info-details"
+        >
+          Receiver Info
+        </Button>
+      </div>
+
+      {isOpen ? (
+        <pre id="receiver-info-details" className="receiver-info-text mt-3 mb-0">
+{lines.join('\n')}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
   const safeServerSync = serverSync || {};
   const bridgeEnabled = Boolean(safeServerSync.bridgeEnabled);
@@ -1826,10 +1887,6 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
     || safeServerSync.serverSerial?.status?.activePublisherStatus
     || activePublisher?.status
     || 'NONE';
-  const heartbeatAgeMs = safeServerSync.activePublisherHeartbeatAgeMs
-    ?? safeServerSync.serverSerial?.status?.activePublisherHeartbeatAgeMs
-    ?? activePublisher?.heartbeatAgeMs
-    ?? null;
   if (!isAdmin) return null;
 
   return (
@@ -1841,7 +1898,7 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
             Share Admin Web Serial data with Viewer and Controller clients.
           </div>
           <div className="server-small-note">
-            Active publisher {activePublisherStatus === 'NONE' ? 'NONE' : publisherLabel(activePublisher)} / {activePublisherStatus} / heartbeat {formatAgeMs(heartbeatAgeMs)}
+            Active publisher: {activePublisherStatus === 'NONE' ? 'NONE' : publisherLabel(activePublisher)} / {activePublisherStatus}
           </div>
           <div className="server-small-note">
             Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
@@ -2040,6 +2097,12 @@ export default function ServerPanel({ serverSync, localSerial = null, webSerialC
       <VisualSettingsSummary serverSync={safeServerSync} />
       <ServerSharingSection
         serverSync={safeServerSync}
+        isAdmin={isAdmin}
+        webSerialConnected={webSerialConnected}
+      />
+      <ReceiverInfoSection
+        serverSync={safeServerSync}
+        localSerial={localSerial}
         isAdmin={isAdmin}
         webSerialConnected={webSerialConnected}
       />

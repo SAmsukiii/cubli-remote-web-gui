@@ -1,105 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Accordion, Alert, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 import {
-  CSV_LOG_METADATA_COLUMNS,
   CSV_LOG_NOTE,
+  DEFAULT_CSV_LOG_COLUMNS,
   appendCsvLogSample,
   csvRowFromPacket,
   finalizeCsvLogRows,
 } from './csvLogUtils';
 import TelemetryDataView from './TelemetryDataView';
 
-const CSV_COLUMNS = [
-  ...CSV_LOG_METADATA_COLUMNS,
-  'time_local',
-  'pc_time_ms',
-  'published_at',
-  'source',
-  'source_label',
-  'imu_euler_sequence',
-  'rpy_source',
-  'q0',
-  'q1',
-  'q2',
-  'q3',
-  'norm',
-  'raw_roll_deg',
-  'raw_pitch_deg',
-  'raw_yaw_deg',
-  'roll_deg',
-  'pitch_deg',
-  'yaw_deg',
-  'imu_display_roll_sign',
-  'imu_display_pitch_sign',
-  'imu_display_yaw_sign',
-  'Roll_deg',
-  'Pitch_deg',
-  'Yaw_deg',
-  'desired_roll_deg',
-  'desired_pitch_deg',
-  'desired_yaw_deg',
-  'qerr_deg',
-  'qerr_source',
-  'wx',
-  'wy',
-  'wz',
-  'wz_raw',
-  'wz_display',
-  'body_rate_wz_display_sign',
-  'angular_rate_source',
-  'RPM1',
-  'RPM2',
-  'RPM3',
-  'RPMcmd1',
-  'RPMcmd2',
-  'RPMcmd3',
-  'PWM1',
-  'PWM2',
-  'PWM3',
-  'Tbodycmd_x_Nm',
-  'Tbodycmd_y_Nm',
-  'Tbodycmd_z_Nm',
-  'Tmotor1_Nm',
-  'Tmotor2_Nm',
-  'Tmotor3_Nm',
-  'control_mode',
-  'EBIMU_status',
-  'logging_status',
-  'timestamp',
-  'seq',
-  'enc_x_deg',
-  'enc_y_deg',
-  'enc_z_deg',
-  'enc_q0',
-  'enc_q1',
-  'enc_q2',
-  'enc_q3',
-  'encoder_roll_deg',
-  'encoder_pitch_deg',
-  'encoder_yaw_deg',
-  'encoder_raw_roll_deg',
-  'encoder_raw_pitch_deg',
-  'encoder_raw_yaw_deg',
-  'encoder_display_roll_sign',
-  'encoder_display_pitch_sign',
-  'encoder_display_yaw_sign',
-  'encoder_angle_to_quat_sequence',
-  'encoder_euler_sequence',
-  'encoder_quat_source',
-  'encoder_rpy_source',
-  'encoder_status',
-  'enc_timer_x',
-  'enc_timer_y',
-  'enc_timer_z',
-  'enc_age_x',
-  'enc_age_y',
-  'enc_age_z',
-  'encoder_source',
-  'encoder_updated_at',
-  'lastCommandKey',
-  'lastCommandLabel',
-  'raw',
-];
+const CSV_COLUMNS = DEFAULT_CSV_LOG_COLUMNS;
 
 const EBIMU_COMMANDS = {
   MAG_MODE: 1,
@@ -404,6 +314,9 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const latestCsvPacket = useMemo(() => serial.latestCsvPacket || serial.latestPacket || {}, [serial.latestCsvPacket, serial.latestPacket]);
   const csvLogVersion = serial.csvLogVersion || 0;
   const drainCsvLogSamples = serial.drainCsvLogSamples;
+  const csvTargetHz = serial.csvTargetHz || 50;
+  const csvTargetIntervalMs = serial.csvTargetIntervalMs || 20;
+  const csvLoggedHz = serial.csvLoggedHz || 0;
   const waitingForTelemetry = Boolean(serial.isConnected && !serial.lastReceivedAt);
   const stale = serial.lastReceivedAt ? Date.now() - serial.lastReceivedAt > 500 : false;
   const statusVariant = !serial.isConnected ? 'secondary' : waitingForTelemetry ? 'info' : stale ? 'warning' : 'success';
@@ -428,13 +341,10 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     });
   }, [onCommandEvent]);
 
-  useEffect(() => {
-    if (!csvLogging) return;
-    const samples = typeof drainCsvLogSamples === 'function'
-      ? drainCsvLogSamples()
-      : [latestCsvPacket];
+  const appendCsvSamples = React.useCallback((samples) => {
+    const sampleList = Array.isArray(samples) ? samples : [samples];
     let appendedAny = false;
-    samples.forEach((sample) => {
+    sampleList.forEach((sample) => {
       if (!sample?.updatedAt && !sample?.raw && !sample?.cleanLine) return;
       const appended = appendCsvLogSample(logRef, seenCsvPacketKeysRef, sample, {
         nextLogIndexRef: nextCsvLogIndexRef,
@@ -442,7 +352,16 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       appendedAny = appendedAny || appended;
     });
     if (appendedAny) setCsvSampleCount(logRef.current.length);
-  }, [csvLogging, csvLogVersion, drainCsvLogSamples, latestCsvPacket]);
+    return appendedAny;
+  }, []);
+
+  useEffect(() => {
+    if (!csvLogging) return;
+    const samples = typeof drainCsvLogSamples === 'function'
+      ? drainCsvLogSamples()
+      : [latestCsvPacket];
+    appendCsvSamples(samples);
+  }, [appendCsvSamples, csvLogging, csvLogVersion, drainCsvLogSamples, latestCsvPacket]);
 
   useEffect(() => {
     if (!csvLogging || !csvStartedAt) return undefined;
@@ -659,7 +578,11 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     logRef.current = [];
     seenCsvPacketKeysRef.current = new Set();
     nextCsvLogIndexRef.current = 0;
-    if (typeof drainCsvLogSamples === 'function') drainCsvLogSamples();
+    if (typeof serial.startCsvLogCapture === 'function') {
+      serial.startCsvLogCapture();
+    } else if (typeof drainCsvLogSamples === 'function') {
+      drainCsvLogSamples();
+    }
     const startedAt = Date.now();
     setCsvStartedAt(startedAt);
     setCsvElapsedMs(0);
@@ -668,6 +591,10 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   };
 
   const stopAndDownloadCsv = () => {
+    const finalSamples = typeof serial.stopCsvLogCapture === 'function'
+      ? serial.stopCsvLogCapture()
+      : (typeof drainCsvLogSamples === 'function' ? drainCsvLogSamples() : []);
+    appendCsvSamples(finalSamples);
     setCsvLogging(false);
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
@@ -905,6 +832,8 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
             <div>
               <div className="serial-section-title">CSV Logging</div>
               <div className="server-small-note">Parsed live samples captured only while logging is active.</div>
+              <div className="server-small-note">CSV target rate: {csvTargetHz} Hz ({formatNumber(csvTargetIntervalMs, 0)} ms)</div>
+              <div className="server-small-note">CSV rows/sec: {formatNumber(csvLoggedHz, 1)} Hz</div>
               <div className="server-small-note">{CSV_LOG_NOTE}</div>
             </div>
             <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
