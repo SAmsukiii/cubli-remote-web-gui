@@ -1,24 +1,26 @@
 export const CSV_LOG_METADATA_COLUMNS = [
   'log_index',
   'logged_at_ms',
+  'logged_at_iso',
+  'plot_time_ms',
   'sample_type',
   'packet_key',
   'raw_prefix',
+  'remote_timestamp',
+  'remote_timestamp_us',
+  'seq',
 ];
 
 export const DEFAULT_CSV_LOG_COLUMNS = [
   ...CSV_LOG_METADATA_COLUMNS,
-  'time_local',
-  'pc_time_ms',
-  'published_at',
   'source',
   'source_label',
   'imu_euler_sequence',
   'rpy_source',
-  'q0',
-  'q1',
-  'q2',
-  'q3',
+  'imu_q0',
+  'imu_q1',
+  'imu_q2',
+  'imu_q3',
   'norm',
   'imu_roll_deg',
   'imu_pitch_deg',
@@ -50,14 +52,10 @@ export const DEFAULT_CSV_LOG_COLUMNS = [
   'Tmotor1_Nm',
   'Tmotor2_Nm',
   'Tmotor3_Nm',
+  'commandType',
   'control_mode',
   'EBIMU_status',
   'logging_status',
-  'timestamp',
-  'seq',
-  'enc_x_deg',
-  'enc_y_deg',
-  'enc_z_deg',
   'enc_q0',
   'enc_q1',
   'enc_q2',
@@ -78,15 +76,15 @@ export const DEFAULT_CSV_LOG_COLUMNS = [
   'enc_age_z',
   'encoder_source',
   'encoder_updated_at',
-  'lastCommandKey',
-  'lastCommandLabel',
-  'raw',
+  'enc_x_deg',
+  'enc_y_deg',
+  'enc_z_deg',
 ];
 
-export const CSV_LOG_NOTE = 'CSV is sorted by telemetry timestamp when available. ENC-only rows are stored as encoder reference updates.';
+export const CSV_LOG_NOTE = 'CSV mode: Save every valid Serial sample. Combined/split downloads are sorted by non-decreasing plot_time_ms.';
 
 const TELEMETRY_SAMPLE_TYPES = new Set(['TEL', 'IMU']);
-const VALID_SAMPLE_TYPES = new Set(['TEL', 'IMU', 'ENC', 'COMMAND']);
+const VALID_SAMPLE_TYPES = new Set(['TEL', 'IMU', 'ENC']);
 
 function finiteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
@@ -97,14 +95,6 @@ function finiteNumber(value, fallback = null) {
 function firstPresent(values, fallback = '') {
   for (const value of values) {
     if (value !== null && value !== undefined && value !== '') return value;
-  }
-  return fallback;
-}
-
-function firstFinite(values, fallback = null) {
-  for (const value of values) {
-    const number = finiteNumber(value, null);
-    if (number !== null) return number;
   }
   return fallback;
 }
@@ -189,6 +179,25 @@ function encoderAxisKey(packet = {}) {
   return axisRows.join('|');
 }
 
+function encoderQuaternionKey(packet = {}) {
+  const encoder = packet.encoder || {};
+  const qValues = [
+    packet.enc_q0 ?? packet.encoderQ0 ?? encoder.q0,
+    packet.enc_q1 ?? packet.encoderQ1 ?? encoder.q1,
+    packet.enc_q2 ?? packet.encoderQ2 ?? encoder.q2,
+    packet.enc_q3 ?? packet.encoderQ3 ?? encoder.q3,
+  ].map((value) => finiteNumber(value, null));
+  const timerValues = [
+    packet.enc_timer_x ?? packet.encoderTimerX ?? encoder.timerX ?? encoder.timer_x,
+    packet.enc_timer_y ?? packet.encoderTimerY ?? encoder.timerY ?? encoder.timer_y,
+    packet.enc_timer_z ?? packet.encoderTimerZ ?? encoder.timerZ ?? encoder.timer_z,
+  ].map((value) => finiteNumber(value, null));
+  const hasQ = qValues.some((value) => value !== null);
+  const hasTimer = timerValues.some((value) => value !== null);
+  if (!hasQ && !hasTimer) return '';
+  return `q:${qValues.map((value) => value ?? '').join(':')}|t:${timerValues.map((value) => value ?? '').join(':')}`;
+}
+
 export function makePacketKey(packet = {}, sampleType = detectSampleType(packet), rawPrefix = detectRawPrefix(packet)) {
   const explicit = String(packet.packet_key || packet.packetKey || '').trim();
   if (explicit) return explicit;
@@ -198,6 +207,8 @@ export function makePacketKey(packet = {}, sampleType = detectSampleType(packet)
   const raw = packet.raw || packet.cleanLine || '';
 
   if (sampleType === 'ENC') {
+    const quaternionKey = encoderQuaternionKey(packet);
+    if (quaternionKey) return `ENC:${quaternionKey}`;
     const axisKey = encoderAxisKey(packet);
     if (axisKey) return `ENC:${axisKey}`;
     return `ENC:${simpleHash(raw || JSON.stringify(packet))}`;
@@ -293,6 +304,9 @@ export function prepareCsvLogEntry(packet = {}, options = {}) {
   const metadata = {
     log_index: finiteNumber(options.logIndex, 0),
     logged_at_ms: loggedAtMs,
+    loggedAtMs,
+    logged_at_iso: packet.logged_at_iso || packet.loggedAtIso || isoTimeFromValue(loggedAtMs),
+    plot_time_ms: finiteNumber(packet.plot_time_ms ?? packet.plotTimeMs, null),
     sample_type: sampleType,
     sampleType,
     packet_key: packetKey,
@@ -309,45 +323,21 @@ export function prepareCsvLogEntry(packet = {}, options = {}) {
 
 export function appendCsvLogSample(logRef, seenKeysRef, packet, options = {}) {
   if (!packet) return false;
+  const sampleType = detectSampleType(packet);
+  if (!VALID_SAMPLE_TYPES.has(sampleType)) return false;
   const nextIndexRef = options.nextLogIndexRef;
   const logIndex = finiteNumber(options.logIndex, nextIndexRef?.current ?? 0);
   const entry = prepareCsvLogEntry(packet, {
     logIndex,
-    loggedAtMs: Date.now(),
+    loggedAtMs: packet.logged_at_ms ?? packet.loggedAtMs ?? Date.now(),
   });
   const key = entry.packet_key;
   if (key && seenKeysRef?.current?.has(key)) return false;
   if (key && seenKeysRef?.current) seenKeysRef.current.add(key);
-  logRef.current = [...(logRef.current || []), entry];
+  if (!Array.isArray(logRef.current)) logRef.current = [];
+  logRef.current.push(entry);
   if (nextIndexRef) nextIndexRef.current = logIndex + 1;
   return true;
-}
-
-function sampleSortGroup(row = {}) {
-  const type = detectSampleType(row);
-  if (type === 'TEL') return 0;
-  if (type === 'IMU') return 1;
-  if (type === 'ENC') return 2;
-  return 3;
-}
-
-function sortValue(row = {}) {
-  const type = detectSampleType(row);
-  if (TELEMETRY_SAMPLE_TYPES.has(type)) {
-    const timestamp = firstFinite([row.timestamp, row.ebimu_timestamp_ms, row.ebimuTimestampMs], null);
-    if (timestamp !== null) return [0, timestamp];
-    const seq = firstFinite([row.seq, row.packetCount, row.rxCount], null);
-    if (seq !== null) return [1, seq];
-  }
-  if (type === 'ENC') {
-    const timestamp = firstFinite([row.timestamp, row.ebimu_timestamp_ms, row.ebimuTimestampMs], null);
-    if (timestamp !== null) return [0, timestamp];
-    const timer = firstFinite([row.enc_timer_x, row.encoderTimerX, row.enc_timer_y, row.encoderTimerY, row.enc_timer_z, row.encoderTimerZ], null);
-    if (timer !== null) return [1, timer];
-  }
-  const pcTime = firstFinite([row.pc_time_ms, row.pcTimeMs, row.publishedAt, row.serverReceivedAtMs], null);
-  if (pcTime !== null) return [2, pcTime];
-  return [3, firstFinite([row.logged_at_ms, row.updatedAt, row.log_index], 0)];
 }
 
 export function finalizeCsvLogRows(rows = []) {
@@ -363,20 +353,41 @@ export function finalizeCsvLogRows(rows = []) {
     unique.push({ ...prepared, packet_key: key, packetKey: key });
   });
 
-  unique.sort((a, b) => {
-    const groupDelta = sampleSortGroup(a) - sampleSortGroup(b);
-    if (groupDelta !== 0) return groupDelta;
-    const [priorityA, valueA] = sortValue(a);
-    const [priorityB, valueB] = sortValue(b);
-    if (priorityA !== priorityB) return priorityA - priorityB;
-    if (valueA !== valueB) return valueA - valueB;
+  const loggedTimes = unique
+    .map((row) => finiteNumber(row.logged_at_ms ?? row.loggedAtMs, null))
+    .filter((value) => value !== null);
+  const logStartMs = loggedTimes.length > 0 ? Math.min(...loggedTimes) : Date.now();
+
+  const withPlotTimes = unique.map((row, index) => {
+    const loggedAtMs = finiteNumber(row.logged_at_ms ?? row.loggedAtMs, logStartMs + index);
+    const rawPlotTime = finiteNumber(row.plot_time_ms ?? row.plotTimeMs, null);
+    const plotTimeMs = rawPlotTime !== null ? rawPlotTime : Math.max(0, loggedAtMs - logStartMs);
+    return {
+      ...row,
+      log_index: finiteNumber(row.log_index, index),
+      logged_at_ms: loggedAtMs,
+      logged_at_iso: row.logged_at_iso || row.loggedAtIso || isoTimeFromValue(loggedAtMs),
+      plot_time_ms: plotTimeMs,
+    };
+  });
+
+  withPlotTimes.sort((a, b) => {
+    const plotA = finiteNumber(a.plot_time_ms, 0);
+    const plotB = finiteNumber(b.plot_time_ms, 0);
+    if (plotA !== plotB) return plotA - plotB;
     return finiteNumber(a.log_index, 0) - finiteNumber(b.log_index, 0);
   });
 
-  return unique.map((row, index) => ({
-    ...row,
-    log_index: index,
-  }));
+  let lastPlotTime = 0;
+  return withPlotTimes.map((row, index) => {
+    const plotTime = Math.max(lastPlotTime, finiteNumber(row.plot_time_ms, lastPlotTime));
+    lastPlotTime = plotTime;
+    return {
+      ...row,
+      log_index: index,
+      plot_time_ms: plotTime,
+    };
+  });
 }
 
 function isoTimeFromValue(value) {
@@ -399,29 +410,26 @@ export function normalizeCsvPacketForColumns(packet = {}) {
     raw_prefix: rawPrefix,
     rawPrefix,
   }) : packet;
-  const timeValue = firstPresent([
-    source.publishedAt,
-    source.serverReceivedAtMs,
-    source.updatedAt,
-    source.pc_time_ms,
-    source.pcTimeMs,
-    source.logged_at_ms,
-  ], '');
   const desired = source.latestDesiredAttitude || source.desiredAttitude || {};
 
   return {
     ...source,
     log_index: source.log_index ?? source.logIndex ?? '',
     logged_at_ms: source.logged_at_ms ?? source.loggedAtMs ?? '',
+    logged_at_iso: source.logged_at_iso || source.loggedAtIso || isoTimeFromValue(source.logged_at_ms ?? source.loggedAtMs),
+    plot_time_ms: source.plot_time_ms ?? source.plotTimeMs ?? '',
     sample_type: sampleType,
     packet_key: source.packet_key ?? source.packetKey ?? makePacketKey(source, sampleType, rawPrefix),
     raw_prefix: rawPrefix,
-    time_local: isoTimeFromValue(timeValue),
     pc_time_ms: source.pc_time_ms ?? source.pcTimeMs ?? '',
     published_at: source.publishedAt ?? source.serverReceivedAtMs ?? '',
     source_label: source.sourceLabel ?? source.source_label ?? '',
     imu_euler_sequence: source.imuEulerSequence ?? '',
     rpy_source: source.rpySource ?? '',
+    imu_q0: source.q0 ?? source.q?.[0],
+    imu_q1: source.q1 ?? source.q?.[1],
+    imu_q2: source.q2 ?? source.q?.[2],
+    imu_q3: source.q3 ?? source.q?.[3],
     imu_roll_deg: source.roll_deg ?? source.rollDeg ?? source.Roll_deg,
     imu_pitch_deg: source.pitch_deg ?? source.pitchDeg ?? source.Pitch_deg,
     imu_yaw_deg: source.yaw_deg ?? source.yawDeg ?? source.Yaw_deg,
@@ -437,8 +445,12 @@ export function normalizeCsvPacketForColumns(packet = {}) {
     wz_raw: source.wzRaw ?? source.wz_raw ?? source.wz,
     wz_display: source.wzDisplay ?? source.wz_display,
     body_rate_wz_display_sign: source.bodyRateWzDisplaySign,
+    remote_timestamp: source.remote_timestamp ?? source.timestamp ?? source.ebimu_timestamp_ms ?? source.ebimuTimestampMs,
+    remote_timestamp_us: source.remote_timestamp_us ?? source.timestamp_us ?? source.timestamp,
     timestamp: source.timestamp ?? source.ebimu_timestamp_ms ?? source.ebimuTimestampMs,
+    timestamp_us: source.timestamp_us ?? source.remote_timestamp_us ?? source.timestamp,
     seq: source.seq,
+    commandType: source.commandType ?? source.command_type,
     enc_x_deg: source.enc_x_deg ?? source.encoderXDeg ?? source.encoder?.x,
     enc_y_deg: source.enc_y_deg ?? source.encoderYDeg ?? source.encoder?.y,
     enc_z_deg: source.enc_z_deg ?? source.encoderZDeg ?? source.encoder?.z,

@@ -5,6 +5,7 @@ import {
   DEFAULT_CSV_LOG_COLUMNS,
   appendCsvLogSample,
   csvRowFromPacket,
+  detectSampleType,
   finalizeCsvLogRows,
 } from './csvLogUtils';
 import TelemetryDataView from './TelemetryDataView';
@@ -134,11 +135,10 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
   const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
-  const hasAllAxes = [x, y, z].every((value) => value !== null);
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
   const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
-  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasQuaternion ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
   return {
     x,
     y,
@@ -174,10 +174,8 @@ function buildEncoderRows(packet = {}) {
   const encoder = getEncoderSnapshot(packet);
   const rows = [
     { label: 'Status', value: encoder.status },
-    { label: 'Enc X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
-    { label: 'Enc Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
-    { label: 'Enc Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
-    { label: `Angle to Quaternion [${encoder.angleToQuatSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Gimbal encoder angle fields', value: [encoder.x, encoder.y, encoder.z].some((value) => value !== null) ? 'legacy ENC format' : 'unavailable in current ENC format' },
+    { label: 'Remote Encoder Quaternion', value: encoder.hasQuaternion ? 'available' : 'unavailable' },
     { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
     { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
     { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
@@ -253,6 +251,31 @@ function downloadTextFile(filename, text) {
   URL.revokeObjectURL(url);
 }
 
+function summarizeCsvRows(rows = [], startedAt = null) {
+  const summary = { total: rows.length, telemetry: 0, imu: 0, tel: 0, enc: 0, rateHz: 0 };
+  rows.forEach((row) => {
+    const type = detectSampleType(row);
+    if (type === 'TEL') {
+      summary.tel += 1;
+      summary.telemetry += 1;
+    } else if (type === 'IMU') {
+      summary.imu += 1;
+      summary.telemetry += 1;
+    } else if (type === 'ENC') {
+      summary.enc += 1;
+    }
+  });
+  const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+  summary.rateHz = elapsedMs > 0 ? summary.total / (elapsedMs / 1000) : 0;
+  return summary;
+}
+
+function filterCsvRows(rows = [], kind = 'combined') {
+  if (kind === 'telemetry') return rows.filter((row) => ['TEL', 'IMU'].includes(detectSampleType(row)));
+  if (kind === 'encoder') return rows.filter((row) => detectSampleType(row) === 'ENC');
+  return rows;
+}
+
 function ValueGrid({ title, rows }) {
   return (
     <div className="serial-value-card rounded p-2">
@@ -306,16 +329,16 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const [csvStartedAt, setCsvStartedAt] = useState(null);
   const [csvSampleCount, setCsvSampleCount] = useState(0);
   const [csvElapsedMs, setCsvElapsedMs] = useState(0);
+  const [csvStats, setCsvStats] = useState(() => summarizeCsvRows([]));
   const logRef = useRef([]);
   const seenCsvPacketKeysRef = useRef(new Set());
   const nextCsvLogIndexRef = useRef(0);
+  const csvStartedAtRef = useRef(null);
 
   const latest = useMemo(() => serial.latestPacket || {}, [serial.latestPacket]);
   const latestCsvPacket = useMemo(() => serial.latestCsvPacket || serial.latestPacket || {}, [serial.latestCsvPacket, serial.latestPacket]);
   const csvLogVersion = serial.csvLogVersion || 0;
   const drainCsvLogSamples = serial.drainCsvLogSamples;
-  const csvTargetHz = serial.csvTargetHz || 50;
-  const csvTargetIntervalMs = serial.csvTargetIntervalMs || 20;
   const csvLoggedHz = serial.csvLoggedHz || 0;
   const waitingForTelemetry = Boolean(serial.isConnected && !serial.lastReceivedAt);
   const stale = serial.lastReceivedAt ? Date.now() - serial.lastReceivedAt > 500 : false;
@@ -351,7 +374,11 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       });
       appendedAny = appendedAny || appended;
     });
-    if (appendedAny) setCsvSampleCount(logRef.current.length);
+    if (appendedAny) {
+      const nextStats = summarizeCsvRows(logRef.current, csvStartedAtRef.current);
+      setCsvSampleCount(nextStats.total);
+      setCsvStats(nextStats);
+    }
     return appendedAny;
   }, []);
 
@@ -367,6 +394,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     if (!csvLogging || !csvStartedAt) return undefined;
     const timer = window.setInterval(() => {
       setCsvElapsedMs(Date.now() - csvStartedAt);
+      setCsvStats(summarizeCsvRows(logRef.current, csvStartedAtRef.current));
     }, 500);
     return () => window.clearInterval(timer);
   }, [csvLogging, csvStartedAt]);
@@ -553,6 +581,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   ], [latest]);
 
   const telemetryStatusRows = useMemo(() => [
+    { label: 'commandType', value: formatStatusToken(latest.commandType ?? latest.command_type) },
     { label: 'control_mode', value: formatStatusToken(latest.control_mode) },
     { label: 'EBIMU_status', value: formatStatusToken(latest.EBIMU_status) },
     { label: 'logging_status', value: formatStatusToken(latest.logging_status) },
@@ -584,34 +613,55 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       drainCsvLogSamples();
     }
     const startedAt = Date.now();
+    csvStartedAtRef.current = startedAt;
     setCsvStartedAt(startedAt);
     setCsvElapsedMs(0);
     setCsvSampleCount(0);
+    setCsvStats(summarizeCsvRows([], startedAt));
     setCsvLogging(true);
   };
 
-  const stopAndDownloadCsv = () => {
+  const flushCsvSamples = () => {
     const finalSamples = typeof serial.stopCsvLogCapture === 'function'
       ? serial.stopCsvLogCapture()
       : (typeof drainCsvLogSamples === 'function' ? drainCsvLogSamples() : []);
     appendCsvSamples(finalSamples);
+    const nextStats = summarizeCsvRows(logRef.current, csvStartedAtRef.current);
+    setCsvSampleCount(nextStats.total);
+    setCsvStats(nextStats);
+    return nextStats.total;
+  };
+
+  const stopCsvLogging = () => {
+    flushCsvSamples();
     setCsvLogging(false);
+  };
+
+  const downloadCsv = (kind = 'combined') => {
+    if (csvLogging) {
+      flushCsvSamples();
+      setCsvLogging(false);
+    } else if (typeof drainCsvLogSamples === 'function') {
+      appendCsvSamples(drainCsvLogSamples());
+    }
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
+      setCsvStats(summarizeCsvRows([]));
       setCsvElapsedMs(0);
       setCsvStartedAt(null);
+      csvStartedAtRef.current = null;
       alert('No Web Serial data was logged in this CSV session.');
       return;
     }
-    const sortedRows = finalizeCsvLogRows(logRef.current);
+    const filteredRows = filterCsvRows(logRef.current, kind);
+    if (filteredRows.length === 0) {
+      alert(`No ${kind} rows were logged in this CSV session.`);
+      return;
+    }
+    const sortedRows = finalizeCsvLogRows(filteredRows);
     const csv = [CSV_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
-    downloadTextFile(`cubli_live_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
-    logRef.current = [];
-    seenCsvPacketKeysRef.current = new Set();
-    nextCsvLogIndexRef.current = 0;
-    setCsvSampleCount(0);
-    setCsvElapsedMs(0);
-    setCsvStartedAt(null);
+    const suffix = kind === 'combined' ? 'combined' : kind;
+    downloadTextFile(`cubli_${suffix}_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
   };
 
   return (
@@ -831,23 +881,39 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
         <div className="d-flex justify-content-between align-items-center mb-2">
             <div>
               <div className="serial-section-title">CSV Logging</div>
-              <div className="server-small-note">Parsed live samples captured only while logging is active.</div>
-              <div className="server-small-note">CSV target rate: {csvTargetHz} Hz ({formatNumber(csvTargetIntervalMs, 0)} ms)</div>
-              <div className="server-small-note">CSV rows/sec: {formatNumber(csvLoggedHz, 1)} Hz</div>
+              <div className="server-small-note">CSV mode: Save every valid Serial sample</div>
+              <div className="server-small-note">Estimated logging rate: {formatNumber(csvLoggedHz || csvStats.rateHz, 1)} Hz</div>
               <div className="server-small-note">{CSV_LOG_NOTE}</div>
             </div>
             <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
         </div>
-        <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
+        <div className="server-small-note mb-2">
+          Elapsed {formatDuration(csvElapsedMs)} / total {csvStats.total} / TEL+IMU {csvStats.telemetry} / ENC {csvStats.enc}
+        </div>
         <Row className="g-2">
-          <Col xs={6}>
+          <Col xs={6} md={3}>
             <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
               Start CSV Logging
             </Button>
           </Col>
-          <Col xs={6}>
-            <Button variant="outline-light" className="w-100" onClick={stopAndDownloadCsv} disabled={!csvLogging && csvSampleCount === 0}>
-              Stop &amp; Download CSV
+          <Col xs={6} md={3}>
+            <Button variant="outline-warning" className="w-100" onClick={stopCsvLogging} disabled={!csvLogging}>
+              Stop Logging
+            </Button>
+          </Col>
+          <Col xs={12} md={2}>
+            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('combined')} disabled={!csvLogging && csvSampleCount === 0}>
+              Download Combined CSV
+            </Button>
+          </Col>
+          <Col xs={6} md={2}>
+            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvStats.telemetry === 0}>
+              Download Telemetry CSV
+            </Button>
+          </Col>
+          <Col xs={6} md={2}>
+            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvStats.enc === 0}>
+              Download Encoder CSV
             </Button>
           </Col>
         </Row>

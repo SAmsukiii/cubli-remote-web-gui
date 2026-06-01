@@ -16,11 +16,10 @@ import {
 const MAX_BUFFER_LENGTH = 262144;
 const MAX_RECENT_PACKETS = 10;
 const MAX_CHART_POINTS = 90;
-const MAX_CSV_LOG_QUEUE = 5000;
+const MAX_CSV_LOG_QUEUE = 50000;
 const BAUD_RATE = 115200;
 const UI_FLUSH_INTERVAL_MS = 100;
-const CSV_TARGET_HZ = 50;
-const CSV_TARGET_INTERVAL_MS = 1000 / CSV_TARGET_HZ;
+const CSV_UI_STATS_INTERVAL_MS = 500;
 const ENCODER_AGE_FRESH_MS = DEFAULT_ENCODER_FRESH_MS;
 const ENCODER_SYNC_THRESHOLD_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 const WEB_SERIAL_UNSUPPORTED_MESSAGE = 'Web Serial is supported only on Chrome/Edge desktop over HTTPS or localhost';
@@ -272,15 +271,30 @@ function encoderTimerDelta(timerX, timerY, timerZ) {
   return Math.max(...timers) - Math.min(...timers);
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, ageX, ageY, ageZ, updatedAt, now }) {
+function normalizeEncoderStatus({
+  explicitStatus = '',
+  hasData,
+  hasCompletePose,
+  hasPartialQuaternion,
+  hasInvalidQuaternion,
+  timerX,
+  timerY,
+  timerZ,
+  ageX,
+  ageY,
+  ageZ,
+  updatedAt,
+  now,
+}) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > ENCODER_AGE_FRESH_MS) return 'STALE';
   const ages = [ageX, ageY, ageZ].map(finiteOrNull).filter((value) => value !== null);
   if (ages.length > 0 && Math.max(...ages) > ENCODER_AGE_FRESH_MS) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
-  if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
-  if (!hasAllAxes) return 'PARTIAL';
+  if (['STALE', 'HOLD_LAST', 'MIXED', 'PARTIAL', 'INVALID'].includes(explicit)) return explicit;
+  if (hasInvalidQuaternion) return 'INVALID';
+  if (hasPartialQuaternion || !hasCompletePose) return 'PARTIAL';
 
   const delta = encoderTimerDelta(timerX, timerY, timerZ);
   if (delta !== null && delta > ENCODER_SYNC_THRESHOLD_MS) return 'MIXED';
@@ -344,8 +358,17 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const rawQ1 = firstFiniteValue([input.enc_q1, input.encoderQ1, input.encoder?.q1], fallbackValue('enc_q1', 'encoderQ1', 'q1'));
   const rawQ2 = firstFiniteValue([input.enc_q2, input.encoderQ2, input.encoder?.q2], fallbackValue('enc_q2', 'encoderQ2', 'q2'));
   const rawQ3 = firstFiniteValue([input.enc_q3, input.encoderQ3, input.encoder?.q3], fallbackValue('enc_q3', 'encoderQ3', 'q3'));
+  const rawQValues = [rawQ0, rawQ1, rawQ2, rawQ3];
+  const hasAnyRawQ = rawQValues.some((value) => value !== null);
+  const hasCompleteRawQ = rawQValues.every((value) => value !== null);
+  const normalizedEncoderQ = hasCompleteRawQ
+    ? normalizeQuaternion(rawQValues)
+    : { ok: false, q: null };
+  const hasPartialRawQ = hasAnyRawQ && !hasCompleteRawQ;
+  const hasInvalidRawQ = hasCompleteRawQ && !normalizedEncoderQ.ok;
   const hasData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ].some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
+  const canUseLegacyAngles = !hasAnyRawQ && hasAllAxes;
   const heldAxes = [];
   if (useFallback && incomingX === null && encX !== null) heldAxes.push('X');
   if (useFallback && incomingY === null && encY !== null) heldAxes.push('Y');
@@ -353,7 +376,9 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: input.encoderStatus || input.encoder?.status || (useFallback ? (fallback.encoderStatus || fallback.encoder?.status) : ''),
     hasData,
-    hasAllAxes: hasAllAxes && heldAxes.length === 0,
+    hasCompletePose: normalizedEncoderQ.ok || (canUseLegacyAngles && heldAxes.length === 0),
+    hasPartialQuaternion: hasPartialRawQ,
+    hasInvalidQuaternion: hasInvalidRawQ,
     timerX,
     timerY,
     timerZ,
@@ -363,13 +388,12 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
     updatedAt,
     now,
   });
-  const computedQ = encoderStatus === 'LIVE' && hasAllAxes && heldAxes.length === 0
+  const computedQ = encoderStatus === 'LIVE' && canUseLegacyAngles && heldAxes.length === 0
     ? eulerDegToQuat(encX, encY, encZ, encoderAngleToQuatSequence)
     : null;
-  const normalizedEncoderQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
-    ? normalizeQuaternion([rawQ0, rawQ1, rawQ2, rawQ3])
-    : { ok: false, q: null };
-  const encoderQ = computedQ || (encoderStatus === 'LIVE' && normalizedEncoderQ.ok ? normalizedEncoderQ.q : null);
+  const encoderQ = encoderStatus === 'LIVE'
+    ? (normalizedEncoderQ.ok ? normalizedEncoderQ.q : computedQ)
+    : null;
   const encQ0 = encoderQ ? encoderQ[0] : null;
   const encQ1 = encoderQ ? encoderQ[1] : null;
   const encQ2 = encoderQ ? encoderQ[2] : null;
@@ -377,22 +401,29 @@ function makeEncoderFields(input = {}, fallback = {}, options = {}) {
   const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
   const hasValidQuaternion = Boolean(encoderQ);
-  const encoderQuatSource = computedQ
-    ? 'web-computed from gimbal encoder angles'
-    : (encoderQ ? 'remote encoder quaternion' : '');
+  const usingRemoteQ = Boolean(encoderQ && normalizedEncoderQ.ok);
+  const encoderQuatSource = usingRemoteQ
+    ? 'remote-computed gimbal encoder quaternion'
+    : (computedQ ? 'web-computed from legacy gimbal encoder angles' : '');
   const statusSource = !hasData
     ? ''
     : encoderStatus === 'LIVE' && computedQ
-      ? 'web-computed from gimbal encoder angles'
+      ? 'web-computed from legacy gimbal encoder angles'
+      : encoderStatus === 'LIVE' && usingRemoteQ
+        ? 'remote-computed gimbal encoder quaternion'
       : encoderStatus === 'PARTIAL'
-        ? 'partial gimbal encoder angles'
-        : encoderStatus === 'STALE'
-          ? 'stale gimbal encoder angles'
-          : encoderStatus === 'MIXED'
-            ? 'mixed gimbal encoder angles'
-            : 'gimbal encoder angles';
+        ? 'partial gimbal encoder quaternion'
+        : encoderStatus === 'INVALID'
+          ? 'invalid gimbal encoder quaternion'
+          : encoderStatus === 'STALE'
+            ? 'stale gimbal encoder quaternion'
+            : encoderStatus === 'MIXED'
+              ? 'mixed gimbal encoder timers'
+              : 'gimbal encoder reference';
   const source = statusSource || input.encoderSource || input.encoder?.source || (useFallback ? (fallback.encoderSource || fallback.encoder?.source || '') : '');
-  const encoderRpySource = encoderEuler ? `web-computed encoder quaternion ${encoderEulerSequence}` : '';
+  const encoderRpySource = encoderEuler
+    ? (usingRemoteQ ? 'web-computed from remote encoder quaternion' : 'web-computed from legacy encoder angle quaternion')
+    : '';
 
   return {
     enc_x_deg: encX,
@@ -599,6 +630,10 @@ function parseImuCsvLine(line) {
       EBIMU_status: parts[30] ?? '',
       logging_status: parts[31] ?? '',
       ebimu_timestamp_ms: timestamp,
+      timestamp,
+      timestamp_us: timestamp,
+      remote_timestamp: timestamp,
+      remote_timestamp_us: timestamp,
       seq,
       rxCount: seq,
     };
@@ -677,6 +712,11 @@ function parseTelCsvLine(line) {
     const timestamp = numberAt(timestampIndex, 'timestamp', false);
     const seq = numberAt(seqIndex, 'seq', false);
 
+    const commandType = parseOptionalNumberToken(parts[statusIndex]);
+    const controlMode = commandType !== null
+      ? `commandType:${commandType}`
+      : (parts[statusIndex] ?? '');
+
     const packet = {
       ok: true,
       cleanLine: clean,
@@ -709,10 +749,16 @@ function parseTelCsvLine(line) {
       Tmotor1_Nm: Tmotor1,
       Tmotor2_Nm: Tmotor2,
       Tmotor3_Nm: Tmotor3,
+      commandType: commandType !== null ? commandType : undefined,
+      command_type: commandType !== null ? commandType : undefined,
       ebimu_timestamp_ms: Number.isFinite(timestamp) ? timestamp : 0,
+      timestamp: Number.isFinite(timestamp) ? timestamp : undefined,
+      timestamp_us: Number.isFinite(timestamp) ? timestamp : undefined,
+      remote_timestamp: Number.isFinite(timestamp) ? timestamp : undefined,
+      remote_timestamp_us: Number.isFinite(timestamp) ? timestamp : undefined,
       seq: Number.isFinite(seq) ? seq : 0,
       rxCount: Number.isFinite(seq) ? seq : 0,
-      control_mode: parts[statusIndex] ?? '',
+      control_mode: controlMode,
       EBIMU_status: parts[statusIndex + 1] ?? '',
       logging_status: parts[statusIndex + 2] ?? '',
     };
@@ -897,6 +943,20 @@ function parseEncCsvLine(line) {
       encoderValues.encoderSource = `Gimbal Rotary Encoder ${axis.toUpperCase()} packet`;
       if (parts.length > 4 && optionalAt(4) === null) encoderValues.encoderStatus = normalizeStatus(parts[4]);
       if (parts.length > 5) encoderValues.encoderStatus = normalizeStatus(parts[5]);
+    } else if (parts.length === 11 && parts.slice(1, 11).every((_, index) => optionalAt(index + 1) !== null)) {
+      encoderValues.enc_q0 = optionalAt(1);
+      encoderValues.enc_q1 = optionalAt(2);
+      encoderValues.enc_q2 = optionalAt(3);
+      encoderValues.enc_q3 = optionalAt(4);
+      encoderValues.enc_timer_x = optionalAt(5);
+      encoderValues.enc_timer_y = optionalAt(6);
+      encoderValues.enc_timer_z = optionalAt(7);
+      encoderValues.enc_age_x = optionalAt(8);
+      encoderValues.enc_age_y = optionalAt(9);
+      encoderValues.enc_age_z = optionalAt(10);
+      encoderValues.encoderSource = 'Gimbal rotary encoder reference';
+      encoderValues.encoderQuatSource = 'remote-computed gimbal encoder quaternion';
+      encoderValues.encoderQuaternionOnly = true;
     } else {
       encoderValues.enc_x_deg = optionalAt(1);
       encoderValues.enc_y_deg = optionalAt(2);
@@ -915,8 +975,8 @@ function parseEncCsvLine(line) {
       encoderValues.enc_age_x = optionalAt(7);
       encoderValues.enc_age_y = optionalAt(8);
       encoderValues.enc_age_z = optionalAt(9);
-      encoderValues.encoderSource = 'Gimbal Rotary Encoder snapshot with timers and ages';
-    } else if (!axis && (parts.length === 8 || parts.length >= 11)) {
+      encoderValues.encoderSource = 'Legacy gimbal encoder angle snapshot with timers and ages';
+    } else if (!axis && (parts.length === 8 || parts.length >= 12)) {
       encoderValues.enc_q0 = optionalAt(4);
       encoderValues.enc_q1 = optionalAt(5);
       encoderValues.enc_q2 = optionalAt(6);
@@ -940,11 +1000,14 @@ function parseEncCsvLine(line) {
 
     const hasAxisValue = [encoderValues.enc_x_deg, encoderValues.enc_y_deg, encoderValues.enc_z_deg]
       .some((value) => value !== null);
-    if (!hasAxisValue) throw new Error('ENC line has no numeric encoder axis');
+    const hasQuaternionValue = [encoderValues.enc_q0, encoderValues.enc_q1, encoderValues.enc_q2, encoderValues.enc_q3]
+      .some((value) => value !== null);
+    if (!hasAxisValue && !hasQuaternionValue) throw new Error('ENC line has no numeric encoder axis or quaternion');
 
     return {
       ok: true,
       encoderOnly: true,
+      encoderQuaternionOnly: Boolean(encoderValues.encoderQuaternionOnly),
       cleanLine: clean,
       raw: clean,
       rawPrefix: 'ENC',
@@ -1044,6 +1107,7 @@ export default function useEsp32Serial(options = {}) {
   const csvLogQueueRef = useRef([]);
   const csvCaptureEnabledRef = useRef(false);
   const lastCsvSampleClockRef = useRef(null);
+  const lastCsvUiStatsUpdateRef = useRef(0);
   const csvLoggedRateWindowRef = useRef([]);
   const recentPacketsRef = useRef([]);
   const chartDataRef = useRef([]);
@@ -1075,40 +1139,26 @@ export default function useEsp32Serial(options = {}) {
   const pushCsvLogPacket = useCallback((packet) => {
     if (!csvCaptureEnabledRef.current || !packet) return false;
     const sampleType = detectCsvSampleType(packet);
-    if (sampleType !== 'TEL' && sampleType !== 'IMU' && sampleType !== 'ENC' && sampleType !== 'COMMAND') return false;
+    if (sampleType !== 'TEL' && sampleType !== 'IMU' && sampleType !== 'ENC') return false;
 
     const now = Date.now();
     const nextClock = resolveCsvSampleClock(packet, lastCsvSampleClockRef.current, now);
-    const lastClock = lastCsvSampleClockRef.current;
-    if (
-      sampleType !== 'COMMAND'
-      &&
-      lastClock
-      && (
-        (
-          lastClock.source === nextClock.source
-          && nextClock.timeMs - lastClock.timeMs < CSV_TARGET_INTERVAL_MS
-        )
-        || (
-          lastClock.source !== nextClock.source
-          && now - (lastClock.loggedAtMs ?? now) < CSV_TARGET_INTERVAL_MS
-        )
-      )
-    ) {
-      return false;
-    }
-
-    const acceptedClock = { ...nextClock, loggedAtMs: now };
     const csvPacket = {
       ...packet,
+      logged_at_ms: now,
+      loggedAtMs: now,
+      logged_at_iso: new Date(now).toISOString(),
       csvSampleTimeMs: nextClock.timeMs,
       csvSampleClock: nextClock.source,
       sample_type: packet.sample_type || packet.sampleType || sampleType,
       sampleType: packet.sampleType || packet.sample_type || sampleType,
     };
-    lastCsvSampleClockRef.current = acceptedClock;
+    lastCsvSampleClockRef.current = { ...nextClock, loggedAtMs: now };
     latestCsvPacketRef.current = csvPacket;
-    csvLogQueueRef.current = [...csvLogQueueRef.current, csvPacket].slice(-MAX_CSV_LOG_QUEUE);
+    csvLogQueueRef.current.push(csvPacket);
+    if (csvLogQueueRef.current.length > MAX_CSV_LOG_QUEUE) {
+      csvLogQueueRef.current.splice(0, csvLogQueueRef.current.length - MAX_CSV_LOG_QUEUE);
+    }
     csvLoggedRateWindowRef.current = [
       ...csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000),
       now,
@@ -1134,29 +1184,8 @@ export default function useEsp32Serial(options = {}) {
   const recordTargetAttitudeCommand = useCallback((roll, pitch, yaw, line = '') => {
     const desired = buildDesiredAttitude(roll, pitch, yaw, targetRpySequence);
     applyLatestDesiredAttitude(desired);
-    pushCsvLogPacket(patchPacketWithDesired({
-      ok: true,
-      source: 'local-web-serial-command',
-      sourceLabel: 'Local Web Serial Command',
-      sample_type: 'COMMAND',
-      sampleType: 'COMMAND',
-      rawPrefix: 'CMD',
-      raw_prefix: 'CMD',
-      raw: line,
-      cleanLine: line,
-      pc_time_ms: desired.updatedAtMs,
-      pcTimeMs: desired.updatedAtMs,
-      updatedAt: desired.updatedAtMs,
-      lastCommandKey: 'targetAttitude',
-      lastCommandLabel: 'Send Target Attitude',
-      lastCommandParams: { roll: desired.rollDeg, pitch: desired.pitchDeg, yaw: desired.yawDeg },
-      lastCommandLineSent: line,
-      lastCommandAt: desired.updatedAt,
-      lastCommandAllowed: true,
-      lastCommandDenied: false,
-    }, desired));
     return desired;
-  }, [applyLatestDesiredAttitude, pushCsvLogPacket, targetRpySequence]);
+  }, [applyLatestDesiredAttitude, targetRpySequence]);
 
   const drainCsvLogSamples = useCallback(() => {
     const samples = csvLogQueueRef.current;
@@ -1168,6 +1197,7 @@ export default function useEsp32Serial(options = {}) {
     csvLogQueueRef.current = [];
     latestCsvPacketRef.current = null;
     lastCsvSampleClockRef.current = null;
+    lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
     csvCaptureEnabledRef.current = true;
     setLatestCsvPacket(null);
@@ -1179,6 +1209,7 @@ export default function useEsp32Serial(options = {}) {
     csvCaptureEnabledRef.current = false;
     const samples = drainCsvLogSamples();
     lastCsvSampleClockRef.current = null;
+    lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
     setCsvLoggedHz(0);
     return samples;
@@ -1188,17 +1219,21 @@ export default function useEsp32Serial(options = {}) {
     const timer = setInterval(() => {
       const now = Date.now();
       csvLoggedRateWindowRef.current = csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000);
-      setCsvLoggedHz((prev) => {
-        const next = csvCaptureEnabledRef.current ? csvLoggedRateWindowRef.current.length : 0;
-        return prev === next ? prev : next;
-      });
+      const shouldUpdateCsvStats = now - lastCsvUiStatsUpdateRef.current >= CSV_UI_STATS_INTERVAL_MS;
+      if (shouldUpdateCsvStats) {
+        lastCsvUiStatsUpdateRef.current = now;
+        setCsvLoggedHz((prev) => {
+          const next = csvCaptureEnabledRef.current ? csvLoggedRateWindowRef.current.length : 0;
+          return prev === next ? prev : next;
+        });
+      }
 
       if (!pendingUiFlushRef.current) return;
       pendingUiFlushRef.current = false;
 
       setLatestPacket(latestPacketRef.current);
       setLatestCsvPacket(latestCsvPacketRef.current);
-      if (csvLogQueueRef.current.length > 0) {
+      if (shouldUpdateCsvStats && csvLogQueueRef.current.length > 0) {
         setCsvLogVersion((version) => version + 1);
       }
       setRecentPackets([...recentPacketsRef.current]);
@@ -1223,10 +1258,10 @@ export default function useEsp32Serial(options = {}) {
       const now = parsed.encoderUpdatedAt || Date.now();
       recordInputRate(now);
       const encoderFields = makeEncoderFields(
-        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
+        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal rotary encoder reference' },
         latestEncoderRef.current,
         {
-          useFallback: true,
+          useFallback: !parsed.encoderQuaternionOnly,
           now,
           encoderEulerSequence,
           encoderAngleToQuatSequence,
@@ -1239,7 +1274,7 @@ export default function useEsp32Serial(options = {}) {
       encoderCountRef.current += 1;
       countersRef.current.valid += 1;
       const encoderLogFields = makeEncoderFields(
-        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal Rotary Encoder packet' },
+        { ...parsed, encoderUpdatedAt: now, encoderSource: parsed.encoderSource || 'Gimbal rotary encoder reference' },
         {},
         {
           useFallback: false,
@@ -1393,10 +1428,16 @@ export default function useEsp32Serial(options = {}) {
       Tmotor1_Nm: Number.isFinite(parsed.Tmotor1_Nm) ? parsed.Tmotor1_Nm : undefined,
       Tmotor2_Nm: Number.isFinite(parsed.Tmotor2_Nm) ? parsed.Tmotor2_Nm : undefined,
       Tmotor3_Nm: Number.isFinite(parsed.Tmotor3_Nm) ? parsed.Tmotor3_Nm : undefined,
+      commandType: Number.isFinite(parsed.commandType) ? parsed.commandType : undefined,
+      command_type: Number.isFinite(parsed.command_type) ? parsed.command_type : undefined,
       control_mode: parsed.control_mode ?? '',
       EBIMU_status: parsed.EBIMU_status ?? '',
       logging_status: parsed.logging_status ?? '',
       ebimu_timestamp_ms: Number.isFinite(parsed.ebimu_timestamp_ms) ? parsed.ebimu_timestamp_ms : 0,
+      timestamp: Number.isFinite(parsed.timestamp) ? parsed.timestamp : parsed.ebimu_timestamp_ms,
+      timestamp_us: Number.isFinite(parsed.timestamp_us) ? parsed.timestamp_us : parsed.remote_timestamp_us,
+      remote_timestamp: Number.isFinite(parsed.remote_timestamp) ? parsed.remote_timestamp : parsed.ebimu_timestamp_ms,
+      remote_timestamp_us: Number.isFinite(parsed.remote_timestamp_us) ? parsed.remote_timestamp_us : parsed.timestamp_us,
       seq: Number.isFinite(parsed.seq) ? parsed.seq : 0,
       rxCount: Number.isFinite(parsed.rxCount) ? parsed.rxCount : 0,
       ...encoderFields,
@@ -1813,6 +1854,7 @@ export default function useEsp32Serial(options = {}) {
     csvLogQueueRef.current = [];
     csvCaptureEnabledRef.current = false;
     lastCsvSampleClockRef.current = null;
+    lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
     recentPacketsRef.current = [];
     chartDataRef.current = [];
@@ -1870,8 +1912,8 @@ export default function useEsp32Serial(options = {}) {
     latestCsvPacket,
     latestDesiredAttitude,
     csvLogVersion,
-    csvTargetHz: CSV_TARGET_HZ,
-    csvTargetIntervalMs: CSV_TARGET_INTERVAL_MS,
+    csvMode: 'Save every valid Serial sample',
+    csvUiStatsIntervalMs: CSV_UI_STATS_INTERVAL_MS,
     csvLoggedHz,
     recentPackets,
     chartData,

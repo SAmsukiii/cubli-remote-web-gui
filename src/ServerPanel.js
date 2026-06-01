@@ -6,6 +6,7 @@ import {
   DEFAULT_CSV_LOG_COLUMNS,
   appendCsvLogSample,
   csvRowFromPacket,
+  detectSampleType,
   finalizeCsvLogRows,
 } from './csvLogUtils';
 import { eulerDegToQuat, normalizeEulerSequence } from './telemetryNormalize';
@@ -145,11 +146,10 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
   const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
-  const hasAllAxes = [x, y, z].every((value) => value !== null);
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
   const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
-  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasAllAxes ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
+  const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasQuaternion ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
   return {
     x,
     y,
@@ -185,10 +185,8 @@ function buildEncoderRows(packet = {}) {
   const encoder = getEncoderSnapshot(packet);
   const rows = [
     { label: 'Status', value: encoder.status },
-    { label: 'Enc X [deg]', value: encoder.x !== null ? formatNumber(encoder.x, 2) : '-' },
-    { label: 'Enc Y [deg]', value: encoder.y !== null ? formatNumber(encoder.y, 2) : '-' },
-    { label: 'Enc Z [deg]', value: encoder.z !== null ? formatNumber(encoder.z, 2) : '-' },
-    { label: `Angle to Quaternion [${encoder.angleToQuatSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
+    { label: 'Gimbal encoder angle fields', value: [encoder.x, encoder.y, encoder.z].some((value) => value !== null) ? 'legacy ENC format' : 'unavailable in current ENC format' },
+    { label: 'Remote Encoder Quaternion', value: encoder.hasQuaternion ? 'available' : 'unavailable' },
     { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
     { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
     { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
@@ -374,6 +372,12 @@ function downloadTextFile(filename, text) {
 
 function packetToCsvRow(packet) {
   return csvRowFromPacket(packet, LOG_COLUMNS);
+}
+
+function filterCsvRows(rows = [], kind = 'combined') {
+  if (kind === 'telemetry') return rows.filter((row) => ['TEL', 'IMU'].includes(detectSampleType(row)));
+  if (kind === 'encoder') return rows.filter((row) => detectSampleType(row) === 'ENC');
+  return rows;
 }
 
 function ValueRow({ label, value }) {
@@ -690,7 +694,7 @@ function RpyConventionSection({ serverSync }) {
       <div className="server-small-note mt-2">
         Current RPY [{imuSequence}] · Source: IMU/TEL quaternion · 3D source: quaternion q0~q3 · Encoder source: Gimbal rotary encoder [{encoderSequence}].
       </div>
-      <div className="serial-subsection-title mt-3 mb-2">Encoder Angle to Quaternion Convention</div>
+      <div className="serial-subsection-title mt-3 mb-2">Gimbal Encoder Reference Convention</div>
       <div className="server-small-note mb-2">
         This converts gimbal rotary encoder X/Y/Z angles into a reference quaternion. It does not change IMU attitude rendering.
       </div>
@@ -1455,6 +1459,7 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
   ], [latest]);
 
   const statusRows = useMemo(() => [
+    { label: 'commandType', value: formatStatusToken(latest.commandType ?? latest.command_type) },
     { label: 'control_mode', value: formatStatusToken(latest.control_mode) },
     { label: 'EBIMU_status', value: formatStatusToken(latest.EBIMU_status) },
     { label: 'logging_status', value: formatStatusToken(latest.logging_status) },
@@ -1517,9 +1522,6 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
         RPMcmd1: n(row.RPMcmd1),
         RPMcmd2: n(row.RPMcmd2),
         RPMcmd3: n(row.RPMcmd3),
-        encX: n(row.encX ?? row.enc_x_deg ?? row.encoderXDeg),
-        encY: n(row.encY ?? row.enc_y_deg ?? row.encoderYDeg),
-        encZ: n(row.encZ ?? row.enc_z_deg ?? row.encoderZDeg),
         encoderRoll: n(row.encoderRoll ?? row.encoderRollDeg),
         encoderPitch: n(row.encoderPitch ?? row.encoderPitchDeg),
         encoderYaw: n(row.encoderYaw ?? row.encoderYawDeg),
@@ -1645,18 +1647,6 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
             </Col>
             <Col xs={12} xl={6}>
               <LiveTelemetryChart
-                title="Gimbal Encoder Reference Angle"
-                data={livePlotData}
-                yLabel="deg"
-                lines={[
-                  { key: 'encX', name: 'Enc X [deg]', stroke: '#20c997' },
-                  { key: 'encY', name: 'Enc Y [deg]', stroke: '#ffa94d' },
-                  { key: 'encZ', name: 'Enc Z [deg]', stroke: '#f06595' },
-                ]}
-              />
-            </Col>
-            <Col xs={12} xl={6}>
-              <LiveTelemetryChart
                 title={`Gimbal Encoder RPY [${latest.encoderEulerSequence || 'ZYX'}]`}
                 data={livePlotData}
                 yLabel="deg"
@@ -1745,8 +1735,12 @@ function DataLoggingSection({ latestPacket }) {
     setCsvLogging(true);
   };
 
-  const stopAndDownloadCsv = () => {
+  const stopCsvLogging = () => {
     setCsvLogging(false);
+  };
+
+  const downloadCsv = (kind = 'combined') => {
+    if (csvLogging) setCsvLogging(false);
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
       setCsvElapsedMs(0);
@@ -1754,15 +1748,15 @@ function DataLoggingSection({ latestPacket }) {
       alert('No shared live data was logged in this CSV session.');
       return;
     }
-    const sortedRows = finalizeCsvLogRows(logRef.current);
+    const filteredRows = filterCsvRows(logRef.current, kind);
+    if (filteredRows.length === 0) {
+      alert(`No ${kind} rows were logged in this CSV session.`);
+      return;
+    }
+    const sortedRows = finalizeCsvLogRows(filteredRows);
     const csv = [LOG_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
-    downloadTextFile(`cubli_live_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
-    logRef.current = [];
-    seenCsvPacketKeysRef.current = new Set();
-    nextCsvLogIndexRef.current = 0;
-    setCsvSampleCount(0);
-    setCsvElapsedMs(0);
-    setCsvStartedAt(null);
+    const suffix = kind === 'combined' ? 'combined' : kind;
+    downloadTextFile(`cubli_shared_${suffix}_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
   };
 
   return (
@@ -1770,21 +1764,36 @@ function DataLoggingSection({ latestPacket }) {
       <div className="d-flex justify-content-between align-items-center mb-2">
           <div>
             <div className="serial-section-title">CSV Logging</div>
-            <div className="server-small-note">Parsed shared live samples captured only while logging is active.</div>
+            <div className="server-small-note">CSV mode: Save every valid shared sample received by this viewer.</div>
             <div className="server-small-note">{CSV_LOG_NOTE}</div>
           </div>
         <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
       </div>
       <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
       <Row className="g-2">
-        <Col xs={6}>
+        <Col xs={6} md={3}>
           <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
             Start CSV Logging
           </Button>
         </Col>
-        <Col xs={6}>
-          <Button variant="outline-light" className="w-100" onClick={stopAndDownloadCsv} disabled={!csvLogging && csvSampleCount === 0}>
-            Stop &amp; Download CSV
+        <Col xs={6} md={3}>
+          <Button variant="outline-warning" className="w-100" onClick={stopCsvLogging} disabled={!csvLogging}>
+            Stop Logging
+          </Button>
+        </Col>
+        <Col xs={12} md={2}>
+          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('combined')} disabled={!csvLogging && csvSampleCount === 0}>
+            Download Combined CSV
+          </Button>
+        </Col>
+        <Col xs={6} md={2}>
+          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvSampleCount === 0}>
+            Download Telemetry CSV
+          </Button>
+        </Col>
+        <Col xs={6} md={2}>
+          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvSampleCount === 0}>
+            Download Encoder CSV
           </Button>
         </Col>
       </Row>

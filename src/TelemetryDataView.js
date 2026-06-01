@@ -9,7 +9,7 @@ const FIELD_GROUPS = Object.freeze([
     label: 'IMU / Attitude',
     fields: [
       'q0', 'q1', 'q2', 'q3', 'rollDeg', 'pitchDeg', 'yawDeg',
-      'imuEulerSequence', 'qerr_deg', 'source', 'timestamp', 'seq',
+      'imuEulerSequence', 'qerr_deg', 'source', 'timestamp', 'seq', 'commandType',
     ],
   },
   {
@@ -21,10 +21,9 @@ const FIELD_GROUPS = Object.freeze([
     id: 'encoder',
     label: 'Gimbal Encoder',
     fields: [
-      'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
       'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
       'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
-      'encoderAngleToQuatSequence', 'encoderEulerSequence', 'encoderStatus', 'encoderSource',
+      'encoderEulerSequence', 'encoderStatus', 'encoderSource',
       'encoderQuatSource', 'encoderRpySource',
       'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
       'enc_age_x', 'enc_age_y', 'enc_age_z',
@@ -64,10 +63,9 @@ const PRESETS = Object.freeze([
     fields: [
       'q0', 'q1', 'q2', 'q3', 'rollDeg', 'pitchDeg', 'yawDeg', 'imuEulerSequence',
       'qerr_deg', 'source', 'timestamp', 'seq',
-      'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
       'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
       'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
-      'encoderAngleToQuatSequence', 'encoderEulerSequence', 'encoderStatus', 'encoderSource',
+      'encoderEulerSequence', 'encoderStatus', 'encoderSource',
       'encoderQuatSource',
       'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
       'enc_age_x', 'enc_age_y', 'enc_age_z',
@@ -78,7 +76,7 @@ const PRESETS = Object.freeze([
   {
     id: 'demo_basic',
     label: 'Demo Basic',
-    fields: ['rollDeg', 'pitchDeg', 'yawDeg', 'qerr_deg', 'enc_x_deg', 'enc_y_deg', 'enc_z_deg', 'encoderStatus', 'RPM1', 'RPM2', 'RPM3'],
+    fields: ['rollDeg', 'pitchDeg', 'yawDeg', 'qerr_deg', 'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg', 'encoderStatus', 'RPM1', 'RPM2', 'RPM3'],
   },
   {
     id: 'control',
@@ -89,10 +87,9 @@ const PRESETS = Object.freeze([
     id: 'encoder',
     label: 'Encoder',
     fields: [
-      'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
       'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
       'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
-      'encoderAngleToQuatSequence', 'encoderStatus', 'encoderSource',
+      'encoderEulerSequence', 'encoderStatus', 'encoderSource',
       'encoderQuatSource',
       'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
       'enc_age_x', 'enc_age_y', 'enc_age_z',
@@ -124,15 +121,16 @@ const FIELD_META = Object.freeze({
   source: { label: 'Source', section: 'imu', value: (p) => p.sample_type || p.sampleType || p.rawPrefix || p.sourceLabel || p.source },
   timestamp: { label: 'timestamp', section: 'imu', digits: 0, value: (p) => p.timestamp ?? p.ebimu_timestamp_ms ?? p.ebimuTimestampMs },
   seq: { label: 'seq', section: 'imu', digits: 0, value: (p) => p.seq ?? p.rxCount },
+  commandType: { label: 'commandType', section: 'imu', digits: 0, value: (p) => p.commandType ?? p.command_type },
 
   wx: { label: 'wx', section: 'motor', unit: 'rad/s', digits: 4, value: (p) => p.wx },
   wy: { label: 'wy', section: 'motor', unit: 'rad/s', digits: 4, value: (p) => p.wy },
   wz: { label: 'wz', section: 'motor', unit: 'rad/s', digits: 4, value: (p) => p.wzRaw ?? p.wz },
   angularRateSource: { label: 'angular rate source', section: 'motor', value: (p) => p.angularRateSource },
 
-  enc_x_deg: { label: 'Enc X', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_x_deg ?? p.encoderXDeg ?? p.encoder?.x },
-  enc_y_deg: { label: 'Enc Y', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_y_deg ?? p.encoderYDeg ?? p.encoder?.y },
-  enc_z_deg: { label: 'Enc Z', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_z_deg ?? p.encoderZDeg ?? p.encoder?.z },
+  enc_x_deg: { label: 'Legacy Enc X', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_x_deg ?? p.encoderXDeg ?? p.encoder?.x },
+  enc_y_deg: { label: 'Legacy Enc Y', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_y_deg ?? p.encoderYDeg ?? p.encoder?.y },
+  enc_z_deg: { label: 'Legacy Enc Z', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_z_deg ?? p.encoderZDeg ?? p.encoder?.z },
   enc_q0: { label: 'enc_q0', section: 'encoder', digits: 6, value: (p) => p.enc_q0 ?? p.encoderQ0 ?? p.encoder?.q0 },
   enc_q1: { label: 'enc_q1', section: 'encoder', digits: 6, value: (p) => p.enc_q1 ?? p.encoderQ1 ?? p.encoder?.q1 },
   enc_q2: { label: 'enc_q2', section: 'encoder', digits: 6, value: (p) => p.enc_q2 ?? p.encoderQ2 ?? p.encoder?.q2 },
@@ -140,7 +138,7 @@ const FIELD_META = Object.freeze({
   encoderRollDeg: { label: 'Encoder Roll', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderRollDeg ?? p.encoder?.rollDeg },
   encoderPitchDeg: { label: 'Encoder Pitch', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderPitchDeg ?? p.encoder?.pitchDeg },
   encoderYawDeg: { label: 'Encoder Yaw', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderYawDeg ?? p.encoder?.yawDeg },
-  encoderAngleToQuatSequence: { label: 'Angle to quat sequence', section: 'encoder', value: (p) => p.encoderAngleToQuatSequence ?? p.encoder?.angleToQuatSequence ?? 'ZYX' },
+  encoderAngleToQuatSequence: { label: 'Legacy angle sequence', section: 'encoder', value: (p) => p.encoderAngleToQuatSequence ?? p.encoder?.angleToQuatSequence ?? 'ZYX' },
   encoderEulerSequence: { label: 'Encoder RPY sequence', section: 'encoder', value: (p) => p.encoderEulerSequence ?? p.encoder?.eulerSequence ?? 'ZYX' },
   encoderStatus: { label: 'Encoder status', section: 'encoder', value: (p) => p.encoderStatus ?? p.encoder?.status },
   encoderSource: { label: 'Encoder source', section: 'encoder', value: (p) => p.encoderSource ?? p.encoder?.source },

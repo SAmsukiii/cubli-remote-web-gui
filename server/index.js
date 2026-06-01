@@ -315,6 +315,8 @@ const COMPACT_LIVE_PACKET_KEYS = Object.freeze([
   'Tmotor1_Nm',
   'Tmotor2_Nm',
   'Tmotor3_Nm',
+  'commandType',
+  'command_type',
   'enc_x_deg',
   'enc_y_deg',
   'enc_z_deg',
@@ -360,6 +362,9 @@ const COMPACT_LIVE_PACKET_KEYS = Object.freeze([
   'EBIMU_status',
   'logging_status',
   'timestamp',
+  'timestamp_us',
+  'remote_timestamp',
+  'remote_timestamp_us',
   'ebimu_timestamp_ms',
   'ebimuTimestampMs',
   'seq',
@@ -924,15 +929,31 @@ function encoderTimerDelta(timerX, timerY, timerZ) {
   return Math.max(...timers) - Math.min(...timers);
 }
 
-function normalizeEncoderStatus({ explicitStatus = '', hasData, hasAllAxes, timerX, timerY, timerZ, ageX, ageY, ageZ, updatedAt, now, freshMs }) {
+function normalizeEncoderStatus({
+  explicitStatus = '',
+  hasData,
+  hasCompletePose,
+  hasPartialQuaternion,
+  hasInvalidQuaternion,
+  timerX,
+  timerY,
+  timerZ,
+  ageX,
+  ageY,
+  ageZ,
+  updatedAt,
+  now,
+  freshMs,
+}) {
   if (!hasData) return 'NONE';
   if (updatedAt && now - updatedAt > freshMs) return 'STALE';
   const ages = [ageX, ageY, ageZ].map((value) => strictFiniteNumber(value, null)).filter((value) => value !== null);
   if (ages.length > 0 && Math.max(...ages) > freshMs) return 'STALE';
 
   const explicit = String(explicitStatus || '').trim().toUpperCase();
-  if (explicit === 'STALE' || explicit === 'HOLD_LAST' || explicit === 'MIXED') return explicit;
-  if (!hasAllAxes) return 'PARTIAL';
+  if (['STALE', 'HOLD_LAST', 'MIXED', 'PARTIAL', 'INVALID'].includes(explicit)) return explicit;
+  if (hasInvalidQuaternion) return 'INVALID';
+  if (hasPartialQuaternion || !hasCompletePose) return 'PARTIAL';
 
   const delta = encoderTimerDelta(timerX, timerY, timerZ);
   if (delta !== null && delta > ENCODER_SYNC_THRESHOLD_MS) return 'MIXED';
@@ -970,13 +991,22 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const rawQ1 = firstStrictFinite([packet.enc_q1, packet.encoderQ1, nested.q1], null);
   const rawQ2 = firstStrictFinite([packet.enc_q2, packet.encoderQ2, nested.q2], null);
   const rawQ3 = firstStrictFinite([packet.enc_q3, packet.encoderQ3, nested.q3], null);
+  const rawQValues = [rawQ0, rawQ1, rawQ2, rawQ3];
+  const hasAnyRawQ = rawQValues.some((value) => value !== null);
+  const hasCompleteRawQ = rawQValues.every((value) => value !== null);
+  const rawQ = hasCompleteRawQ ? normalizeQuat(rawQValues) : null;
+  const hasPartialRawQ = hasAnyRawQ && !hasCompleteRawQ;
+  const hasInvalidRawQ = hasCompleteRawQ && !rawQ;
   const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ]
     .some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
+  const canUseLegacyAngles = !hasAnyRawQ && hasAllAxes;
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: packet.encoderStatus || nested.status,
     hasData: hasEncoderData,
-    hasAllAxes,
+    hasCompletePose: Boolean(rawQ) || canUseLegacyAngles,
+    hasPartialQuaternion: hasPartialRawQ,
+    hasInvalidQuaternion: hasInvalidRawQ,
     timerX,
     timerY,
     timerZ,
@@ -987,13 +1017,10 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     now,
     freshMs,
   });
-  const computedQ = encoderStatus === 'LIVE' && hasAllAxes
+  const computedQ = encoderStatus === 'LIVE' && canUseLegacyAngles
     ? eulerDegToQuat(encX, encY, encZ, encoderAngleToQuatSequence)
     : null;
-  const rawQ = [rawQ0, rawQ1, rawQ2, rawQ3].every((value) => value !== null)
-    ? normalizeQuat([rawQ0, rawQ1, rawQ2, rawQ3])
-    : null;
-  const encoderQ = computedQ || (encoderStatus === 'LIVE' ? rawQ : null);
+  const encoderQ = encoderStatus === 'LIVE' ? (rawQ || computedQ) : null;
   const encQ0 = encoderQ ? encoderQ[0] : null;
   const encQ1 = encoderQ ? encoderQ[1] : null;
   const encQ2 = encoderQ ? encoderQ[2] : null;
@@ -1001,22 +1028,29 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
   const hasValidQuaternion = Boolean(encoderQ);
-  const encoderQuatSource = computedQ
-    ? 'web-computed from gimbal encoder angles'
-    : (encoderQ ? 'remote encoder quaternion' : '');
+  const usingRemoteQ = Boolean(encoderQ && rawQ);
+  const encoderQuatSource = usingRemoteQ
+    ? 'remote-computed gimbal encoder quaternion'
+    : (computedQ ? 'web-computed from legacy gimbal encoder angles' : '');
   const statusSource = !hasEncoderData
     ? ''
     : encoderStatus === 'LIVE' && computedQ
-      ? 'web-computed from gimbal encoder angles'
+      ? 'web-computed from legacy gimbal encoder angles'
+      : encoderStatus === 'LIVE' && usingRemoteQ
+        ? 'remote-computed gimbal encoder quaternion'
       : encoderStatus === 'PARTIAL'
-        ? 'partial gimbal encoder angles'
-        : encoderStatus === 'STALE'
-          ? 'stale gimbal encoder angles'
-          : encoderStatus === 'MIXED'
-            ? 'mixed gimbal encoder angles'
-            : 'gimbal encoder angles';
+        ? 'partial gimbal encoder quaternion'
+        : encoderStatus === 'INVALID'
+          ? 'invalid gimbal encoder quaternion'
+          : encoderStatus === 'STALE'
+            ? 'stale gimbal encoder quaternion'
+            : encoderStatus === 'MIXED'
+              ? 'mixed gimbal encoder timers'
+              : 'gimbal encoder reference';
   const encoderSource = statusSource || packet.encoderSource || nested.source || '';
-  const encoderRpySource = encoderEuler ? `web-computed encoder quaternion ${encoderEulerSequence}` : '';
+  const encoderRpySource = encoderEuler
+    ? (usingRemoteQ ? 'web-computed from remote encoder quaternion' : 'web-computed from legacy encoder angle quaternion')
+    : '';
 
   return {
     enc_x_deg: encX,
@@ -1547,10 +1581,15 @@ function normalizePublishedPacket(packet, source, identity, publishMeta = {}) {
     Tmotor1_Nm: finiteNumber(packet.Tmotor1_Nm, null),
     Tmotor2_Nm: finiteNumber(packet.Tmotor2_Nm, null),
     Tmotor3_Nm: finiteNumber(packet.Tmotor3_Nm, null),
+    commandType: finiteNumber(packet.commandType ?? packet.command_type, null),
+    command_type: finiteNumber(packet.command_type ?? packet.commandType, null),
     control_mode: packet.control_mode ?? '',
     EBIMU_status: packet.EBIMU_status ?? '',
     logging_status: packet.logging_status ?? '',
     timestamp: firstFinite([packet.timestamp, packet.ebimu_timestamp_ms, packet.ebimuTimestampMs], null),
+    timestamp_us: firstFinite([packet.timestamp_us, packet.remote_timestamp_us, packet.timestamp], null),
+    remote_timestamp: firstFinite([packet.remote_timestamp, packet.timestamp, packet.ebimu_timestamp_ms, packet.ebimuTimestampMs], null),
+    remote_timestamp_us: firstFinite([packet.remote_timestamp_us, packet.timestamp_us, packet.timestamp], null),
     ebimu_timestamp_ms: firstFinite([packet.ebimu_timestamp_ms, packet.timestamp, packet.ebimuTimestampMs], null),
     ebimuTimestampMs: firstFinite([packet.ebimuTimestampMs, packet.ebimu_timestamp_ms, packet.timestamp], null),
     seq: firstFinite([packet.seq, packet.packetCount, packet.rxCount], null),

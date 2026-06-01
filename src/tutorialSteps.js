@@ -190,8 +190,8 @@ export const TUTORIAL_GUIDES = Object.freeze({
         body: Object.freeze([
           'CSV 저장은 Start CSV Logging 이후부터 수행된다.',
           'Stop & Download CSV로 다운로드한다.',
-          'CSV 저장은 UI 렌더링 주기와 분리해서 가능한 50 Hz 기준으로 저장한다.',
-          '실제 수신률이 50 Hz보다 낮으면 가짜 row를 만들지 않는다.',
+          'CSV 저장은 UI 렌더링 주기와 분리해서 수신된 valid Serial sample을 가능한 전부 저장한다.',
+          '실제로 수신되지 않은 가짜 row를 만들지 않는다.',
         ]),
       }),
     ]),
