@@ -1124,6 +1124,28 @@
   min-width: 128px;
 }
 
+.command-feedback {
+  min-height: 1.55rem;
+  margin-top: 0.45rem;
+  color: #adb5bd;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.command-feedback-success {
+  color: #69db7c;
+}
+
+.command-feedback-error {
+  color: #ff8787;
+}
+
+.command-feedback-empty {
+  color: transparent;
+}
+
 .receiver-info-text {
   color: #d8dee9;
   background: #0b0f14;

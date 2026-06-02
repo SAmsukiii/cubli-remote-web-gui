@@ -1115,6 +1115,7 @@ export default function useEsp32Serial(options = {}) {
   const lastRawLineRef = useRef('');
   const lastInvalidReasonRef = useRef('');
   const lastReceivedAtRef = useRef(null);
+  const lastLocalWriteErrorRef = useRef('');
   const pendingUiFlushRef = useRef(false);
   const droppedBufferCountRef = useRef(0);
   const encoderCountRef = useRef(0);
@@ -1776,6 +1777,7 @@ export default function useEsp32Serial(options = {}) {
     if (!portRef.current?.writable || !isConnected) {
       const message = 'Serial receiver is not connected.';
       setError(message);
+      lastLocalWriteErrorRef.current = message;
       setLastLocalWriteError(message);
       return false;
     }
@@ -1783,6 +1785,7 @@ export default function useEsp32Serial(options = {}) {
     if (!writerRef.current && !prepareWriter()) {
       const message = lastLocalWriteError || 'Serial writer is not ready.';
       setError(message);
+      lastLocalWriteErrorRef.current = message;
       setLastLocalWriteError(message);
       return false;
     }
@@ -1790,6 +1793,7 @@ export default function useEsp32Serial(options = {}) {
     if (commandBusyRef.current) {
       const message = 'Command send is already in progress. Try again shortly.';
       setError(message);
+      lastLocalWriteErrorRef.current = message;
       setLastLocalWriteError(message);
       return false;
     }
@@ -1798,6 +1802,7 @@ export default function useEsp32Serial(options = {}) {
     try {
       const normalizedLine = String(line).trim();
       if (!normalizedLine) {
+        lastLocalWriteErrorRef.current = 'Command line is empty.';
         setLastLocalWriteError('Command line is empty.');
         return false;
       }
@@ -1807,11 +1812,13 @@ export default function useEsp32Serial(options = {}) {
       lastInvalidReasonRef.current = '';
       markPendingUiFlush();
       setError('');
+      lastLocalWriteErrorRef.current = '';
       setLastLocalWriteError('');
       return true;
     } catch (err) {
       const message = serialErrorMessage(err) || 'command send failed';
       setError(message);
+      lastLocalWriteErrorRef.current = message;
       setLastLocalWriteError(message);
       releaseWriter();
       return false;
@@ -1884,6 +1891,7 @@ export default function useEsp32Serial(options = {}) {
     setInputHz(0);
     setCsvLoggedHz(0);
     setLastCommand('');
+    lastLocalWriteErrorRef.current = '';
     setLastLocalWriteError('');
   }, [encoderAngleToQuatSequence, encoderEulerSequence]);
 
@@ -1927,6 +1935,7 @@ export default function useEsp32Serial(options = {}) {
     lastCommand,
     serialWriterReady,
     lastLocalWriteError,
+    getLastLocalWriteError: () => lastLocalWriteErrorRef.current,
     connect,
     disconnect,
     sendLine,

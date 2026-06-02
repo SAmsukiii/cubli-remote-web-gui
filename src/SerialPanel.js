@@ -38,6 +38,7 @@ const ATTITUDE_GAIN_DEFAULTS = {
 const ATTITUDE_GAIN_MIN = 0;
 const ATTITUDE_GAIN_MAX = 10;
 const ATTITUDE_GAIN_STEP = 0.001;
+const COMMAND_FEEDBACK_CLEAR_MS = 2600;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -307,6 +308,24 @@ function CommandGroup({ children }) {
   return <div className="serial-command-grid compact-command-grid">{children}</div>;
 }
 
+function commandFeedbackMessage(status, reason = '') {
+  if (status === 'success') return '송신 완료!';
+  const cleanReason = String(reason || '').trim() || 'unknown error';
+  return `송신 실패: ${cleanReason}`;
+}
+
+function CommandFeedback({ feedback }) {
+  const status = feedback?.status || '';
+  return (
+    <div
+      className={`command-feedback ${status ? `command-feedback-${status}` : 'command-feedback-empty'}`}
+      aria-live="polite"
+    >
+      {feedback?.message || ''}
+    </div>
+  );
+}
+
 function CommandAccordionItem({ eventKey, title, children }) {
   return (
     <Accordion.Item eventKey={eventKey} className="command-accordion-item">
@@ -330,10 +349,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   const [csvSampleCount, setCsvSampleCount] = useState(0);
   const [csvElapsedMs, setCsvElapsedMs] = useState(0);
   const [csvStats, setCsvStats] = useState(() => summarizeCsvRows([]));
+  const [lastCommandFeedbackByCategory, setLastCommandFeedbackByCategory] = useState({});
   const logRef = useRef([]);
   const seenCsvPacketKeysRef = useRef(new Set());
   const nextCsvLogIndexRef = useRef(0);
   const csvStartedAtRef = useRef(null);
+  const commandFeedbackTimersRef = useRef({});
 
   const latest = useMemo(() => serial.latestPacket || {}, [serial.latestPacket]);
   const latestCsvPacket = useMemo(() => serial.latestCsvPacket || serial.latestPacket || {}, [serial.latestCsvPacket, serial.latestPacket]);
@@ -363,6 +384,49 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       detail,
     });
   }, [onCommandEvent]);
+
+  useEffect(() => () => {
+    Object.values(commandFeedbackTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+  }, []);
+
+  const showCommandFeedback = (category, status, reason = '') => {
+    const feedback = { status, message: commandFeedbackMessage(status, reason), at: Date.now() };
+    setLastCommandFeedbackByCategory((prev) => ({ ...prev, [category]: feedback }));
+    if (commandFeedbackTimersRef.current[category]) {
+      window.clearTimeout(commandFeedbackTimersRef.current[category]);
+    }
+    commandFeedbackTimersRef.current[category] = window.setTimeout(() => {
+      setLastCommandFeedbackByCategory((prev) => {
+        if (prev[category]?.at !== feedback.at) return prev;
+        const next = { ...prev };
+        delete next[category];
+        return next;
+      });
+      delete commandFeedbackTimersRef.current[category];
+    }, COMMAND_FEEDBACK_CLEAR_MS);
+  };
+
+  const serialCommandFailureReason = (fallback = 'writer not ready') => {
+    if (adminLocked) return 'admin permission required';
+    if (!serial.isConnected) return 'Serial receiver is not connected';
+    if (serial.serialWriterReady === false) return 'writer not ready';
+    return serial.getLastLocalWriteError?.()
+      || serial.lastLocalWriteError
+      || serial.error
+      || fallback;
+  };
+
+  const runCommandWithFeedback = async (category, action, reasonGetter = serialCommandFailureReason) => {
+    try {
+      const ok = await action?.();
+      if (ok) showCommandFeedback(category, 'success');
+      else showCommandFeedback(category, 'error', reasonGetter());
+      return Boolean(ok);
+    } catch (error) {
+      showCommandFeedback(category, 'error', error?.message || reasonGetter());
+      return false;
+    }
+  };
 
   const appendCsvSamples = React.useCallback((samples) => {
     const sampleList = Array.isArray(samples) ? samples : [samples];
@@ -427,11 +491,13 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
   });
 
   const applyDefaultImuSetting = async () => {
-    await sendEbimuRuntime(EBIMU_COMMANDS.DEFAULT, 0, 'EBIMU Default Setup');
+    const setupOk = await sendEbimuRuntime(EBIMU_COMMANDS.DEFAULT, 0, 'EBIMU Default Setup');
+    if (!setupOk) return false;
     await delay(80);
-    await sendEbimuRuntime(EBIMU_COMMANDS.MAG_MODE, 0, 'Default IMU Magnetometer Off');
+    const magOk = await sendEbimuRuntime(EBIMU_COMMANDS.MAG_MODE, 0, 'Default IMU Magnetometer Off');
+    if (!magOk) return false;
     await delay(80);
-    await sendEbimuRuntime(EBIMU_COMMANDS.GYRO_DPS, 500, 'Default IMU Gyro 500 dps');
+    return Boolean(await sendEbimuRuntime(EBIMU_COMMANDS.GYRO_DPS, 500, 'Default IMU Gyro 500 dps'));
   };
 
   const sendTare = () => sendController(2, 0, 0, 0, {
@@ -529,9 +595,10 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       serialLines: [gainLine('KP', kp), gainLine('KD', kd)],
     });
     const kpOk = await sendAttitudeKp({ announce: false });
-    if (!kpOk) return;
+    if (!kpOk) return false;
     const kdOk = await sendAttitudeKd({ announce: false });
     setGainStatus(kdOk ? 'Sent Attitude Kp and Kd.' : 'Attitude Kp sent, but Kd failed.');
+    return Boolean(kdOk);
   };
 
   const quaternionRows = useMemo(() => [
@@ -712,9 +779,10 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
         <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
           <CommandAccordionItem eventKey="control" title="Control">
             <CommandGroup>
-              <CommandButton label="Set Zero / Tare" onClick={sendTare} disabled={commandDisabled} />
-              <CommandButton label="Stop Control" onClick={sendStop} disabled={commandDisabled} />
+              <CommandButton label="Set Zero / Tare" onClick={() => runCommandWithFeedback('localSerial', sendTare)} disabled={commandDisabled} />
+              <CommandButton label="Stop Control" onClick={() => runCommandWithFeedback('localSerial', sendStop)} disabled={commandDisabled} />
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.localSerial} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="target" title="Target Attitude">
@@ -732,11 +800,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
                 <Form.Control size="sm" type="number" value={targetYaw} onChange={(e) => setTargetYaw(e.target.value)} />
               </Col>
               <Col xs={12}>
-                <Button variant="outline-light" className="w-100" disabled={commandDisabled} onClick={sendTarget}>
+                <Button variant="outline-light" className="w-100" disabled={commandDisabled} onClick={() => runCommandWithFeedback('targetAttitude', sendTarget)}>
                   Send Target Attitude
                 </Button>
               </Col>
             </Row>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.targetAttitude} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="attitude-gain" title="Attitude PID Gain">
@@ -780,11 +849,12 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
             {gainStatus ? <div className="server-small-note mb-2">{gainStatus}</div> : null}
 
             <CommandGroup>
-              <CommandButton label="Send Kp" onClick={() => sendAttitudeKp()} disabled={commandDisabled || !kpValues} />
-              <CommandButton label="Send Kd" onClick={() => sendAttitudeKd()} disabled={commandDisabled || !kdValues} />
-              <CommandButton label="Send Kp + Kd" onClick={sendAttitudeGains} disabled={commandDisabled || gainInputInvalid} />
+              <CommandButton label="Send Kp" onClick={() => runCommandWithFeedback('attitudeGain', () => sendAttitudeKp())} disabled={commandDisabled || !kpValues} />
+              <CommandButton label="Send Kd" onClick={() => runCommandWithFeedback('attitudeGain', () => sendAttitudeKd())} disabled={commandDisabled || !kdValues} />
+              <CommandButton label="Send Kp + Kd" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeGains)} disabled={commandDisabled || gainInputInvalid} />
               <CommandButton label="Reset to Default" onClick={resetAttitudeGains} disabled={adminLocked} />
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.attitudeGain} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="stream" title="EBIMU Stream">
@@ -801,33 +871,36 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
               </div>
             </div>
             <CommandGroup>
-              <CommandButton label="Apply Default Setting" onClick={applyDefaultImuSetting} disabled={commandDisabled} />
-              <CommandButton label="EBIMU Start" onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.START, 0, 'EBIMU Start')} disabled={commandDisabled} />
-              <CommandButton label="EBIMU Stop" onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.STOP, 0, 'EBIMU Stop')} disabled={commandDisabled} />
+              <CommandButton label="Apply Default Setting" onClick={() => runCommandWithFeedback('ebimuStream', applyDefaultImuSetting)} disabled={commandDisabled} />
+              <CommandButton label="EBIMU Start" onClick={() => runCommandWithFeedback('ebimuStream', () => sendEbimuRuntime(EBIMU_COMMANDS.START, 0, 'EBIMU Start'))} disabled={commandDisabled} />
+              <CommandButton label="EBIMU Stop" onClick={() => runCommandWithFeedback('ebimuStream', () => sendEbimuRuntime(EBIMU_COMMANDS.STOP, 0, 'EBIMU Stop'))} disabled={commandDisabled} />
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.ebimuStream} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="mag" title="Magnetometer">
             <CommandGroup>
               {MAG_OPTIONS.map((item) => (
-                <CommandButton key={item.label} label={`Mag ${item.label}`} onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.MAG_MODE, item.value, `Mag ${item.label}`)} disabled={commandDisabled} />
+                <CommandButton key={item.label} label={`Mag ${item.label}`} onClick={() => runCommandWithFeedback('magnetometer', () => sendEbimuRuntime(EBIMU_COMMANDS.MAG_MODE, item.value, `Mag ${item.label}`))} disabled={commandDisabled} />
               ))}
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.magnetometer} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="gyro" title="Gyro Range">
             <CommandGroup>
               {GYRO_OPTIONS.map((value) => (
-                <CommandButton key={value} label={`${value} dps`} onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.GYRO_DPS, value, `${value} dps`)} disabled={commandDisabled} />
+                <CommandButton key={value} label={`${value} dps`} onClick={() => runCommandWithFeedback('gyroRange', () => sendEbimuRuntime(EBIMU_COMMANDS.GYRO_DPS, value, `${value} dps`))} disabled={commandDisabled} />
               ))}
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.gyroRange} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="accel" title="Accelerometer">
             <div className="serial-subsection-title mb-2">Range</div>
             <CommandGroup>
               {ACCEL_OPTIONS.map((value) => (
-                <CommandButton key={value} label={`${value} g`} onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_G, value, `${value} g`)} disabled={commandDisabled} />
+                <CommandButton key={value} label={`${value} g`} onClick={() => runCommandWithFeedback('accelerometer', () => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_G, value, `${value} g`))} disabled={commandDisabled} />
               ))}
             </CommandGroup>
 
@@ -837,24 +910,26 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
                 <Form.Control size="sm" type="number" min="1" max="50" value={accFactor} onChange={(e) => setAccFactor(e.target.value)} />
               </Col>
               <Col xs={5}>
-                <Button variant="outline-light" className="w-100" disabled={commandDisabled} onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_FACTOR, Number(accFactor) || 10, 'Accel Filter Factor')}>
+                <Button variant="outline-light" className="w-100" disabled={commandDisabled} onClick={() => runCommandWithFeedback('accelerometer', () => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_FACTOR, Number(accFactor) || 10, 'Accel Filter Factor'))}>
                   Apply
                 </Button>
               </Col>
             </Row>
             <CommandGroup>
               {FILTER_PRESETS.map((value) => (
-                <CommandButton key={value} label={`${value}`} onClick={() => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_FACTOR, value, `Filter Factor ${value}`)} disabled={commandDisabled} />
+                <CommandButton key={value} label={`${value}`} onClick={() => runCommandWithFeedback('accelerometer', () => sendEbimuRuntime(EBIMU_COMMANDS.ACCEL_FACTOR, value, `Filter Factor ${value}`))} disabled={commandDisabled} />
               ))}
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.accelerometer} />
           </CommandAccordionItem>
 
           <CommandAccordionItem eventKey="receiver" title="Receiver Info">
             <CommandGroup>
-              <CommandButton label="Status" onClick={() => { emitCommandEvent('RECEIVER_INFO', 'Status'); serial.sendCommand?.('STATUS?'); }} disabled={commandDisabled} />
-              <CommandButton label="MAC Info" onClick={() => { emitCommandEvent('RECEIVER_INFO', 'MAC Info'); serial.sendCommand?.('MAC?'); }} disabled={commandDisabled} />
+              <CommandButton label="Status" onClick={() => runCommandWithFeedback('receiverInfo', () => { emitCommandEvent('RECEIVER_INFO', 'Status'); return serial.sendCommand?.('STATUS?'); })} disabled={commandDisabled} />
+              <CommandButton label="MAC Info" onClick={() => runCommandWithFeedback('receiverInfo', () => { emitCommandEvent('RECEIVER_INFO', 'MAC Info'); return serial.sendCommand?.('MAC?'); })} disabled={commandDisabled} />
               <CommandButton label="Clear Stats" onClick={() => { emitCommandEvent('CLEAR_STATS', 'Clear Serial Stats'); serial.clearStats(); }} disabled={adminLocked} />
             </CommandGroup>
+            <CommandFeedback feedback={lastCommandFeedbackByCategory.receiverInfo} />
           </CommandAccordionItem>
         </Accordion>
       </div>

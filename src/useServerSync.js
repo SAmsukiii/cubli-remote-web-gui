@@ -963,6 +963,7 @@ export default function useServerSync() {
   const publishSessionIdRef = useRef('');
   const activePublisherRef = useRef(null);
   const lastLivePayloadServerSentAtRef = useRef(0);
+  const lastCommandRequestErrorRef = useRef('');
   const safeDisplayName = sanitizeDisplayName(displayName);
   const hasDisplayName = Boolean(safeDisplayName);
 
@@ -1847,7 +1848,10 @@ export default function useServerSync() {
 
   const requestBridgeCommand = useCallback(async (commandKey, params = {}, eventMeta = {}) => {
     const key = String(commandKey || '').trim();
-    if (!key) return false;
+    if (!key) {
+      lastCommandRequestErrorRef.current = 'Command key is empty';
+      return false;
+    }
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/command-request`, {
@@ -1873,11 +1877,14 @@ export default function useServerSync() {
       }, 'admin-web-serial');
       setConnectionStatus('connected');
       setLastError('');
+      lastCommandRequestErrorRef.current = '';
       return data.commandId || true;
     } catch (err) {
+      const message = err?.message || 'Bridge command request failed';
       setConnectionStatus('error');
-      setLastError(err?.message || 'Bridge command request failed');
-      setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Bridge command request failed' }));
+      setLastError(message);
+      lastCommandRequestErrorRef.current = message;
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
       return false;
     }
   }, [clientId, recordEvent, requestJson]);
@@ -2069,7 +2076,9 @@ export default function useServerSync() {
       : (mapped.params || {});
     const eventMeta = knownKeys.has(explicitKey) ? maybeMeta : paramsOrMeta;
     if (!commandKey) {
-      setServerSerialStatus((prev) => ({ ...prev, lastError: 'Unsupported server serial command' }));
+      const message = 'Unsupported server serial command';
+      lastCommandRequestErrorRef.current = message;
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
       return false;
     }
     const commandId = await requestBridgeCommand(commandKey, params, {
@@ -2102,6 +2111,7 @@ export default function useServerSync() {
       if (cmdId === 10) return sendServerSerialCommand('ebimuStart', {}, eventMeta);
       if (cmdId === 11) return sendServerSerialCommand('ebimuStop', {}, eventMeta);
     }
+    lastCommandRequestErrorRef.current = 'Unsupported bridge controller command';
     setServerSerialStatus((prev) => ({ ...prev, lastError: 'Unsupported bridge controller command' }));
     return false;
   }, [sendServerSerialCommand]);
@@ -2116,17 +2126,19 @@ export default function useServerSync() {
       label: 'Cubli Initialize',
       detail: { firmwareCommand: 'TARE' },
     });
-    await sendServerSerialCommand('magOff', {}, {
+    if (!initOk) return false;
+    const magOk = await sendServerSerialCommand('magOff', {}, {
       eventType: 'EBIMU_RUNTIME',
       label: 'Default IMU Magnetometer Off',
       detail: { defaultImuSetting: true },
     });
-    await sendServerSerialCommand('gyro500', {}, {
+    if (!magOk) return false;
+    const gyroOk = await sendServerSerialCommand('gyro500', {}, {
       eventType: 'EBIMU_RUNTIME',
       label: 'Default IMU Gyro 500 dps',
       detail: { defaultImuSetting: true },
     });
-    return Boolean(initOk);
+    return Boolean(gyroOk);
   }, [sendServerSerialCommand]);
 
   const sendEncoderInitialize = useCallback(() => (
@@ -2140,7 +2152,9 @@ export default function useServerSync() {
   const sendAttitudeKp = useCallback((kx, ky, kz) => {
     const gains = normalizeGainTriplet({ kx, ky, kz }, ['kx', 'ky', 'kz']);
     if (!gains) {
-      setServerSerialStatus((prev) => ({ ...prev, lastError: 'Attitude Kp gains must be finite numbers from 0 to 10' }));
+      const message = 'Attitude Kp gains must be finite numbers from 0 to 10';
+      lastCommandRequestErrorRef.current = message;
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
       return Promise.resolve(false);
     }
     return sendServerSerialCommand('attitudeKp', gains, {
@@ -2153,7 +2167,9 @@ export default function useServerSync() {
   const sendAttitudeKd = useCallback((dx, dy, dz) => {
     const gains = normalizeGainTriplet({ dx, dy, dz }, ['dx', 'dy', 'dz']);
     if (!gains) {
-      setServerSerialStatus((prev) => ({ ...prev, lastError: 'Attitude Kd gains must be finite numbers from 0 to 10' }));
+      const message = 'Attitude Kd gains must be finite numbers from 0 to 10';
+      lastCommandRequestErrorRef.current = message;
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
       return Promise.resolve(false);
     }
     return sendServerSerialCommand('attitudeKd', gains, {
@@ -2798,6 +2814,7 @@ export default function useServerSync() {
       disconnect: disconnectServerSerial,
       refreshStatus: refreshServerSerialStatus,
       requestBridgeCommand,
+      getLastCommandRequestError: () => lastCommandRequestErrorRef.current,
       pollBridgeCommands,
       ackBridgeCommand,
       sendCommand: sendServerSerialCommand,
