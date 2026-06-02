@@ -3,6 +3,29 @@ import { Accordion, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 
 const DEFAULT_PRESET = 'imu_encoder_basic';
 
+const IMU_GROUP_SELECTION_FIELDS = Object.freeze([
+  'imu_q0', 'imu_q1', 'imu_q2', 'imu_q3',
+  'q0', 'q1', 'q2', 'q3',
+  'imu_roll_deg', 'imu_pitch_deg', 'imu_yaw_deg',
+  'rollDeg', 'pitchDeg', 'yawDeg',
+  'qerr_deg', 'wx', 'wy', 'wz',
+  'timestamp', 'seq', 'source', 'commandType',
+  'imuEulerSequence', 'angularRateSource',
+]);
+
+const GIMBAL_GROUP_SELECTION_FIELDS = Object.freeze([
+  'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
+  'encoderQ0', 'encoderQ1', 'encoderQ2', 'encoderQ3',
+  'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
+  'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
+  'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
+  'enc_age_x', 'enc_age_y', 'enc_age_z',
+  'encoder_status', 'encoderStatus',
+  'encoder_quat_source', 'encoderQuatSource',
+  'encoder_rpy_source', 'encoderRpySource',
+  'encoderEulerSequence', 'encoderSource',
+]);
+
 const FIELD_GROUPS = Object.freeze([
   {
     id: 'imu',
@@ -109,13 +132,13 @@ const PRESETS = Object.freeze([
 ]);
 
 const FIELD_META = Object.freeze({
-  q0: { label: 'q0 / qw', section: 'imu', digits: 6, value: (p) => p.q0 },
-  q1: { label: 'q1 / qx', section: 'imu', digits: 6, value: (p) => p.q1 },
-  q2: { label: 'q2 / qy', section: 'imu', digits: 6, value: (p) => p.q2 },
-  q3: { label: 'q3 / qz', section: 'imu', digits: 6, value: (p) => p.q3 },
-  rollDeg: { label: 'Roll', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.roll_deg ?? p.Roll_deg ?? p.rollDeg },
-  pitchDeg: { label: 'Pitch', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.pitch_deg ?? p.Pitch_deg ?? p.pitchDeg },
-  yawDeg: { label: 'Yaw', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.yaw_deg ?? p.Yaw_deg ?? p.yawDeg },
+  q0: { label: 'q0 / qw', section: 'imu', digits: 6, value: (p) => p.imu_q0 ?? p.q0 },
+  q1: { label: 'q1 / qx', section: 'imu', digits: 6, value: (p) => p.imu_q1 ?? p.q1 },
+  q2: { label: 'q2 / qy', section: 'imu', digits: 6, value: (p) => p.imu_q2 ?? p.q2 },
+  q3: { label: 'q3 / qz', section: 'imu', digits: 6, value: (p) => p.imu_q3 ?? p.q3 },
+  rollDeg: { label: 'Roll', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.imu_roll_deg ?? p.roll_deg ?? p.Roll_deg ?? p.rollDeg },
+  pitchDeg: { label: 'Pitch', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.imu_pitch_deg ?? p.pitch_deg ?? p.Pitch_deg ?? p.pitchDeg },
+  yawDeg: { label: 'Yaw', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.imu_yaw_deg ?? p.yaw_deg ?? p.Yaw_deg ?? p.yawDeg },
   imuEulerSequence: { label: 'IMU RPY sequence', section: 'imu', value: (p) => p.imuEulerSequence || 'ZYX' },
   qerr_deg: { label: 'qerr_deg', section: 'imu', unit: 'deg', digits: 2, value: (p) => p.qerr_deg ?? p.qerrDeg },
   source: { label: 'Source', section: 'imu', value: (p) => p.sample_type || p.sampleType || p.rawPrefix || p.sourceLabel || p.source },
@@ -135,15 +158,15 @@ const FIELD_META = Object.freeze({
   enc_q1: { label: 'enc_q1', section: 'encoder', digits: 6, value: (p) => p.enc_q1 ?? p.encoderQ1 ?? p.encoder?.q1 },
   enc_q2: { label: 'enc_q2', section: 'encoder', digits: 6, value: (p) => p.enc_q2 ?? p.encoderQ2 ?? p.encoder?.q2 },
   enc_q3: { label: 'enc_q3', section: 'encoder', digits: 6, value: (p) => p.enc_q3 ?? p.encoderQ3 ?? p.encoder?.q3 },
-  encoderRollDeg: { label: 'Encoder Roll', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderRollDeg ?? p.encoder?.rollDeg },
-  encoderPitchDeg: { label: 'Encoder Pitch', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderPitchDeg ?? p.encoder?.pitchDeg },
-  encoderYawDeg: { label: 'Encoder Yaw', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoderYawDeg ?? p.encoder?.yawDeg },
+  encoderRollDeg: { label: 'Encoder Roll', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoder_roll_deg ?? p.encoderRollDeg ?? p.encoder?.rollDeg },
+  encoderPitchDeg: { label: 'Encoder Pitch', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoder_pitch_deg ?? p.encoderPitchDeg ?? p.encoder?.pitchDeg },
+  encoderYawDeg: { label: 'Encoder Yaw', section: 'encoder', unit: 'deg', digits: 2, unavailableWithoutQuat: true, value: (p) => p.encoder_yaw_deg ?? p.encoderYawDeg ?? p.encoder?.yawDeg },
   encoderAngleToQuatSequence: { label: 'Legacy angle sequence', section: 'encoder', value: (p) => p.encoderAngleToQuatSequence ?? p.encoder?.angleToQuatSequence ?? 'ZYX' },
   encoderEulerSequence: { label: 'Encoder RPY sequence', section: 'encoder', value: (p) => p.encoderEulerSequence ?? p.encoder?.eulerSequence ?? 'ZYX' },
-  encoderStatus: { label: 'Encoder status', section: 'encoder', value: (p) => p.encoderStatus ?? p.encoder?.status },
+  encoderStatus: { label: 'Encoder status', section: 'encoder', value: (p) => p.encoder_status ?? p.encoderStatus ?? p.encoder?.status },
   encoderSource: { label: 'Encoder source', section: 'encoder', value: (p) => p.encoderSource ?? p.encoder?.source },
-  encoderQuatSource: { label: 'Encoder quat source', section: 'encoder', value: (p) => p.encoderQuatSource ?? p.encoder?.quatSource },
-  encoderRpySource: { label: 'Encoder RPY source', section: 'encoder', value: (p) => p.encoderRpySource ?? p.encoder?.rpySource },
+  encoderQuatSource: { label: 'Encoder quat source', section: 'encoder', value: (p) => p.encoder_quat_source ?? p.encoderQuatSource ?? p.encoder?.quatSource },
+  encoderRpySource: { label: 'Encoder RPY source', section: 'encoder', value: (p) => p.encoder_rpy_source ?? p.encoderRpySource ?? p.encoder?.rpySource },
   enc_timer_x: { label: 'timer X', section: 'encoder', digits: 0, value: (p) => p.enc_timer_x ?? p.encoderTimerX ?? p.encoder?.timerX ?? p.encoder?.timer_x },
   enc_timer_y: { label: 'timer Y', section: 'encoder', digits: 0, value: (p) => p.enc_timer_y ?? p.encoderTimerY ?? p.encoder?.timerY ?? p.encoder?.timer_y },
   enc_timer_z: { label: 'timer Z', section: 'encoder', digits: 0, value: (p) => p.enc_timer_z ?? p.encoderTimerZ ?? p.encoder?.timerZ ?? p.encoder?.timer_z },
@@ -301,6 +324,19 @@ export default function TelemetryDataView({
     });
   };
 
+  const setFieldGroupSelected = (fieldKeys, selected) => {
+    const allowedKeys = fieldKeys.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin));
+    setPresetId('custom');
+    setSelectedFields((prev) => {
+      const next = new Set(prev.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin)));
+      allowedKeys.forEach((key) => {
+        if (selected) next.add(key);
+        else next.delete(key);
+      });
+      return Array.from(next);
+    });
+  };
+
   const imuRows = valueRows(fields, latest, status, 'imu', isAdmin);
   const encoderRows = valueRows(fields, latest, status, 'encoder', isAdmin);
   const motorRows = valueRows(fields, latest, status, 'motor', isAdmin);
@@ -336,6 +372,20 @@ export default function TelemetryDataView({
           <Accordion.Item eventKey="selector" className="command-accordion-item">
             <Accordion.Header>Data Selector</Accordion.Header>
             <Accordion.Body>
+              <div className="data-selector-actions d-flex flex-wrap gap-2 mb-3">
+                <Button size="sm" variant="outline-info" onClick={() => setFieldGroupSelected(IMU_GROUP_SELECTION_FIELDS, true)}>
+                  Select all IMU
+                </Button>
+                <Button size="sm" variant="outline-secondary" onClick={() => setFieldGroupSelected(IMU_GROUP_SELECTION_FIELDS, false)}>
+                  Clear IMU
+                </Button>
+                <Button size="sm" variant="outline-info" onClick={() => setFieldGroupSelected(GIMBAL_GROUP_SELECTION_FIELDS, true)}>
+                  Select all GIMBAL
+                </Button>
+                <Button size="sm" variant="outline-secondary" onClick={() => setFieldGroupSelected(GIMBAL_GROUP_SELECTION_FIELDS, false)}>
+                  Clear GIMBAL
+                </Button>
+              </div>
               <Row className="g-2">
                 {visibleGroups.map((group) => (
                   <Col xs={12} md={6} key={group.id}>

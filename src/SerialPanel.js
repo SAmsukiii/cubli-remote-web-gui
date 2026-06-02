@@ -270,10 +270,10 @@ function summarizeCsvRows(rows = [], startedAt = null) {
   return summary;
 }
 
-function filterCsvRows(rows = [], kind = 'combined') {
+function filterCsvRows(rows = [], kind = 'telemetry') {
   if (kind === 'telemetry') return rows.filter((row) => ['TEL', 'IMU'].includes(detectSampleType(row)));
   if (kind === 'encoder') return rows.filter((row) => detectSampleType(row) === 'ENC');
-  return rows;
+  return [];
 }
 
 function ValueGrid({ title, rows }) {
@@ -369,6 +369,8 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     let appendedAny = false;
     sampleList.forEach((sample) => {
       if (!sample?.updatedAt && !sample?.raw && !sample?.cleanLine) return;
+      const sampleTime = Number(sample?.updatedAt ?? sample?.publishedAt);
+      if (csvStartedAtRef.current && Number.isFinite(sampleTime) && sampleTime < csvStartedAtRef.current) return;
       const appended = appendCsvLogSample(logRef, seenCsvPacketKeysRef, sample, {
         nextLogIndexRef: nextCsvLogIndexRef,
       });
@@ -632,17 +634,10 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     return nextStats.total;
   };
 
-  const stopCsvLogging = () => {
-    flushCsvSamples();
-    setCsvLogging(false);
-  };
-
-  const downloadCsv = (kind = 'combined') => {
+  const downloadCsv = (kind = 'telemetry') => {
     if (csvLogging) {
       flushCsvSamples();
       setCsvLogging(false);
-    } else if (typeof drainCsvLogSamples === 'function') {
-      appendCsvSamples(drainCsvLogSamples());
     }
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
@@ -660,8 +655,7 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
     }
     const sortedRows = finalizeCsvLogRows(filteredRows);
     const csv = [CSV_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
-    const suffix = kind === 'combined' ? 'combined_raw' : kind;
-    downloadTextFile(`cubli_${suffix}_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
+    downloadTextFile(`cubli_${kind}_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
   };
 
   return (
@@ -866,6 +860,43 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
       </div>
       ) : null}
 
+      <div className="serial-control-card rounded p-3 mb-3">
+        <div className="d-flex justify-content-between align-items-center mb-2">
+            <div>
+              <div className="serial-section-title">CSV Logging</div>
+              <div className="server-small-note">CSV mode: Save every valid Serial sample</div>
+              <div className="server-small-note">{CSV_LOG_NOTE}</div>
+            </div>
+            <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
+        </div>
+        <div className="csv-logging-stat-grid mb-3">
+          <div><span>Logged total samples</span><strong>{csvStats.total}</strong></div>
+          <div><span>Logged TEL/IMU samples</span><strong>{csvStats.telemetry}</strong></div>
+          <div><span>Logged ENC samples</span><strong>{csvStats.enc}</strong></div>
+          <div><span>Estimated logging rate</span><strong>{formatNumber(csvLoggedHz || csvStats.rateHz, 1)} Hz</strong></div>
+        </div>
+        <div className="server-small-note mb-2">
+          Elapsed {formatDuration(csvElapsedMs)}
+        </div>
+        <Row className="g-2 justify-content-center">
+          <Col xs={12}>
+            <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
+              Start CSV Logging
+            </Button>
+          </Col>
+          <Col xs={12} md={6}>
+            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvStats.telemetry === 0}>
+              Stop & Download Telemetry CSV
+            </Button>
+          </Col>
+          <Col xs={12} md={6}>
+            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvStats.enc === 0}>
+              Stop & Download Encoder CSV
+            </Button>
+          </Col>
+        </Row>
+      </div>
+
       <TelemetryDataView
         latest={latest}
         status={{
@@ -876,48 +907,6 @@ export default function SerialPanel({ serial, useSerialImu, setUseSerialImu, onC
         isAdmin={isAdmin}
         storageKey="cubliAdminSerialDataView"
       />
-
-      <div className="serial-control-card rounded p-3 mb-3">
-        <div className="d-flex justify-content-between align-items-center mb-2">
-            <div>
-              <div className="serial-section-title">CSV Logging</div>
-              <div className="server-small-note">CSV mode: Save every valid Serial sample</div>
-              <div className="server-small-note">Estimated logging rate: {formatNumber(csvLoggedHz || csvStats.rateHz, 1)} Hz</div>
-              <div className="server-small-note">{CSV_LOG_NOTE}</div>
-            </div>
-            <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
-        </div>
-        <div className="server-small-note mb-2">
-          Elapsed {formatDuration(csvElapsedMs)} / total {csvStats.total} / TEL+IMU {csvStats.telemetry} / ENC {csvStats.enc}
-        </div>
-        <Row className="g-2">
-          <Col xs={6} md={3}>
-            <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
-              Start CSV Logging
-            </Button>
-          </Col>
-          <Col xs={6} md={3}>
-            <Button variant="outline-warning" className="w-100" onClick={stopCsvLogging} disabled={!csvLogging}>
-              Stop Logging
-            </Button>
-          </Col>
-          <Col xs={12} md={2}>
-            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('combined')} disabled={!csvLogging && csvSampleCount === 0}>
-              Download Combined Raw CSV
-            </Button>
-          </Col>
-          <Col xs={6} md={2}>
-            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvStats.telemetry === 0}>
-              Download Telemetry CSV
-            </Button>
-          </Col>
-          <Col xs={6} md={2}>
-            <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvStats.enc === 0}>
-              Download Encoder CSV
-            </Button>
-          </Col>
-        </Row>
-      </div>
 
       <div className="serial-control-card rounded p-3 mb-3">
         <div className="d-flex justify-content-between align-items-center mb-2">

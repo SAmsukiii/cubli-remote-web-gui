@@ -102,9 +102,9 @@ const REFERENCE_FRAME_SVG_BASIS = Object.freeze({
 const REFERENCE_FRAME_SVG_BOUNDS = Object.freeze({
   minX: 0,
   minY: 0,
-  maxX: 140,
-  maxY: 126,
-  padding: 8,
+  maxX: 180,
+  maxY: 164,
+  padding: 22,
 });
 // Serial/IMU packet은 보통 10~100 Hz로 들어오지만 화면은 60 fps로 그려진다.
 // 목표 자세까지 매 프레임 보간해서 EBIMU 자세가 계단식으로 튀지 않게 만든다.
@@ -733,10 +733,10 @@ function CubliModel({
 
 function ReferenceFrameOverlay({ isMobile, frameDebug }) {
   // Mini reference frame overlay. UI-only SVG coordinates.
-  const width = isMobile ? 118 : 146;
-  const height = isMobile ? 104 : 126;
+  const width = isMobile ? 154 : 184;
+  const height = isMobile ? 140 : 168;
 
-  const origin = useMemo(() => ({ x: 54, y: 34 }), []);
+  const origin = useMemo(() => ({ x: 72, y: 86 }), []);
   const debugConfig = useMemo(() => normalizeFrameDebugConfig(frameDebug), [frameDebug]);
   const referenceFrameArrowMirrorPresetKey = resolveReferenceFrameArrowMirrorPresetKey(debugConfig);
   const axes = useMemo(
@@ -754,8 +754,8 @@ function ReferenceFrameOverlay({ isMobile, frameDebug }) {
     <div
       className="position-absolute"
       style={{
-        bottom: isMobile ? '2.45rem' : '2.65rem',
-        left: isMobile ? '0.65rem' : '0.95rem',
+        bottom: isMobile ? '3.1rem' : '3.35rem',
+        left: isMobile ? '1rem' : '1.25rem',
         width: `${width}px`,
         height: `${height}px`,
         zIndex: 1060,
@@ -763,7 +763,7 @@ function ReferenceFrameOverlay({ isMobile, frameDebug }) {
       }}
       aria-label="Cubli reference frame"
     >
-      <svg width="100%" height="100%" viewBox="0 0 140 126" preserveAspectRatio="xMidYMid meet">
+      <svg width="100%" height="100%" viewBox="0 0 180 164" preserveAspectRatio="xMidYMid meet" style={{ overflow: 'visible' }}>
         <defs>
           <marker
             id="cubli-axis-arrow-red"

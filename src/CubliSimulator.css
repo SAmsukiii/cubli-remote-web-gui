@@ -1086,6 +1086,44 @@
   line-height: 1.45;
 }
 
+.csv-logging-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 0.45rem;
+}
+
+.csv-logging-stat-grid > div {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+  color: #d9dee7;
+  background: #0b0f14;
+  border: 1px solid #26313a;
+  border-radius: 0.35rem;
+  padding: 0.42rem 0.55rem;
+  line-height: 1.25;
+}
+
+.csv-logging-stat-grid span {
+  min-width: 0;
+  color: #adb5bd;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.csv-logging-stat-grid strong {
+  flex: 0 0 auto;
+  color: #f2f6fb;
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.data-selector-actions .btn {
+  min-width: 128px;
+}
+
 .receiver-info-text {
   color: #d8dee9;
   background: #0b0f14;

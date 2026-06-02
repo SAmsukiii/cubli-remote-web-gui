@@ -374,10 +374,29 @@ function packetToCsvRow(packet) {
   return csvRowFromPacket(packet, LOG_COLUMNS);
 }
 
-function filterCsvRows(rows = [], kind = 'combined') {
+function filterCsvRows(rows = [], kind = 'telemetry') {
   if (kind === 'telemetry') return rows.filter((row) => ['TEL', 'IMU'].includes(detectSampleType(row)));
   if (kind === 'encoder') return rows.filter((row) => detectSampleType(row) === 'ENC');
-  return rows;
+  return [];
+}
+
+function summarizeCsvRows(rows = [], startedAt = null) {
+  const summary = { total: rows.length, telemetry: 0, imu: 0, tel: 0, enc: 0, rateHz: 0 };
+  rows.forEach((row) => {
+    const type = detectSampleType(row);
+    if (type === 'TEL') {
+      summary.tel += 1;
+      summary.telemetry += 1;
+    } else if (type === 'IMU') {
+      summary.imu += 1;
+      summary.telemetry += 1;
+    } else if (type === 'ENC') {
+      summary.enc += 1;
+    }
+  });
+  const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+  summary.rateHz = elapsedMs > 0 ? summary.total / (elapsedMs / 1000) : 0;
+  return summary;
 }
 
 function ValueRow({ label, value }) {
@@ -1703,23 +1722,32 @@ function DataLoggingSection({ latestPacket }) {
   const [csvStartedAt, setCsvStartedAt] = useState(null);
   const [csvSampleCount, setCsvSampleCount] = useState(0);
   const [csvElapsedMs, setCsvElapsedMs] = useState(0);
+  const [csvStats, setCsvStats] = useState(() => summarizeCsvRows([]));
   const logRef = useRef([]);
   const seenCsvPacketKeysRef = useRef(new Set());
   const nextCsvLogIndexRef = useRef(0);
+  const csvStartedAtRef = useRef(null);
 
   useEffect(() => {
     if (!csvLogging) return;
     if (!latestPacket?.publishedAt && !latestPacket?.updatedAt && !latestPacket?.raw) return;
+    const packetTime = Number(latestPacket?.publishedAt ?? latestPacket?.updatedAt);
+    if (csvStartedAtRef.current && Number.isFinite(packetTime) && packetTime < csvStartedAtRef.current) return;
     const appended = appendCsvLogSample(logRef, seenCsvPacketKeysRef, latestPacket, {
       nextLogIndexRef: nextCsvLogIndexRef,
     });
-    if (appended) setCsvSampleCount(logRef.current.length);
+    if (appended) {
+      const nextStats = summarizeCsvRows(logRef.current, csvStartedAtRef.current);
+      setCsvSampleCount(nextStats.total);
+      setCsvStats(nextStats);
+    }
   }, [csvLogging, latestPacket]);
 
   useEffect(() => {
     if (!csvLogging || !csvStartedAt) return undefined;
     const timer = window.setInterval(() => {
       setCsvElapsedMs(Date.now() - csvStartedAt);
+      setCsvStats(summarizeCsvRows(logRef.current, csvStartedAtRef.current));
     }, 500);
     return () => window.clearInterval(timer);
   }, [csvLogging, csvStartedAt]);
@@ -1729,22 +1757,22 @@ function DataLoggingSection({ latestPacket }) {
     seenCsvPacketKeysRef.current = new Set();
     nextCsvLogIndexRef.current = 0;
     const startedAt = Date.now();
+    csvStartedAtRef.current = startedAt;
     setCsvStartedAt(startedAt);
     setCsvElapsedMs(0);
     setCsvSampleCount(0);
+    setCsvStats(summarizeCsvRows([], startedAt));
     setCsvLogging(true);
   };
 
-  const stopCsvLogging = () => {
-    setCsvLogging(false);
-  };
-
-  const downloadCsv = (kind = 'combined') => {
+  const downloadCsv = (kind = 'telemetry') => {
     if (csvLogging) setCsvLogging(false);
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
+      setCsvStats(summarizeCsvRows([]));
       setCsvElapsedMs(0);
       setCsvStartedAt(null);
+      csvStartedAtRef.current = null;
       alert('No shared live data was logged in this CSV session.');
       return;
     }
@@ -1755,8 +1783,7 @@ function DataLoggingSection({ latestPacket }) {
     }
     const sortedRows = finalizeCsvLogRows(filteredRows);
     const csv = [LOG_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
-    const suffix = kind === 'combined' ? 'combined_raw' : kind;
-    downloadTextFile(`cubli_shared_${suffix}_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
+    downloadTextFile(`cubli_shared_${kind}_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
   };
 
   return (
@@ -1764,36 +1791,32 @@ function DataLoggingSection({ latestPacket }) {
       <div className="d-flex justify-content-between align-items-center mb-2">
           <div>
             <div className="serial-section-title">CSV Logging</div>
-            <div className="server-small-note">CSV mode: Save every valid shared sample received by this viewer.</div>
+            <div className="server-small-note">CSV mode: Save every valid Serial sample</div>
             <div className="server-small-note">{CSV_LOG_NOTE}</div>
           </div>
         <Badge bg={csvLogging ? 'success' : 'secondary'}>{csvSampleCount}</Badge>
       </div>
-      <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)} / samples {csvSampleCount}</div>
-      <Row className="g-2">
-        <Col xs={6} md={3}>
+      <div className="csv-logging-stat-grid mb-3">
+        <div><span>Logged total samples</span><strong>{csvStats.total}</strong></div>
+        <div><span>Logged TEL/IMU samples</span><strong>{csvStats.telemetry}</strong></div>
+        <div><span>Logged ENC samples</span><strong>{csvStats.enc}</strong></div>
+        <div><span>Estimated logging rate</span><strong>{formatNumber(csvStats.rateHz, 1)} Hz</strong></div>
+      </div>
+      <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)}</div>
+      <Row className="g-2 justify-content-center">
+        <Col xs={12}>
           <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
             Start CSV Logging
           </Button>
         </Col>
-        <Col xs={6} md={3}>
-          <Button variant="outline-warning" className="w-100" onClick={stopCsvLogging} disabled={!csvLogging}>
-            Stop Logging
+        <Col xs={12} md={6}>
+          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvStats.telemetry === 0}>
+            Stop & Download Telemetry CSV
           </Button>
         </Col>
-        <Col xs={12} md={2}>
-          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('combined')} disabled={!csvLogging && csvSampleCount === 0}>
-            Download Combined Raw CSV
-          </Button>
-        </Col>
-        <Col xs={6} md={2}>
-          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('telemetry')} disabled={!csvLogging && csvSampleCount === 0}>
-            Download Telemetry CSV
-          </Button>
-        </Col>
-        <Col xs={6} md={2}>
-          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvSampleCount === 0}>
-            Download Encoder CSV
+        <Col xs={12} md={6}>
+          <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('encoder')} disabled={!csvLogging && csvStats.enc === 0}>
+            Stop & Download Encoder CSV
           </Button>
         </Col>
       </Row>
@@ -2088,6 +2111,11 @@ export default function ServerPanel({ serverSync, localSerial = null, webSerialC
   const controllerName = access.controllerDisplayName || access.controllerClientName || clientDisplayName(controllerClient);
   const commandOwner = access.commandOwner || (controllerClientId ? `Control assigned to: ${controllerName || shortClientId(controllerClientId)}` : 'Admin has control');
   const connectionStatus = safeServerSync.connectionStatus || 'disconnected';
+  const latestPacketForCsvLogging = status.latestPacket
+    || status.latestSharedPacket
+    || safeServerSync.latestPacket
+    || safeServerSync.latestSharedPacket
+    || null;
 
   return (
     <div className="server-panel serial-panel pt-2">
@@ -2101,6 +2129,7 @@ export default function ServerPanel({ serverSync, localSerial = null, webSerialC
       <IdentitySection serverSync={safeServerSync} role={isController ? 'controller' : role} onChangeDisplayName={onChangeDisplayName} />
       <AdminLoginSection serverSync={safeServerSync} role={role} />
       <ServerConnectionSection serverSync={safeServerSync} />
+      <DataLoggingSection latestPacket={latestPacketForCsvLogging} />
       <RoleNotice role={isController ? 'controller' : role} />
       <RpyConventionSection serverSync={safeServerSync} />
       <VisualSettingsSummary serverSync={safeServerSync} />
@@ -2148,7 +2177,6 @@ export default function ServerPanel({ serverSync, localSerial = null, webSerialC
       />
 
       <MonitoringSection status={status} isActive={isActive} isAdmin={isAdmin} />
-      <DataLoggingSection latestPacket={status.latestPacket} />
     </div>
   );
 }
