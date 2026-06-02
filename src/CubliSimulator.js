@@ -217,7 +217,8 @@ function getPacketQuaternionOrIdentity(packet) {
 }
 
 function sampleTypeFromPacket(packet = {}) {
-  return String(packet.sample_type || packet.sampleType || packet.rawPrefix || packet.raw_prefix || 'TEL').trim().toUpperCase();
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
+  return String(safePacket.sample_type || safePacket.sampleType || safePacket.rawPrefix || safePacket.raw_prefix || 'TEL').trim().toUpperCase();
 }
 
 function finitePacketNumber(value, fallback = null) {
@@ -226,31 +227,36 @@ function finitePacketNumber(value, fallback = null) {
 }
 
 function packetTimestampFor3D(packet = {}) {
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
   return finitePacketNumber(
-    packet.updatedAt ?? packet.publishedAt ?? packet.pcTimeMs ?? packet.pc_time_ms,
+    safePacket.updatedAt ?? safePacket.publishedAt ?? safePacket.pcTimeMs ?? safePacket.pc_time_ms,
     null
   );
 }
 
 function readWheelRpm(packet = {}) {
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
   return {
-    x: finitePacketNumber(packet.RPM1, null),
-    y: finitePacketNumber(packet.RPM2, null),
-    z: finitePacketNumber(packet.RPM3, null),
+    x: finitePacketNumber(safePacket.RPM1, null),
+    y: finitePacketNumber(safePacket.RPM2, null),
+    z: finitePacketNumber(safePacket.RPM3, null),
   };
 }
 
 function hasAnyWheelRpm(rpm = {}) {
-  return [rpm.x, rpm.y, rpm.z].some((value) => value !== null);
+  const safeRpm = rpm && typeof rpm === 'object' ? rpm : EMPTY_OBJECT;
+  return [safeRpm.x, safeRpm.y, safeRpm.z].some((value) => value !== null);
 }
 
 function makeWheelRpmPacketKey(packet = {}, rpm = readWheelRpm(packet)) {
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
+  const safeRpm = rpm && typeof rpm === 'object' ? rpm : EMPTY_OBJECT;
   return [
-    packetTimestampFor3D(packet) ?? '',
-    finitePacketNumber(packet.seq ?? packet.rxCount, '') ?? '',
-    rpm.x ?? '',
-    rpm.y ?? '',
-    rpm.z ?? '',
+    packetTimestampFor3D(safePacket) ?? '',
+    finitePacketNumber(safePacket.seq ?? safePacket.rxCount, '') ?? '',
+    safeRpm.x ?? '',
+    safeRpm.y ?? '',
+    safeRpm.z ?? '',
   ].join('|');
 }
 
@@ -286,10 +292,11 @@ function resolveLatest3DPacket(livePacketRef, activeSourceType) {
 }
 
 function packetOrderValue(packet = {}) {
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
   return {
-    seq: finitePacketNumber(packet.seq ?? packet.rxCount ?? packet.packetCount, null),
-    timestamp: finitePacketNumber(packet.timestamp ?? packet.ebimu_timestamp_ms ?? packet.ebimuTimestampMs, null),
-    pcTimeMs: finitePacketNumber(packet.pcTimeMs ?? packet.pc_time_ms ?? packet.updatedAt, null),
+    seq: finitePacketNumber(safePacket.seq ?? safePacket.rxCount ?? safePacket.packetCount, null),
+    timestamp: finitePacketNumber(safePacket.timestamp ?? safePacket.ebimu_timestamp_ms ?? safePacket.ebimuTimestampMs, null),
+    pcTimeMs: finitePacketNumber(safePacket.pcTimeMs ?? safePacket.pc_time_ms ?? safePacket.updatedAt, null),
   };
 }
 
@@ -862,9 +869,9 @@ function CubliCanvas({
   const cubliRef = useRef();
   const cameraTargetRef = useRef(new THREE.Vector3(0, 0, 0));
   const currentPacket = resolveLatest3DPacket(livePacketRef, activeSourceType);
-  const hasLiveData = Boolean(currentPacket.updatedAt || currentPacket.publishedAt);
+  const hasLiveData = Boolean(currentPacket?.updatedAt || currentPacket?.publishedAt);
   const safeLiveStatusText = liveStatusText
-    || (hasLiveData ? (currentPacket.sourceLabel || currentPacket.source || 'Live data') : 'No live data yet');
+    || (hasLiveData ? (currentPacket?.sourceLabel || currentPacket?.source || 'Live data') : 'No live data yet');
 
   useEffect(() => {
     let rafId;
@@ -1729,8 +1736,8 @@ export default function CubliSimulator() {
     : (sharedPacket?.sourceLabel || 'Shared Server Data');
   const activePacketFor3D = resolvePacketFor3D(activeLivePacketFor3DRef.current);
   const hasLiveDataFor3D = Boolean(
-    activePacketFor3D.updatedAt ||
-    activePacketFor3D.publishedAt ||
+    activePacketFor3D?.updatedAt ||
+    activePacketFor3D?.publishedAt ||
     serial.latestPacket?.updatedAt ||
     ble.latestPacket?.updatedAt ||
     sharedPacketActive
