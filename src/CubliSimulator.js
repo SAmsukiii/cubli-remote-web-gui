@@ -31,6 +31,7 @@ import {
   normalizeFrameDebugConfig,
   resolveBodyFrameArrowMirrorPresetKey,
   resolveReferenceFrameArrowMirrorPresetKey,
+  saveFrameDebugDefaultConfig,
 } from './CubliFrameDebug';
 
 // 3D visual settings are rendering-only. They never change telemetry q0~q3.
@@ -43,6 +44,10 @@ const MAX_CAMERA_DISTANCE = 2200;
 const WHEEL_DISTANCE = 62.5;
 const BODY_SCALE = 1.0;
 const WHEEL_SCALE = 1.0;
+const WHEEL_SPIN_VISUAL_SCALE = 0.25;
+const WHEEL_RPM_STALE_MS = 900;
+const MAX_WHEEL_SPIN_STEP_RAD = Math.PI * 0.65;
+const TWO_PI = Math.PI * 2;
 const DEFAULT_VIEW_DIRECTION = new THREE.Vector3(1, 0.72, 1).normalize();
 const WEB_SERIAL_BRIDGE_COMMAND_POLL_MS = 50; // faster bridge command relay
 const EMPTY_OBJECT = Object.freeze({});
@@ -220,6 +225,66 @@ function finitePacketNumber(value, fallback = null) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function packetTimestampFor3D(packet = {}) {
+  return finitePacketNumber(
+    packet.updatedAt ?? packet.publishedAt ?? packet.pcTimeMs ?? packet.pc_time_ms,
+    null
+  );
+}
+
+function readWheelRpm(packet = {}) {
+  return {
+    x: finitePacketNumber(packet.RPM1, null),
+    y: finitePacketNumber(packet.RPM2, null),
+    z: finitePacketNumber(packet.RPM3, null),
+  };
+}
+
+function hasAnyWheelRpm(rpm = {}) {
+  return [rpm.x, rpm.y, rpm.z].some((value) => value !== null);
+}
+
+function makeWheelRpmPacketKey(packet = {}, rpm = readWheelRpm(packet)) {
+  return [
+    packetTimestampFor3D(packet) ?? '',
+    finitePacketNumber(packet.seq ?? packet.rxCount, '') ?? '',
+    rpm.x ?? '',
+    rpm.y ?? '',
+    rpm.z ?? '',
+  ].join('|');
+}
+
+function wheelRpmToVisualRadPerSec(rpm) {
+  const value = finitePacketNumber(rpm, 0);
+  return value * TWO_PI / 60 * WHEEL_SPIN_VISUAL_SCALE;
+}
+
+function wrapAngleRad(value) {
+  const wrapped = value % TWO_PI;
+  return wrapped < 0 ? wrapped + TWO_PI : wrapped;
+}
+
+function resolveLatest3DPacket(livePacketRef, activeSourceType) {
+  let packet = resolvePacketFor3D(livePacketRef?.current);
+  if (typeof window === 'undefined') return packet;
+
+  const globalPacket = activeSourceType === 'admin-web-serial' || activeSourceType === 'legacy-web-serial' || activeSourceType === 'serial'
+    ? window.__CUBLI_SERIAL_PACKET
+    : activeSourceType === 'ble'
+      ? window.__CUBLI_BLE_PACKET
+      : activeSourceType === 'server-serial'
+        ? window.__CUBLI_SERVER_SERIAL_PACKET
+        : null;
+
+  const globalTime = packetTimestampFor3D(globalPacket);
+  const packetTime = packetTimestampFor3D(packet);
+  if (globalPacket && (packetTime === null || (globalTime !== null && globalTime > packetTime))) {
+    packet = resolvePacketFor3D(globalPacket);
+  }
+
+  return packet;
+}
+
 function packetOrderValue(packet = {}) {
   return {
     seq: finitePacketNumber(packet.seq ?? packet.rxCount ?? packet.packetCount, null),
@@ -382,12 +447,12 @@ function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
    1. Sub Components
 ========================= */
 
-const BodyFrameAxes = forwardRef(({ axisLength = 34, axisDirections = null }, ref) => {
+const BodyFrameAxes = forwardRef(({ axisLength = 90, axisDirections = null }, ref) => {
   const fallbackDirections = useMemo(() => createBodyFrameAxisDirections('current'), []);
   const directions = axisDirections || fallbackDirections;
-  const labelDistance = Math.max(8, Number(axisLength) || 34) * 1.18;
+  const labelDistance = Math.max(8, Number(axisLength) || 90) * 1.18;
   const axes = useMemo(() => {
-    const length = Math.max(8, Number(axisLength) || 34);
+    const length = Math.max(8, Number(axisLength) || 90);
     const headLength = Math.max(3, length * 0.15);
     const headWidth = Math.max(1.8, length * 0.08);
 
@@ -444,7 +509,6 @@ function CameraLocker({ cameraRef, targetRef }) {
 function CubliModel({
   attitude,
   attitudeQuat,
-  torque,
   isPausedByLock,
   sensorMode,
   isSensorActive,
@@ -466,6 +530,12 @@ function CubliModel({
   const previousTargetQuatRef = useRef(new THREE.Quaternion());
   const targetEulerRef = useRef(new THREE.Euler(0, 0, 0, 'XYZ'));
   const displayedQuatInitializedRef = useRef(false);
+  const wheelSpinStateRef = useRef({
+    angles: { x: 0, y: 0, z: 0 },
+    rpm: { x: 0, y: 0, z: 0 },
+    rpmPacketKey: '',
+    rpmUpdatedAtMs: -Infinity,
+  });
 
   const centeredBodyScene = useMemo(() => createCenteredClone(bodyGLTF.scene), [bodyGLTF.scene]);
   const centeredWheelXScene = useMemo(() => createCenteredClone(wheelGLTF.scene), [wheelGLTF.scene]);
@@ -500,18 +570,43 @@ function CubliModel({
   );
 
   useFrame((state, delta) => {
-    // wheel mesh의 기본 회전축을 local Y로 가정
-    if (wheelXSpinRef.current && !isPausedByLock) {
-      wheelXSpinRef.current.rotation.y += torque.x * delta * 0.08;
+    // Wheel meshes spin around local Y; parent groups align those axes to the Cubli body axes.
+    const wheelPacket = resolveLatest3DPacket(livePacketRef, activeSourceType);
+    const frameTimeMs = state.clock.elapsedTime * 1000;
+    const nextWheelRpm = readWheelRpm(wheelPacket);
+    const wheelSpinState = wheelSpinStateRef.current;
+
+    if (hasAnyWheelRpm(nextWheelRpm)) {
+      const rpmPacketKey = makeWheelRpmPacketKey(wheelPacket, nextWheelRpm);
+      if (rpmPacketKey !== wheelSpinState.rpmPacketKey) {
+        wheelSpinState.rpm = {
+          x: nextWheelRpm.x ?? 0,
+          y: nextWheelRpm.y ?? 0,
+          z: nextWheelRpm.z ?? 0,
+        };
+        wheelSpinState.rpmPacketKey = rpmPacketKey;
+        wheelSpinState.rpmUpdatedAtMs = frameTimeMs;
+      }
     }
 
-    if (wheelYSpinRef.current && !isPausedByLock) {
-      wheelYSpinRef.current.rotation.y += torque.y * delta * 0.08;
+    const rpmAgeMs = frameTimeMs - wheelSpinState.rpmUpdatedAtMs;
+    const rpmIsFresh = Number.isFinite(rpmAgeMs) && rpmAgeMs <= WHEEL_RPM_STALE_MS;
+    const spinDeltaSec = Math.max(0, Math.min(delta, 0.05));
+
+    if (!isPausedByLock && rpmIsFresh) {
+      ['x', 'y', 'z'].forEach((axis) => {
+        const deltaAngle = THREE.MathUtils.clamp(
+          wheelRpmToVisualRadPerSec(wheelSpinState.rpm[axis]) * spinDeltaSec,
+          -MAX_WHEEL_SPIN_STEP_RAD,
+          MAX_WHEEL_SPIN_STEP_RAD
+        );
+        wheelSpinState.angles[axis] = wrapAngleRad(wheelSpinState.angles[axis] + deltaAngle);
+      });
     }
 
-    if (wheelZSpinRef.current && !isPausedByLock) {
-      wheelZSpinRef.current.rotation.y += torque.z * delta * 0.08;
-    }
+    if (wheelXSpinRef.current) wheelXSpinRef.current.rotation.y = wheelSpinState.angles.x;
+    if (wheelYSpinRef.current) wheelYSpinRef.current.rotation.y = wheelSpinState.angles.y;
+    if (wheelZSpinRef.current) wheelZSpinRef.current.rotation.y = wheelSpinState.angles.z;
 
     if (modelRef.current) {
       let usedLivePacketQuat = false;
@@ -520,7 +615,7 @@ function CubliModel({
       // 핵심: sensorMode / isSensorActive 조건에 묶어두면 탭 전환이나 UI 패치 후
       // 첫 packet만 반영되고 이후 live packet을 놓치는 경우가 생길 수 있다.
       // 따라서 livePacketRef가 존재하고 q=[qw,qx,qy,qz]가 유효하면 항상 quaternion을 우선 사용한다.
-      let packet = resolvePacketFor3D(livePacketRef?.current);
+      let packet = wheelPacket;
       // livePacketRef 전달이 탭/렌더 타이밍 때문에 늦어지는 경우를 막기 위한 최종 fallback.
       // useEsp32Serial/useEsp32Ble가 valid packet을 받는 즉시 window slot에 최신값을 넣는다.
       if (typeof window !== 'undefined') {
@@ -748,7 +843,6 @@ function ReferenceFrameOverlay({ isMobile, frameDebug }) {
 function CubliCanvas({
   attitude,
   attitudeQuat,
-  torque,
   isPausedByLock,
   sensorMode,
   isSensorActive,
@@ -767,7 +861,7 @@ function CubliCanvas({
 }) {
   const cubliRef = useRef();
   const cameraTargetRef = useRef(new THREE.Vector3(0, 0, 0));
-  const currentPacket = resolvePacketFor3D(livePacketRef?.current);
+  const currentPacket = resolveLatest3DPacket(livePacketRef, activeSourceType);
   const hasLiveData = Boolean(currentPacket.updatedAt || currentPacket.publishedAt);
   const safeLiveStatusText = liveStatusText
     || (hasLiveData ? (currentPacket.sourceLabel || currentPacket.source || 'Live data') : 'No live data yet');
@@ -938,7 +1032,6 @@ function CubliCanvas({
           <CubliModel
             attitude={attitude}
             attitudeQuat={attitudeQuat}
-            torque={torque}
             isPausedByLock={isPausedByLock}
             sensorMode={sensorMode}
             isSensorActive={isSensorActive}
@@ -1436,20 +1529,28 @@ export default function CubliSimulator() {
       ? JSON.stringify(normalizeFrameDebugConfig(serverSync.visualSettings))
       : ''
   ), [serverSync?.visualSettings]);
+  const defaultFrameDebugKey = useMemo(() => (
+    JSON.stringify(normalizeFrameDebugConfig({ ...DEFAULT_FRAME_DEBUG_CONFIG }))
+  ), []);
 
   useEffect(() => {
     if (!serverSync?.visualSettings || !serverVisualSettingsKey) return;
     const nextConfig = normalizeFrameDebugConfig(serverSync.visualSettings);
+    const serverHasUserVisualSettings = nextConfig.updatedAt !== null;
     setFrameDebug((prev) => {
       const prevKey = JSON.stringify(normalizeFrameDebugConfig(prev));
       const nextKey = JSON.stringify(nextConfig);
+      if (!serverHasUserVisualSettings && nextKey === defaultFrameDebugKey && prevKey !== defaultFrameDebugKey) {
+        return prev;
+      }
       return prevKey === nextKey ? prev : nextConfig;
     });
-  }, [serverSync?.visualSettings, serverVisualSettingsKey]);
+  }, [defaultFrameDebugKey, serverSync?.visualSettings, serverVisualSettingsKey]);
 
   const handleFrameDebugChange = React.useCallback((nextValue) => {
     const nextConfig = normalizeFrameDebugConfig(nextValue);
     setFrameDebug(nextConfig);
+    saveFrameDebugDefaultConfig(nextConfig);
     if (isAdmin) {
       serverSync?.updateVisualSettings?.(nextConfig);
     }
@@ -1474,7 +1575,7 @@ export default function CubliSimulator() {
     handleFrameDebugChange(defaults);
     handleResetViewCamera();
     recordEvent(
-      { source: 'ui', eventType: 'RESET_WEB_VIEW', label: 'Reset Web View', detail: { visualSettings: defaults } },
+      { source: 'ui', eventType: 'RESET_WEB_VIEW', label: 'Reset 3D Display Defaults', detail: { visualSettings: defaults } },
       'ui'
     );
   }, [handleFrameDebugChange, handleResetViewCamera, recordEvent]);
@@ -2428,7 +2529,6 @@ export default function CubliSimulator() {
           <CubliCanvas
             attitude={attitude}
             attitudeQuat={attitudeQuat}
-            torque={torque}
             isPausedByLock={isPausedByLock}
             sensorMode={sensorMode}
             isSensorActive={isSensorActive || hardwareImuActive}
@@ -2486,7 +2586,7 @@ export default function CubliSimulator() {
                       onClick={handleResetWebView}
                       className="fw-bold shadow-sm quick-reset-button"
                     >
-                      Reset Web View
+                      Reset 3D Display Defaults
                     </Button>
                   ) : null}
                 </div>
@@ -2506,8 +2606,8 @@ export default function CubliSimulator() {
                     <div className="axis-length-value">{Math.round(axisLength)}</div>
                   </div>
                   <Form.Range
-                    min="10"
-                    max="90"
+                    min="90"
+                    max="180"
                     step="2"
                     value={axisLength}
                     onChange={(e) => setAxisLength(Number(e.target.value))}
@@ -2518,7 +2618,7 @@ export default function CubliSimulator() {
                       variant="outline-secondary"
                       size="sm"
                       className="axis-length-reset"
-                      onClick={() => setAxisLength(34)}
+                      onClick={() => setAxisLength(90)}
                     >
                       기본값
                     </Button>

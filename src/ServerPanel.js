@@ -1755,8 +1755,8 @@ function DataLoggingSection({ latestPacket }) {
     }
     const sortedRows = finalizeCsvLogRows(filteredRows);
     const csv = [LOG_COLUMNS.join(','), ...sortedRows.map(packetToCsvRow)].join('\n');
-    const suffix = kind === 'combined' ? 'combined' : kind;
-    downloadTextFile(`cubli_shared_${suffix}_log_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
+    const suffix = kind === 'combined' ? 'combined_raw' : kind;
+    downloadTextFile(`cubli_shared_${suffix}_${formatCsvFileTimestamp()}.csv`, `${csv}\n`);
   };
 
   return (
@@ -1783,7 +1783,7 @@ function DataLoggingSection({ latestPacket }) {
         </Col>
         <Col xs={12} md={2}>
           <Button variant="outline-light" className="w-100" onClick={() => downloadCsv('combined')} disabled={!csvLogging && csvSampleCount === 0}>
-            Download Combined CSV
+            Download Combined Raw CSV
           </Button>
         </Col>
         <Col xs={6} md={2}>

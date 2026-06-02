@@ -23,14 +23,15 @@ const DEFAULT_ENCODER_YAW_SIGN = 1;
 const DEFAULT_WZ_DISPLAY_SIGN = 1;
 const VISUAL_MIRROR_PRESETS = Object.freeze(['current', 'mirrorX', 'mirrorY', 'mirrorZ', 'mirrorXY', 'mirrorXZ', 'mirrorYZ', 'mirrorXYZ']);
 const DEFAULT_VISUAL_SETTINGS = Object.freeze({
-  wheelMirrorX: false,
-  wheelMirrorY: false,
+  wheelMirrorX: true,
+  wheelMirrorY: true,
   wheelMirrorZ: false,
-  referenceFrameMirror: 'current',
-  bodyFrameMirror: 'current',
+  wheelMirrorPreset: 'mirrorXY',
+  referenceFrameMirror: 'mirrorYZ',
+  bodyFrameMirror: 'mirrorYZ',
   flipCubliVertical: true,
   showFrameHelpers: false,
-  bodyAxisLength: 34,
+  bodyAxisLength: 90,
   wheelPositionScale: 1,
   updatedAt: null,
   updatedBy: '',
@@ -176,9 +177,11 @@ function normalizeVisualSettings(value = DEFAULT_VISUAL_SETTINGS) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : DEFAULT_VISUAL_SETTINGS;
   const hasWheelFlags = ['wheelMirrorX', 'wheelMirrorY', 'wheelMirrorZ']
     .some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const defaultWheelMirrorPreset = DEFAULT_VISUAL_SETTINGS.wheelMirrorPreset
+    || mirrorFlagsToPreset(DEFAULT_VISUAL_SETTINGS);
   const wheelMirrorPreset = hasWheelFlags
     ? mirrorFlagsToPreset(source)
-    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, mirrorFlagsToPreset(source));
+    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, defaultWheelMirrorPreset);
   const wheelFlags = mirrorFlagsFromPreset(wheelMirrorPreset);
   const bodyAxisLength = Number(source.bodyAxisLength);
   const wheelPositionScale = Number(source.wheelPositionScale);
@@ -197,7 +200,7 @@ function normalizeVisualSettings(value = DEFAULT_VISUAL_SETTINGS) {
     flipCubliVertical: boolValue(source.flipCubliVertical, DEFAULT_VISUAL_SETTINGS.flipCubliVertical),
     showFrameHelpers: boolValue(source.showFrameHelpers, boolValue(source.showHelpers, DEFAULT_VISUAL_SETTINGS.showFrameHelpers)),
     bodyAxisLength: Number.isFinite(bodyAxisLength)
-      ? Math.max(10, Math.min(90, bodyAxisLength))
+      ? Math.max(90, Math.min(180, bodyAxisLength))
       : DEFAULT_VISUAL_SETTINGS.bodyAxisLength,
     wheelPositionScale: Number.isFinite(wheelPositionScale)
       ? Math.max(0.65, Math.min(1.35, wheelPositionScale))

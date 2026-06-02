@@ -45,14 +45,15 @@ const DEFAULT_ENCODER_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 
 const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
 const VISUAL_MIRROR_PRESETS = Object.freeze(['current', 'mirrorX', 'mirrorY', 'mirrorZ', 'mirrorXY', 'mirrorXZ', 'mirrorYZ', 'mirrorXYZ']);
 const DEFAULT_VISUAL_SETTINGS = Object.freeze({
-  wheelMirrorX: false,
-  wheelMirrorY: false,
+  wheelMirrorX: true,
+  wheelMirrorY: true,
   wheelMirrorZ: false,
-  referenceFrameMirror: 'current',
-  bodyFrameMirror: 'current',
+  wheelMirrorPreset: 'mirrorXY',
+  referenceFrameMirror: 'mirrorYZ',
+  bodyFrameMirror: 'mirrorYZ',
   flipCubliVertical: true,
   showFrameHelpers: false,
-  bodyAxisLength: 34,
+  bodyAxisLength: 90,
   wheelPositionScale: 1,
   updatedAt: null,
   updatedBy: '',
@@ -865,9 +866,11 @@ function normalizeVisualSettings(value = {}, meta = {}) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const hasWheelFlags = ['wheelMirrorX', 'wheelMirrorY', 'wheelMirrorZ']
     .some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const defaultWheelMirrorPreset = DEFAULT_VISUAL_SETTINGS.wheelMirrorPreset
+    || visualMirrorFlagsToPreset(DEFAULT_VISUAL_SETTINGS);
   const wheelMirrorPreset = hasWheelFlags
     ? visualMirrorFlagsToPreset(source)
-    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, visualMirrorFlagsToPreset(source));
+    : normalizeVisualMirrorPreset(source.wheelMirrorPreset, defaultWheelMirrorPreset);
   const wheelFlags = visualMirrorFlagsFromPreset(wheelMirrorPreset);
   const bodyAxisLength = strictFiniteNumber(source.bodyAxisLength, DEFAULT_VISUAL_SETTINGS.bodyAxisLength);
   const wheelPositionScale = strictFiniteNumber(source.wheelPositionScale, DEFAULT_VISUAL_SETTINGS.wheelPositionScale);
@@ -889,7 +892,7 @@ function normalizeVisualSettings(value = {}, meta = {}) {
       source.showFrameHelpers,
       boolValue(source.showHelpers, DEFAULT_VISUAL_SETTINGS.showFrameHelpers)
     ),
-    bodyAxisLength: clamp(bodyAxisLength, 10, 90),
+    bodyAxisLength: clamp(bodyAxisLength, 90, 180),
     wheelPositionScale: clamp(wheelPositionScale, 0.65, 1.35),
     updatedAt,
     updatedBy,

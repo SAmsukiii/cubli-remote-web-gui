@@ -81,10 +81,61 @@ export const DEFAULT_CSV_LOG_COLUMNS = [
   'enc_z_deg',
 ];
 
-export const CSV_LOG_NOTE = 'CSV mode: Save every valid Serial sample. Combined/split downloads are sorted by non-decreasing plot_time_ms.';
+export const CSV_LOG_NOTE = 'CSV mode: save every valid Serial sample as one raw long-format event row. TEL/IMU and ENC stay independent, sorted by plot_time_ms.';
 
 const TELEMETRY_SAMPLE_TYPES = new Set(['TEL', 'IMU']);
 const VALID_SAMPLE_TYPES = new Set(['TEL', 'IMU', 'ENC']);
+
+const ENCODER_PACKET_FIELD_KEYS = Object.freeze([
+  'enc_x_deg',
+  'enc_y_deg',
+  'enc_z_deg',
+  'encoderXDeg',
+  'encoderYDeg',
+  'encoderZDeg',
+  'enc_q0',
+  'enc_q1',
+  'enc_q2',
+  'enc_q3',
+  'encoderQ0',
+  'encoderQ1',
+  'encoderQ2',
+  'encoderQ3',
+  'encoderRollDeg',
+  'encoderPitchDeg',
+  'encoderYawDeg',
+  'encoderRawRollDeg',
+  'encoderRawPitchDeg',
+  'encoderRawYawDeg',
+  'encoderDisplayRollSign',
+  'encoderDisplayPitchSign',
+  'encoderDisplayYawSign',
+  'encoderAngleToQuatSequence',
+  'encoderEulerSequence',
+  'encoderQuatSource',
+  'encoderRpySource',
+  'encoderStatus',
+  'encoderSource',
+  'encoderHasQuaternion',
+  'encoderFresh',
+  'enc_timer_x',
+  'enc_timer_y',
+  'enc_timer_z',
+  'encoderTimerX',
+  'encoderTimerY',
+  'encoderTimerZ',
+  'enc_age_x',
+  'enc_age_y',
+  'enc_age_z',
+  'encoderAgeX',
+  'encoderAgeY',
+  'encoderAgeZ',
+  'encoderUpdatedAt',
+  'encoder',
+  'encoderOnly',
+  'encoderOnlyUpdate',
+  'lastEncoderPacketAt',
+]);
 
 function finiteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
@@ -296,6 +347,17 @@ function encoderOnlyPacket(packet = {}, metadata = {}) {
   };
 }
 
+function telemetryOnlyPacket(packet = {}, metadata = {}) {
+  const next = {
+    ...packet,
+    ...metadata,
+  };
+  ENCODER_PACKET_FIELD_KEYS.forEach((key) => {
+    delete next[key];
+  });
+  return next;
+}
+
 export function prepareCsvLogEntry(packet = {}, options = {}) {
   const loggedAtMs = finiteNumber(options.loggedAtMs, Date.now());
   const sampleType = detectSampleType(packet);
@@ -315,10 +377,7 @@ export function prepareCsvLogEntry(packet = {}, options = {}) {
     rawPrefix,
   };
   if (sampleType === 'ENC') return encoderOnlyPacket(packet, metadata);
-  return {
-    ...packet,
-    ...metadata,
-  };
+  return telemetryOnlyPacket(packet, metadata);
 }
 
 export function appendCsvLogSample(logRef, seenKeysRef, packet, options = {}) {
@@ -409,7 +468,7 @@ export function normalizeCsvPacketForColumns(packet = {}) {
     packetKey: makePacketKey(packet, sampleType, rawPrefix),
     raw_prefix: rawPrefix,
     rawPrefix,
-  }) : packet;
+  }) : telemetryOnlyPacket(packet);
   const desired = source.latestDesiredAttitude || source.desiredAttitude || {};
 
   return {
