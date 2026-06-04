@@ -489,6 +489,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     .some((value) => value !== null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
   const canUseLegacyAngles = !hasAnyRawQ && hasAllAxes;
+  const hasRemoteQuaternion = Boolean(normalizedRawQ.ok);
   const encoderStatus = normalizeEncoderStatus({
     explicitStatus: packet.encoderStatus || nested.status,
     hasData: hasEncoderData,
@@ -509,9 +510,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const computedQ = encoderStatus === 'LIVE' && canUseLegacyAngles
     ? eulerDegToQuat(encX, encY, encZ, encoderAngleToQuatSequence)
     : null;
-  const encoderQ = encoderStatus === 'LIVE'
-    ? (normalizedRawQ.ok ? normalizedRawQ.q : computedQ)
-    : null;
+  const encoderQ = hasRemoteQuaternion ? normalizedRawQ.q : computedQ;
   const encQ0 = encoderQ ? encoderQ[0] : null;
   const encQ1 = encoderQ ? encoderQ[1] : null;
   const encQ2 = encoderQ ? encoderQ[2] : null;
@@ -519,25 +518,20 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const encoderEulerRaw = encoderQ ? quaternionToEulerDeg(encoderQ, encoderEulerSequence) : null;
   const encoderEuler = encoderEulerRaw ? applyEulerDisplaySigns(encoderEulerRaw, encoderDisplaySigns) : null;
   const hasValidQuaternion = Boolean(encoderQ);
-  const usingRemoteQ = Boolean(encoderQ && normalizedRawQ.ok);
+  const usingRemoteQ = Boolean(encoderQ && hasRemoteQuaternion);
   const encoderQuatSource = usingRemoteQ
     ? 'remote-computed gimbal encoder quaternion'
     : (computedQ ? 'web-computed from legacy gimbal encoder angles' : '');
-  const statusSource = !hasEncoderData
-    ? ''
-    : encoderStatus === 'LIVE' && computedQ
-      ? 'web-computed from legacy gimbal encoder angles'
-      : encoderStatus === 'LIVE' && usingRemoteQ
-        ? 'remote-computed gimbal encoder quaternion'
-      : encoderStatus === 'PARTIAL'
-        ? 'partial gimbal encoder quaternion'
-        : encoderStatus === 'INVALID'
-          ? 'invalid gimbal encoder quaternion'
-        : encoderStatus === 'STALE'
-          ? 'stale gimbal encoder quaternion'
-          : encoderStatus === 'MIXED'
-            ? 'mixed gimbal encoder timers'
-            : 'gimbal encoder reference';
+  let statusSource = '';
+  if (hasEncoderData) {
+    if (encoderStatus === 'LIVE' && computedQ) statusSource = 'web-computed from legacy gimbal encoder angles';
+    else if (usingRemoteQ) statusSource = 'remote-computed gimbal encoder quaternion';
+    else if (encoderStatus === 'PARTIAL') statusSource = 'partial gimbal encoder quaternion';
+    else if (encoderStatus === 'INVALID') statusSource = 'invalid gimbal encoder quaternion';
+    else if (encoderStatus === 'STALE') statusSource = 'stale gimbal encoder quaternion';
+    else if (encoderStatus === 'MIXED') statusSource = 'mixed gimbal encoder timers';
+    else statusSource = 'gimbal encoder reference';
+  }
   const encoderSource = statusSource || packet.encoderSource || nested.source || '';
   const encoderRpySource = encoderEuler
     ? (usingRemoteQ ? 'web-computed from remote encoder quaternion' : 'web-computed from legacy encoder angle quaternion')
