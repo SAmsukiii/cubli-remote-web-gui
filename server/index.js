@@ -39,7 +39,7 @@ const EULER_SEQUENCES = Object.freeze(['ZYX', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY']
 const DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE = 'ZYX';
 const DEFAULT_ENCODER_FRESH_MS = 300;
 const ENCODER_SYNC_THRESHOLD_MS = 100;
-const WHEEL_RPM_COMMAND_LIMIT = 800;
+const WHEEL_RPM_COMMAND_MAX = 2500;
 const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
 const DEFAULT_ENCODER_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
 const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
@@ -2183,7 +2183,7 @@ function formatGain(value) {
 }
 
 function formatWheelRpm(value, label = 'Wheel RPM') {
-  return Math.round(assertRange(value, label, -WHEEL_RPM_COMMAND_LIMIT, WHEEL_RPM_COMMAND_LIMIT));
+  return Math.round(assertRange(value, label, -WHEEL_RPM_COMMAND_MAX, WHEEL_RPM_COMMAND_MAX));
 }
 
 function buildSerialCommandFromKey(commandKey, params = {}) {

@@ -40,8 +40,9 @@ const ATTITUDE_GAIN_DEFAULTS = {
 const ATTITUDE_GAIN_MIN = 0;
 const ATTITUDE_GAIN_MAX = 10;
 const ATTITUDE_GAIN_STEP = 0.001;
-const WHEEL_RPM_MIN = -800;
-const WHEEL_RPM_MAX = 800;
+const WHEEL_RPM_COMMAND_MAX = 2500;
+const WHEEL_RPM_MIN = -WHEEL_RPM_COMMAND_MAX;
+const WHEEL_RPM_MAX = WHEEL_RPM_COMMAND_MAX;
 const WHEEL_RPM_STEP = 10;
 const LOG_COLUMNS = DEFAULT_CSV_LOG_COLUMNS;
 const EMPTY_OBJECT = Object.freeze({});
@@ -1382,7 +1383,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           </Row>
           {rpmInputInvalid ? (
             <Alert variant="warning" className="py-2">
-              RPM command is limited to +/-800 until the firmware limit is published.
+              RPM command is limited to +/-{WHEEL_RPM_COMMAND_MAX}.
             </Alert>
           ) : null}
           {rpmStatus ? <div className="server-small-note mb-2">{rpmStatus}</div> : null}
