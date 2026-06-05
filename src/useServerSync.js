@@ -698,7 +698,7 @@ function packetToCommonSample(packet, fallbackSource = 'unknown', stats = {}) {
     rawYawDeg: firstFinite([src.rawYawDeg], null),
     imuDisplayRollSign: firstFinite([src.imuDisplayRollSign], DEFAULT_ROLL_SIGN),
     imuDisplayPitchSign: firstFinite([src.imuDisplayPitchSign], DEFAULT_PITCH_SIGN),
-    imuDisplayYawSign: firstFinite([src.imuDisplayYawSign], DEFAULT_YAW_SIGN),
+    imuDisplayYawSign: DEFAULT_YAW_SIGN,
     enc_x_deg: firstFinite([src.enc_x_deg, src.encoderXDeg, src.encoder?.x], null),
     enc_y_deg: firstFinite([src.enc_y_deg, src.encoderYDeg, src.encoder?.y], null),
     enc_z_deg: firstFinite([src.enc_z_deg, src.encoderZDeg, src.encoder?.z], null),

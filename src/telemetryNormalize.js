@@ -61,6 +61,11 @@ export function normalizeRpySigns(source = {}, fallback = DEFAULT_RPY_DISPLAY_SI
   };
 }
 
+export function normalizeImuDisplaySigns(source = {}) {
+  const signs = normalizeRpySigns(source, DEFAULT_RPY_DISPLAY_SIGNS);
+  return { ...signs, yaw: DEFAULT_RPY_DISPLAY_SIGNS.yaw };
+}
+
 export function signsLabel(signs = DEFAULT_RPY_DISPLAY_SIGNS) {
   const safeSigns = normalizeRpySigns(signs);
   return `[${safeSigns.roll > 0 ? '+' : '-'},${safeSigns.pitch > 0 ? '+' : '-'},${safeSigns.yaw > 0 ? '+' : '-'}]`;
@@ -627,11 +632,11 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     options.encoderAngleToQuatSequence || packet.encoderAngleToQuatSequence,
     DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
   );
-  const imuDisplaySigns = normalizeRpySigns({
+  const imuDisplaySigns = normalizeImuDisplaySigns({
     roll: options.imuDisplayRollSign ?? packet.imuDisplayRollSign,
     pitch: options.imuDisplayPitchSign ?? packet.imuDisplayPitchSign,
     yaw: options.imuDisplayYawSign ?? packet.imuDisplayYawSign,
-  }, DEFAULT_RPY_DISPLAY_SIGNS);
+  });
   const bodyRateWzDisplaySign = normalizeSign(
     options.bodyRateWzDisplaySign ?? packet.bodyRateWzDisplaySign,
     DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN

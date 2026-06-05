@@ -920,6 +920,11 @@ function normalizeRpySigns(source = {}, fallback = DEFAULT_RPY_DISPLAY_SIGNS) {
   };
 }
 
+function normalizeImuDisplaySigns(source = {}) {
+  const signs = normalizeRpySigns(source, DEFAULT_RPY_DISPLAY_SIGNS);
+  return { ...signs, yaw: DEFAULT_RPY_DISPLAY_SIGNS.yaw };
+}
+
 function signsLabel(signs = DEFAULT_RPY_DISPLAY_SIGNS) {
   const safeSigns = normalizeRpySigns(signs);
   return `[${safeSigns.roll > 0 ? '+' : '-'},${safeSigns.pitch > 0 ? '+' : '-'},${safeSigns.yaw > 0 ? '+' : '-'}]`;
@@ -1436,11 +1441,11 @@ function normalizePublishedPacket(packet, source, identity, publishMeta = {}) {
     packet.encoderAngleToQuatSequence,
     DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
   );
-  const imuDisplaySigns = normalizeRpySigns({
+  const imuDisplaySigns = normalizeImuDisplaySigns({
     roll: packet.imuDisplayRollSign,
     pitch: packet.imuDisplayPitchSign,
     yaw: packet.imuDisplayYawSign,
-  }, DEFAULT_RPY_DISPLAY_SIGNS);
+  });
   const bodyRateWzDisplaySign = normalizeSign(packet.bodyRateWzDisplaySign, DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN);
 
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4 ? packet.q : [packet.q0, packet.q1, packet.q2, packet.q3];

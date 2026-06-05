@@ -6,6 +6,7 @@ import {
   DEFAULT_ENCODER_TIMER_SPREAD_MS,
   applyEulerDisplaySigns,
   eulerDegToQuat,
+  normalizeImuDisplaySigns,
   normalizeEulerSequence,
   normalizeLivePacket,
   normalizeRpySigns,
@@ -1047,7 +1048,7 @@ export default function useEsp32Serial(options = {}) {
     DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE
   );
   const targetRpySequence = normalizeEulerSequence(options.targetRpySequence || 'ZYX', 'ZYX');
-  const imuDisplaySigns = normalizeRpySigns({
+  const imuDisplaySigns = normalizeImuDisplaySigns({
     roll: options.imuDisplayRollSign,
     pitch: options.imuDisplayPitchSign,
     yaw: options.imuDisplayYawSign,
