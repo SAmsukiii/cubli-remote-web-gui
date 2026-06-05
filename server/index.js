@@ -2202,15 +2202,11 @@ function formatWheelRpm(value, label = 'Wheel RPM') {
 function buildSerialCommandFromKey(commandKey, params = {}) {
   const key = String(commandKey || '').trim();
   switch (key) {
-    // Firmware currently exposes TARE as the known runtime reference reset.
-    // Keep these command keys distinct so firmware-specific CUBLI_INIT/ENC_TARE
-    // lines can be swapped in later without changing the web/server contract.
     case 'cubliInitialize': return makeCommandDescriptor(key, 'Cubli Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
     case 'encoderInitialize':
-    case 'encoderTare': return makeCommandDescriptor(key, 'Gimbal Encoder Initialize', 'TARE', { usesFirmwareCommand: 'TARE' });
+    case 'encoderTare': return makeCommandDescriptor(key, 'Gimbal Encoder Zero', 'GIMBAL_ZERO', { usesFirmwareCommand: 'GIMBAL_ZERO' });
     case 'tare': return makeCommandDescriptor(key, 'Set Zero / Tare', 'TARE');
     case 'stop': return makeCommandDescriptor(key, 'Stop / Motor Stop', 'STOP');
-    case 'emergencyStop': return makeCommandDescriptor(key, 'Emergency Stop', 'STOP');
     case 'status': return makeCommandDescriptor(key, 'Status', 'STATUS?');
     case 'macInfo': return makeCommandDescriptor(key, 'MAC Info', 'MAC?');
     case 'wheelRpmX': {
@@ -2302,11 +2298,11 @@ function buildSerialCommandFromKey(commandKey, params = {}) {
   }
 }
 
-const SAFE_DURING_CALIBRATION_COMMANDS = new Set(['stop', 'emergencyStop', 'wheelRpmStop']);
+const SAFE_DURING_CALIBRATION_COMMANDS = new Set(['stop', 'wheelRpmStop']);
 const CALIBRATION_COMMAND_PROFILES = Object.freeze({
   tare: { waitFor: 'tel', minWaitMs: 450, timeoutMs: 3000, label: 'Set Zero / Tare' },
   cubliInitialize: { waitFor: 'tel', minWaitMs: 3000, timeoutMs: 10000, label: 'Cubli Initialize' },
-  encoderInitialize: { waitFor: 'enc', minWaitMs: 650, timeoutMs: 3000, label: 'Gimbal Encoder Initialize' },
+  encoderInitialize: { waitFor: 'enc', minWaitMs: 650, timeoutMs: 3000, label: 'Gimbal Encoder Zero' },
   encoderTare: { waitFor: 'enc', minWaitMs: 650, timeoutMs: 3000, label: 'Gimbal Encoder Zero' },
   ebimuDefault: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Apply EBIMU Default Settings' },
   ebimuStart: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'EBIMU Start' },
@@ -3367,18 +3363,16 @@ app.post('/api/serial/clear-stats', (req, res) => {
   res.json({ ok: true, ...sanitizeSerialStatus(identity.clientId) });
 });
 
-function serialCommandResponse(req, res, emergency = false) {
+function serialCommandResponse(req, res) {
   const identity = readIdentity(req);
   if (!identity.clientId) return res.status(400).json({ ok: false, error: 'clientId is required', status: sanitizeSerialStatus(identity.clientId) });
-  if (!emergency && identity.role !== 'admin' && identity.role !== 'controller') return res.status(403).json({ ok: false, error: 'Viewer cannot send commands', status: sanitizeSerialStatus(identity.clientId) });
-  if (emergency && identity.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin permission is required', status: sanitizeSerialStatus(identity.clientId) });
+  if (identity.role !== 'admin' && identity.role !== 'controller') return res.status(403).json({ ok: false, error: 'Viewer cannot send commands', status: sanitizeSerialStatus(identity.clientId) });
   res.status(400).json({ ok: false, error: 'Server Serial Direct Mode is disabled. Use bridge command request.', status: sanitizeSerialStatus(identity.clientId) });
 }
-app.post('/api/serial/command', (req, res) => serialCommandResponse(req, res, false));
-app.post('/api/serial/controller', (req, res) => serialCommandResponse(req, res, false));
-app.post('/api/serial/tare', (req, res) => serialCommandResponse(req, res, false));
-app.post('/api/serial/stop', (req, res) => serialCommandResponse(req, res, false));
-app.post('/api/serial/emergency-stop', (req, res) => serialCommandResponse(req, res, true));
+app.post('/api/serial/command', (req, res) => serialCommandResponse(req, res));
+app.post('/api/serial/controller', (req, res) => serialCommandResponse(req, res));
+app.post('/api/serial/tare', (req, res) => serialCommandResponse(req, res));
+app.post('/api/serial/stop', (req, res) => serialCommandResponse(req, res));
 
 if (fs.existsSync(BUILD_INDEX)) {
   app.use(express.static(BUILD_DIR));

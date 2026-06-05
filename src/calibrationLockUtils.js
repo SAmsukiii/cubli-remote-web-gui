@@ -10,7 +10,6 @@ export const CALIBRATION_LOCK_STATES = Object.freeze({
 
 export const SAFE_DURING_CALIBRATION_COMMANDS = Object.freeze(new Set([
   'stop',
-  'emergencyStop',
   'wheelRpmStop',
 ]));
 
@@ -22,7 +21,7 @@ const EBIMU_PROFILE = Object.freeze({ waitFor: 'tel', minWaitMs: 1200, timeoutMs
 export const CALIBRATION_COMMAND_PROFILES = Object.freeze({
   tare: { ...TEL_PROFILE, label: 'Set Zero / Tare' },
   cubliInitialize: { ...FULL_PROFILE, label: 'Cubli Initialize' },
-  encoderInitialize: { ...ENC_PROFILE, label: 'Gimbal Encoder Initialize' },
+  encoderInitialize: { ...ENC_PROFILE, label: 'Gimbal Encoder Zero' },
   encoderTare: { ...ENC_PROFILE, label: 'Gimbal Encoder Zero' },
   ebimuDefault: { ...EBIMU_PROFILE, label: 'Apply EBIMU Default Settings' },
   ebimuStart: { ...EBIMU_PROFILE, label: 'EBIMU Start' },
@@ -108,6 +107,7 @@ export function commandLineToCalibrationKey(line = '') {
   const upper = raw.toUpperCase();
   if (!upper) return '';
   if (upper === 'TARE') return 'tare';
+  if (upper === 'GIMBAL_ZERO' || upper === 'ENCODER_ZERO' || upper === 'ENC_ZERO' || upper === 'GIMBAL_INIT' || upper === 'ENCODER_INIT') return 'encoderInitialize';
   if (upper === 'STOP') return 'stop';
   if (upper === 'RPMSTOP' || upper === 'TESTSTOP') return 'wheelRpmStop';
   if (upper === 'EBIMU_DEFAULT') return 'ebimuDefault';

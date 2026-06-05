@@ -130,10 +130,10 @@ export const TUTORIAL_GUIDES = Object.freeze({
         ]),
       }),
       Object.freeze({
-        title: 'Enable Server Sharing',
+        title: 'Auto Server Sharing',
         image: image('server-sharing.png'),
         body: Object.freeze([
-          'Server Sharing을 켜면 Admin Web Serial data가 서버로 publish된다.',
+          'Web Serial이 연결되면 Server Sharing이 자동으로 켜지고 Admin Web Serial data가 서버로 publish된다.',
           'Viewer와 Controller는 서버를 통해 같은 telemetry를 본다.',
           'Command 창은 Server Sharing / Active Publisher 상태가 정상일 때 안정적으로 사용된다.',
         ]),

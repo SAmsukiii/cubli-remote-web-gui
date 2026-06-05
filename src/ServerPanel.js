@@ -853,22 +853,6 @@ function VisualSettingsSummary({ serverSync }) {
 }
 
 function AdminManagementPanel({ serverSync, serial, status, access, role, controllerClientId, commandOwner }) {
-  const [emergencyFeedback, setEmergencyFeedback] = useState(null);
-  const emergencyFeedbackTimerRef = useRef(null);
-
-  useEffect(() => () => {
-    if (emergencyFeedbackTimerRef.current) window.clearTimeout(emergencyFeedbackTimerRef.current);
-  }, []);
-
-  const showEmergencyFeedback = (status, reason = '') => {
-    const feedback = { status, message: commandFeedbackMessage(status, reason), at: Date.now() };
-    setEmergencyFeedback(feedback);
-    if (emergencyFeedbackTimerRef.current) window.clearTimeout(emergencyFeedbackTimerRef.current);
-    emergencyFeedbackTimerRef.current = window.setTimeout(() => {
-      setEmergencyFeedback((current) => (current?.at === feedback.at ? null : current));
-    }, COMMAND_FEEDBACK_CLEAR_MS);
-  };
-
   if (role !== 'admin') return null;
 
   const safeServerSync = serverSync || {};
@@ -908,27 +892,6 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
   const myName = String(safeServerSync?.displayName || safeServerSync?.clientName || safeAccess?.displayName || safeAccess?.clientName || '').trim()
     || shortClientId(safeServerSync?.clientId)
     || 'Unnamed';
-  const bridgeLive = Boolean(safeStatus.bridge?.adminBridgeLive);
-
-  const adminCommandFailureReason = () => {
-    if (!bridgeLive) return 'Admin bridge is not publishing';
-    return safeSerial.getLastCommandRequestError?.()
-      || safeStatus.lastError
-      || safeSerial.status?.lastError
-      || 'server command queue request failed';
-  };
-
-  const handleAdminEmergencyStop = async () => {
-    try {
-      const ok = await safeSerial.sendEmergencyStop?.();
-      if (ok) showEmergencyFeedback('success');
-      else showEmergencyFeedback('error', adminCommandFailureReason());
-      return Boolean(ok);
-    } catch (error) {
-      showEmergencyFeedback('error', error?.message || adminCommandFailureReason());
-      return false;
-    }
-  };
 
   return (
     <div className="serial-control-card rounded p-3 mb-3">
@@ -959,17 +922,6 @@ function AdminManagementPanel({ serverSync, serial, status, access, role, contro
       >
         Force Take Over Publisher
       </Button>
-
-      <Button
-        variant="danger"
-        size="lg"
-        className="w-100 mb-3 fw-bold"
-        onClick={handleAdminEmergencyStop}
-        disabled={!bridgeLive}
-      >
-        Emergency Stop
-      </Button>
-      <CommandFeedback feedback={emergencyFeedback} />
 
       <Accordion className="command-accordion" flush>
         <Accordion.Item eventKey="clients" className="command-accordion-item">
@@ -1344,7 +1296,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
       ) : null}
       {serverCalibrationLock.busy || localCalibrationLock.busy ? (
         <Alert variant="warning" className="py-2">
-          Calibration/zero is waiting for stable telemetry. STOP, RPM Stop, and Emergency Stop remain available.
+          Calibration/zero is waiting for stable telemetry. STOP and RPM Stop remain available.
         </Alert>
       ) : null}
       <Row className="g-2 mb-3">
@@ -1361,17 +1313,16 @@ function CommandSection({ serial, status, role, controllerClientId, isController
       <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
         <CommandAccordionItem eventKey="control" title="Control">
           <div className="server-small-note mb-2">
-            Initialize commands currently use the firmware TARE line until firmware-specific init commands are added.
+            Gimbal Encoder Zero resets only the gimbal encoder reference. It does not run Cubli IMU / EBIMU TARE.
           </div>
           <div className="server-small-note mb-2">
             Mode: Server Command Queue. Controller/Admin commands are queued on the server and relayed by the Admin bridge.
           </div>
           <CommandGroup>
             <CommandButton label="Cubli Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendCubliInitialize?.())} disabled={!canSendServerCommand('cubliInitialize')} title={commandTitle('cubliInitialize')} />
-            <CommandButton label="Gimbal Encoder Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEncoderInitialize?.())} disabled={!canSendServerCommand('encoderInitialize')} title={commandTitle('encoderInitialize')} />
+            <CommandButton label="Gimbal Encoder Zero" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEncoderInitialize?.())} disabled={!canSendServerCommand('encoderInitialize')} title={commandTitle('encoderInitialize')} />
             <CommandButton label="Set Zero / Tare" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendTare?.())} disabled={!canSendServerCommand('tare')} title={commandTitle('tare')} />
             <CommandButton label="Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendStop?.())} disabled={!canSendServerCommand('stop')} title={commandTitle('stop')} />
-            <CommandButton label="Emergency Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEmergencyStop?.())} disabled={!canSendServerCommand('emergencyStop')} title={commandTitle('emergencyStop')} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.serverQueue} />
         </CommandAccordionItem>
@@ -1420,7 +1371,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             <div className="serial-subsection-title mt-3 mb-2">Quick Direct Commands</div>
             <CommandGroup>
               <CommandButton label="Cubli Initialize" onClick={() => sendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} disabled={!canSendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} title={commandTitle('cubliInitialize', 'local')} />
-              <CommandButton label="Encoder Initialize" onClick={() => sendLocalLines('TARE', 'Encoder Initialize')} disabled={!canSendLocalLines('TARE', 'Encoder Initialize')} title={commandTitle('encoderInitialize', 'local')} />
+              <CommandButton label="Gimbal Encoder Zero" onClick={() => sendLocalLines('GIMBAL_ZERO', 'Gimbal Encoder Zero')} disabled={!canSendLocalLines('GIMBAL_ZERO', 'Gimbal Encoder Zero')} title={commandTitle('encoderInitialize', 'local')} />
               <CommandButton label="Stop / RPM Stop" onClick={() => sendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} disabled={!canSendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} title={commandTitle('stop', 'local')} />
               <CommandButton label="Apply Default IMU Setting" onClick={() => sendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} disabled={!canSendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} title={commandTitle('ebimuDefault', 'local')} />
             </CommandGroup>
@@ -2183,7 +2134,7 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
         <div style={{ minWidth: 0 }}>
           <div className="serial-section-title">Server Sharing</div>
           <div className="server-small-note">
-            Share Admin Web Serial data with Viewer and Controller clients.
+            Auto shares Admin Web Serial data when the receiver serial port is connected.
           </div>
           <div className="server-small-note">
             Active publisher: {activePublisherStatus === 'NONE' ? 'NONE' : publisherLabel(activePublisher)} / {activePublisherStatus}
@@ -2195,9 +2146,10 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
         <Form.Check
           type="switch"
           id="server-sharing-enabled"
-          label={bridgeEnabled ? 'Sharing ON' : 'Enable Server Sharing'}
+          label={bridgeEnabled ? 'Auto Sharing ON' : 'Auto Sharing OFF'}
           checked={bridgeEnabled}
           onChange={(event) => safeServerSync.setBridgeEnabled?.(event.target.checked)}
+          title="Server Sharing turns on automatically when Web Serial connects."
         />
       </div>
       {safeServerSync.lastPublishError === 'ACTIVE_PUBLISHER_CONFLICT' ? (

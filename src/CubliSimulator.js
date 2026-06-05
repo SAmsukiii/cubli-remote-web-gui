@@ -1428,6 +1428,7 @@ export default function CubliSimulator() {
   const phoneZeroRef = useRef(null);
   const bridgePublishRef = useRef({ lastAt: 0, inFlight: 0, lastPacketUpdatedAt: 0 });
   const bridgeCommandBusyRef = useRef(false);
+  const autoBridgeToggleBusyRef = useRef(false);
 
   const cameraRef = useRef();
   const controlsRef = useRef();
@@ -1660,6 +1661,33 @@ export default function CubliSimulator() {
     setIsSensorActive(false);
     phoneZeroRef.current = null;
   }, [activeTab, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !serverSync?.hasDisplayName || !setWebSerialBridgeEnabled) return undefined;
+
+    const targetEnabled = Boolean(serial.isConnected);
+    if (targetEnabled === webSerialBridgeEnabled) return undefined;
+    if (autoBridgeToggleBusyRef.current) return undefined;
+
+    let cancelled = false;
+    autoBridgeToggleBusyRef.current = true;
+    Promise.resolve(setWebSerialBridgeEnabled(targetEnabled))
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) autoBridgeToggleBusyRef.current = false;
+      });
+
+    return () => {
+      cancelled = true;
+      autoBridgeToggleBusyRef.current = false;
+    };
+  }, [
+    isAdmin,
+    serverSync?.hasDisplayName,
+    serial.isConnected,
+    webSerialBridgeEnabled,
+    setWebSerialBridgeEnabled,
+  ]);
 
   // Fallback ref: 혹시 hook이 latestPacketRef를 제공하지 않거나, 브라우저 복구 과정에서
   // ref 연결이 끊겨도 React state로 들어온 최신 packet을 3D 루프가 계속 읽을 수 있게 한다.

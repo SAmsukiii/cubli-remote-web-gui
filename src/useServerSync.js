@@ -598,6 +598,9 @@ function legacyCommandToKey(command) {
     'ENC_TARE': 'encoderInitialize',
     'ENC_INIT': 'encoderInitialize',
     'ENCODER_ZERO': 'encoderInitialize',
+    'ENC_ZERO': 'encoderInitialize',
+    'GIMBAL_ZERO': 'encoderInitialize',
+    'GIMBAL_INIT': 'encoderInitialize',
     'STOP': 'stop',
     'STATUS?': 'status',
     'MAC?': 'macInfo',
@@ -2141,7 +2144,7 @@ export default function useServerSync() {
     const explicitKey = String(commandKeyOrCommand || '').trim();
   const knownKeys = new Set([
       'tare', 'cubliInitialize', 'encoderInitialize', 'encoderTare',
-      'stop', 'emergencyStop', 'targetAttitude', 'ebimuDefault', 'ebimuStart', 'ebimuStop',
+      'stop', 'targetAttitude', 'ebimuDefault', 'ebimuStart', 'ebimuStop',
       'magOff', 'magOn', 'magAuto', 'gyro250', 'gyro500', 'gyro1000', 'gyro2000',
       'acc2g', 'acc4g', 'acc8g', 'acc16g', 'accFactor', 'status', 'macInfo',
       'attitudeKp', 'attitudeKd',
@@ -2226,8 +2229,8 @@ export default function useServerSync() {
   const sendEncoderInitialize = useCallback(() => (
     sendServerSerialCommand('encoderInitialize', {}, {
       eventType: 'ENCODER_INITIALIZE',
-      label: 'Gimbal Encoder Initialize',
-      detail: { firmwareCommand: 'TARE' },
+      label: 'Gimbal Encoder Zero',
+      detail: { firmwareCommand: 'GIMBAL_ZERO' },
     })
   ), [sendServerSerialCommand]);
 
@@ -2577,15 +2580,6 @@ export default function useServerSync() {
       return false;
     }
   }, [requestJson]);
-
-  const sendEmergencyStop = useCallback(async () => {
-    const commandId = await requestBridgeCommand('emergencyStop', {}, {
-      eventType: 'EMERGENCY_STOP',
-      label: 'Emergency Stop',
-      detail: { command: 'STOP', clientId, role: serverSerialStatus.access?.myEffectiveRole || 'viewer' },
-    });
-    return Boolean(commandId);
-  }, [clientId, requestBridgeCommand, serverSerialStatus.access?.myEffectiveRole]);
 
   const stopSession = useCallback(async () => {
     const activeSessionId = sessionIdRef.current;
@@ -2939,7 +2933,6 @@ export default function useServerSync() {
       grantControl,
       revokeControl,
       resetAccessState,
-      sendEmergencyStop,
     },
     testConnection,
     startSession,
