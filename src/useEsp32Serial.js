@@ -88,7 +88,7 @@ const DEFAULT_PACKET = {
   rawYawDeg: 0,
   imuDisplayRollSign: 1,
   imuDisplayPitchSign: 1,
-  imuDisplayYawSign: -1,
+  imuDisplayYawSign: 1,
   encoderRawRollDeg: null,
   encoderRawPitchDeg: null,
   encoderRawYawDeg: null,

@@ -11,7 +11,7 @@ export const DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE = 'ZYX';
 export const DEFAULT_ENCODER_FRESH_MS = 300;
 export const DEFAULT_ENCODER_TIMER_SPREAD_MS = 100;
 const DEFAULT_ENCODER_SYNC_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
-export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: -1 });
+export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
 export const DEFAULT_ENCODER_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
 export const DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN = 1;
 
