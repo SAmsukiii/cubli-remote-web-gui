@@ -246,7 +246,15 @@ function encoderQuaternionKey(packet = {}) {
   const hasQ = qValues.some((value) => value !== null);
   const hasTimer = timerValues.some((value) => value !== null);
   if (!hasQ && !hasTimer) return '';
+  if (!hasTimer || timerValues.every((value) => value === null || value === 0)) return '';
   return `q:${qValues.map((value) => value ?? '').join(':')}|t:${timerValues.map((value) => value ?? '').join(':')}`;
+}
+
+function fallbackPacketKey(packet = {}, sampleType = detectSampleType(packet), rawPrefix = detectRawPrefix(packet)) {
+  const raw = packet.raw || packet.cleanLine || '';
+  const loggedAt = firstPresent([packet.logged_at_ms, packet.loggedAtMs, packet.updatedAt, packet.publishedAt], '');
+  const logIndex = firstPresent([packet.log_index, packet.logIndex], '');
+  return `${sampleType}:${rawPrefix || ''}:fallback:${loggedAt}:${simpleHash(raw || JSON.stringify(packet))}:${loggedAt === '' ? logIndex : ''}`;
 }
 
 export function makePacketKey(packet = {}, sampleType = detectSampleType(packet), rawPrefix = detectRawPrefix(packet)) {
@@ -255,19 +263,28 @@ export function makePacketKey(packet = {}, sampleType = detectSampleType(packet)
 
   const seq = firstPresent([packet.seq, packet.packetCount, packet.rxCount], '');
   const timestamp = firstPresent([packet.timestamp, packet.ebimu_timestamp_ms, packet.ebimuTimestampMs], '');
-  const raw = packet.raw || packet.cleanLine || '';
 
   if (sampleType === 'ENC') {
     const quaternionKey = encoderQuaternionKey(packet);
     if (quaternionKey) return `ENC:${quaternionKey}`;
     const axisKey = encoderAxisKey(packet);
-    if (axisKey) return `ENC:${axisKey}`;
-    return `ENC:${simpleHash(raw || JSON.stringify(packet))}`;
+    const hasNonZeroTimer = [
+      packet.enc_timer_x ?? packet.encoderTimerX ?? packet.encoder?.timerX ?? packet.encoder?.timer_x,
+      packet.enc_timer_y ?? packet.encoderTimerY ?? packet.encoder?.timerY ?? packet.encoder?.timer_y,
+      packet.enc_timer_z ?? packet.encoderTimerZ ?? packet.encoder?.timerZ ?? packet.encoder?.timer_z,
+    ].some((value) => {
+      const number = finiteNumber(value, null);
+      return number !== null && number !== 0;
+    });
+    if (axisKey && hasNonZeroTimer) return `ENC:${axisKey}`;
+    return fallbackPacketKey(packet, sampleType, rawPrefix);
   }
 
   const key = `${sampleType}:${seq ?? ''}:${timestamp ?? ''}:${rawPrefix || ''}`;
-  if (seq !== '' || timestamp !== '') return key;
-  return `${key}:${firstPresent([packet.pc_time_ms, packet.pcTimeMs, packet.updatedAt, packet.publishedAt], '')}:${simpleHash(raw)}`;
+  const meaningfulSeq = seq !== '' && finiteNumber(seq, null) !== 0;
+  const meaningfulTimestamp = timestamp !== '' && finiteNumber(timestamp, null) !== 0;
+  if (meaningfulSeq || meaningfulTimestamp) return key;
+  return fallbackPacketKey(packet, sampleType, rawPrefix);
 }
 
 function encoderOnlyPacket(packet = {}, metadata = {}) {

@@ -75,15 +75,6 @@ function formatNumber(value, digits = 3) {
   return number.toFixed(digits);
 }
 
-function formatDuration(ms) {
-  const value = Number(ms);
-  if (!Number.isFinite(value) || value < 0) return '-';
-  const totalSeconds = Math.floor(value / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}.${String(Math.floor(value % 1000)).padStart(3, '0')}`;
-}
-
 function formatCsvFileTimestamp(date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0');
   return [
@@ -332,6 +323,16 @@ function publisherLabel(publisher = {}) {
   return name || idShort || '-';
 }
 
+function telemetryStatusLabel(liveStatus = '', activePublisherStatus = 'NONE') {
+  const status = String(liveStatus || '').toUpperCase();
+  if (String(activePublisherStatus || '').toUpperCase() === 'NONE') return 'no active publisher';
+  if (status === 'WAITING_FOR_TELEMETRY') return 'waiting for TEL/IMU/ENC';
+  if (status === 'LIVE') return 'LIVE';
+  if (status === 'STALE') return 'STALE';
+  if (status === 'NO_ACTIVE_PUBLISHER') return 'no active publisher';
+  return status || 'waiting for TEL/IMU/ENC';
+}
+
 function clientDisplayName(client = {}) {
   const safeClient = client || {};
   return String(safeClient?.displayName || safeClient?.clientName || '').trim();
@@ -568,7 +569,6 @@ function calibrationLockRows(lock = {}) {
     { label: 'Calibration state', value: normalized.state || '-' },
     { label: 'Last command', value: normalized.label || normalized.commandKey || '-' },
     { label: 'Wait target', value: normalized.waitFor ? normalized.waitFor.toUpperCase() : '-' },
-    { label: 'Elapsed', value: normalized.startedAt ? formatFixedMs(now - normalized.startedAt) : '---- ms' },
     { label: 'Timeout left', value: normalized.busy && normalized.timeoutAt ? formatFixedMs(Math.max(0, normalized.timeoutAt - now)) : '---- ms' },
     { label: 'Error', value: normalized.error || '-' },
   ];
@@ -1300,14 +1300,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         </Alert>
       ) : null}
       <Row className="g-2 mb-3">
-        <Col xs={12} md={isAdmin ? 6 : 12}>
+        <Col xs={12}>
           <ValueGrid title="Server Command Lock" rows={calibrationLockRows(serverCalibrationLock)} />
         </Col>
-        {isAdmin ? (
-          <Col xs={12} md={6}>
-            <ValueGrid title="Local Web Serial Lock" rows={calibrationLockRows(localCalibrationLock)} />
-          </Col>
-        ) : null}
       </Row>
 
       <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
@@ -1592,15 +1587,6 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           <CommandFeedback feedback={lastCommandFeedbackByCategory.accelerometer} />
         </CommandAccordionItem>
 
-        <CommandAccordionItem eventKey="receiver" title="Receiver Info">
-          <CommandGroup>
-            <CommandButton label="Status" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendStatus?.())} disabled={!canSendServerCommand('status')} title={commandTitle('status')} />
-            <CommandButton label="MAC Info" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendMacInfo?.())} disabled={!canSendServerCommand('macInfo')} title={commandTitle('macInfo')} />
-            <CommandButton label="Refresh Status" onClick={safeSerial.refreshStatus} disabled={false} />
-          </CommandGroup>
-          <CommandFeedback feedback={lastCommandFeedbackByCategory.receiverInfo} />
-        </CommandAccordionItem>
-
         <CommandAccordionItem eventKey="source-diagnostic" title="RPY / Quaternion Source">
           <ValueGrid
             title="RPY / Quaternion Source"
@@ -1776,7 +1762,6 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
   const timeCommandRows = useMemo(() => {
     const rows = [
       { label: 'Server time', value: formatDateTime(latest.serverReceivedAt || latest.serverReceivedAtMs || latest.pcTimeMs || latest.pc_time_ms) },
-      { label: 'Session elapsed', value: formatDuration(latest.sessionElapsedMs ?? safeStatus.sessionElapsedMs) },
       { label: 'Remote timestamp', value: formatNumber(latest.ebimu_timestamp_ms ?? latest.timestamp, 0) },
       { label: 'seq', value: formatNumber(latest.seq, 0) },
       { label: 'Last command', value: latest.lastCommandLabel || lastCommandInfo.label || '-' },
@@ -1793,7 +1778,7 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
     }
     rows.push({ label: 'Last command time', value: formatDateTime(latest.lastCommandAt || lastCommandInfo.at) });
     return rows;
-  }, [isAdmin, latest, lastCommandInfo, safeStatus.sessionElapsedMs]);
+  }, [isAdmin, latest, lastCommandInfo]);
 
   const hasWheelGraphData = wheelGraphData.some((row) => (
     row.RPM1 != null || row.RPM2 != null || row.RPM3 != null ||
@@ -1928,7 +1913,6 @@ function DataLoggingSection({ latestPacket }) {
   const [csvLogging, setCsvLogging] = useState(false);
   const [csvStartedAt, setCsvStartedAt] = useState(null);
   const [csvSampleCount, setCsvSampleCount] = useState(0);
-  const [csvElapsedMs, setCsvElapsedMs] = useState(0);
   const [csvStats, setCsvStats] = useState(() => summarizeCsvRows([]));
   const logRef = useRef([]);
   const seenCsvPacketKeysRef = useRef(new Set());
@@ -1953,7 +1937,6 @@ function DataLoggingSection({ latestPacket }) {
   useEffect(() => {
     if (!csvLogging || !csvStartedAt) return undefined;
     const timer = window.setInterval(() => {
-      setCsvElapsedMs(Date.now() - csvStartedAt);
       setCsvStats(summarizeCsvRows(logRef.current, csvStartedAtRef.current));
     }, 500);
     return () => window.clearInterval(timer);
@@ -1966,7 +1949,6 @@ function DataLoggingSection({ latestPacket }) {
     const startedAt = Date.now();
     csvStartedAtRef.current = startedAt;
     setCsvStartedAt(startedAt);
-    setCsvElapsedMs(0);
     setCsvSampleCount(0);
     setCsvStats(summarizeCsvRows([], startedAt));
     setCsvLogging(true);
@@ -1977,7 +1959,6 @@ function DataLoggingSection({ latestPacket }) {
     if (logRef.current.length === 0) {
       setCsvSampleCount(0);
       setCsvStats(summarizeCsvRows([]));
-      setCsvElapsedMs(0);
       setCsvStartedAt(null);
       csvStartedAtRef.current = null;
       alert('No shared live data was logged in this CSV session.');
@@ -2009,7 +1990,6 @@ function DataLoggingSection({ latestPacket }) {
         <div><span>Logged ENC samples</span><strong>{csvStats.enc}</strong></div>
         <div><span>Estimated logging rate</span><strong>{formatNumber(csvStats.rateHz, 1)} Hz</strong></div>
       </div>
-      <div className="server-small-note mb-2">Elapsed {formatDuration(csvElapsedMs)}</div>
       <Row className="g-2 justify-content-center">
         <Col xs={12}>
           <Button variant="outline-info" className="w-100" onClick={startCsvLogging} disabled={csvLogging}>
@@ -2053,6 +2033,10 @@ function ReceiverInfoSection({ serverSync, localSerial, isAdmin, webSerialConnec
   const latestPacketAgeMs = safeServerSync.latestSharedPacketAgeMs
     ?? safeStatus.latestSharedPacketAgeMs
     ?? null;
+  const liveStatus = safeServerSync.liveStatus
+    || safeStatus.liveStatus
+    || safeStatus.bridge?.liveStatus
+    || '';
   const pendingCount = safeStatus.bridge?.pendingCount
     ?? safeServerSync.serverSerial?.bridge?.pendingCount
     ?? 0;
@@ -2064,11 +2048,13 @@ function ReceiverInfoSection({ serverSync, localSerial, isAdmin, webSerialConnec
     ? 'NONE'
     : publisherLabel(activePublisher);
   const summaryStatus = activePublisherStatus || 'NONE';
+  const telemetrySummary = telemetryStatusLabel(liveStatus, summaryStatus);
   const line = (label, value) => `${label.padEnd(24)}: ${value}`;
   const lines = [
     line('Active publisher', activePublisherStatus === 'NONE' ? 'NONE' : (activePublisher?.displayName || activePublisher?.publisherName || publisherLabel(activePublisher))),
     line('Client ID short', shortClientId(activePublisher?.clientId || activePublisher?.publisherClientId || '')),
     line('Status', summaryStatus),
+    line('Telemetry', telemetrySummary),
     line('Heartbeat age', formatFixedMs(heartbeatAgeMs)),
     line('Bridge', bridgeEnabled ? 'ON' : 'OFF'),
     line('Web Serial', webSerialConnected ? 'connected' : 'not connected'),
@@ -2081,9 +2067,11 @@ function ReceiverInfoSection({ serverSync, localSerial, isAdmin, webSerialConnec
       line('Pending commands', pendingCount),
       line('Dropped wrong publisher', safeServerSync.droppedWrongPublisherCount ?? safeStatus.droppedWrongPublisherCount ?? 0),
       line('Dropped wrong session', safeServerSync.droppedWrongSessionCount ?? safeStatus.droppedWrongSessionCount ?? 0),
-      line('Dropped out-of-order', safeServerSync.droppedOutOfOrderCount ?? safeStatus.droppedOutOfOrderCount ?? 0),
-      line('Latest packet age', formatFixedMs(latestPacketAgeMs))
+      line('Dropped out-of-order', safeServerSync.droppedOutOfOrderCount ?? safeStatus.droppedOutOfOrderCount ?? 0)
     );
+    if (latestPacketAgeMs != null) {
+      lines.push(line('Latest packet age', formatFixedMs(latestPacketAgeMs)));
+    }
   }
 
   return (
@@ -2095,6 +2083,9 @@ function ReceiverInfoSection({ serverSync, localSerial, isAdmin, webSerialConnec
           </div>
           <div className="server-small-note">
             Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
+          </div>
+          <div className="server-small-note">
+            Telemetry: {telemetrySummary}
           </div>
         </div>
         <Button
@@ -2126,6 +2117,10 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
     || safeServerSync.serverSerial?.status?.activePublisherStatus
     || activePublisher?.status
     || 'NONE';
+  const liveStatus = safeServerSync.liveStatus
+    || safeServerSync.serverSerial?.status?.liveStatus
+    || '';
+  const telemetrySummary = telemetryStatusLabel(liveStatus, activePublisherStatus);
   if (!isAdmin) return null;
 
   return (
@@ -2141,6 +2136,9 @@ function ServerSharingSection({ serverSync, isAdmin, webSerialConnected }) {
           </div>
           <div className="server-small-note">
             Bridge {bridgeEnabled ? 'ON' : 'OFF'} · Web Serial {webSerialConnected ? 'connected' : 'not connected'}
+          </div>
+          <div className="server-small-note">
+            Telemetry: {telemetrySummary}
           </div>
         </div>
         <Form.Check

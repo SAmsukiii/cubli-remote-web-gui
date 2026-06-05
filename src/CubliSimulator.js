@@ -180,18 +180,6 @@ function fitCameraToObject(
   }
 }
 
-function formatElapsedTime(ms) {
-  const totalTenths = Math.floor(ms / 100);
-  const minutes = Math.floor(totalTenths / 600);
-  const seconds = Math.floor((totalTenths % 600) / 10);
-  const tenths = totalTenths % 10;
-
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-
-  return `${mm}:${ss}.${tenths}`;
-}
-
 function normalizeDeg180(value) {
   let v = Number(value) || 0;
   while (v > 180) v -= 360;
@@ -219,6 +207,21 @@ function getPacketQuaternionOrIdentity(packet) {
 function sampleTypeFromPacket(packet = {}) {
   const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
   return String(safePacket.sample_type || safePacket.sampleType || safePacket.rawPrefix || safePacket.raw_prefix || 'TEL').trim().toUpperCase();
+}
+
+function isPublishableWebSerialTelemetryPacket(packet = {}) {
+  const safePacket = packet && typeof packet === 'object' ? packet : EMPTY_OBJECT;
+  if (!safePacket.updatedAt) return false;
+  const explicitType = String(
+    safePacket.sample_type
+    || safePacket.sampleType
+    || safePacket.rawPrefix
+    || safePacket.raw_prefix
+    || ''
+  ).trim().toUpperCase();
+  const hasTelemetryLine = explicitType === 'TEL' || explicitType === 'IMU';
+  if (!hasTelemetryLine && !safePacket.hasTelemetryAttitude) return false;
+  return normalizeQuaternion(Array.isArray(safePacket.q) ? safePacket.q : [safePacket.q0, safePacket.q1, safePacket.q2, safePacket.q3]).ok;
 }
 
 function finitePacketNumber(value, fallback = null) {
@@ -1418,8 +1421,6 @@ export default function CubliSimulator() {
 
   const [activeTab, setActiveTab] = useState('server');
   const [isLogging, setIsLogging] = useState(false);
-  const [loggingStartTime, setLoggingStartTime] = useState(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const fullDataLog = useRef([]);
 
   const [isSensorActive, setIsSensorActive] = useState(false);
@@ -1793,8 +1794,6 @@ export default function CubliSimulator() {
     }
     if (type === 'TARE') return { commandKey: 'tare', params: {}, label: label || 'Set Zero / Tare' };
     if (type === 'STOP') return { commandKey: 'stop', params: {}, label: label || 'Stop' };
-    if (type === 'RECEIVER_INFO' && /mac/i.test(label)) return { commandKey: 'macInfo', params: {}, label: 'MAC Info' };
-    if (type === 'RECEIVER_INFO') return { commandKey: 'status', params: {}, label: 'Status' };
     if (type === 'EBIMU_COMMAND') {
       const cmdId = Number(detail.cmdId);
       const value = Number(detail.value);
@@ -1842,7 +1841,7 @@ export default function CubliSimulator() {
 
     const publishLatestSerialPacket = () => {
       const packet = serial.latestPacketRef?.current || serial.latestPacket;
-      if (!packet?.updatedAt) return;
+      if (!isPublishableWebSerialTelemetryPacket(packet)) return;
       if (packet.updatedAt === bridgePublishRef.current.lastPacketUpdatedAt) return;
 
       const now = Date.now();
@@ -2047,16 +2046,6 @@ export default function CubliSimulator() {
       window.__CUBLI_ACTIVE_SOURCE = activeSourceType;
     }
   }, [activeSourceType]);
-
-  useEffect(() => {
-    if (!isLogging || loggingStartTime == null) return;
-
-    const timer = setInterval(() => {
-      setElapsedMs(Date.now() - loggingStartTime);
-    }, 100);
-
-    return () => clearInterval(timer);
-  }, [isLogging, loggingStartTime]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -2429,20 +2418,13 @@ export default function CubliSimulator() {
 
   const handleStartLogging = () => {
     fullDataLog.current = [];
-    setElapsedMs(0);
-    setLoggingStartTime(Date.now());
     setIsLogging(true);
 
     sendCommandToHardware('START_LOGGING', { timestamp: new Date() });
   };
 
   const handleStopLogging = () => {
-    if (loggingStartTime != null) {
-      setElapsedMs(Date.now() - loggingStartTime);
-    }
-
     setIsLogging(false);
-    setLoggingStartTime(null);
 
     if (fullDataLog.current.length === 0) {
       alert('저장된 데이터가 없습니다.');

@@ -309,12 +309,6 @@ export default function BlePanel({ ble, useBleImu, setUseBleImu, activeSourceLab
             </CommandGroup>
           </CommandAccordionItem>
 
-          <CommandAccordionItem eventKey="receiver" title="Receiver Info">
-            <CommandGroup>
-              <CommandButton label="Status" onClick={() => sendBleCommand('STATUS?', { eventType: 'RECEIVER_INFO', label: 'Status' })} disabled={commandDisabled} />
-              <CommandButton label="MAC Info" onClick={() => sendBleCommand('MAC?', { eventType: 'RECEIVER_INFO', label: 'MAC Info' })} disabled={commandDisabled} />
-            </CommandGroup>
-          </CommandAccordionItem>
         </Accordion>
       </div>
 

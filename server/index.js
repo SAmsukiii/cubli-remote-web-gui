@@ -782,7 +782,7 @@ function buildLivePayload(packet, options = {}) {
   const liveStatus = publisherStatus === 'NONE'
     ? 'NO_ACTIVE_PUBLISHER'
     : !compactPacket
-      ? 'STALE'
+      ? 'WAITING_FOR_TELEMETRY'
       : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE';
   return {
     ok: true,
@@ -1447,6 +1447,16 @@ function normalizePublishedPacket(packet, source, identity, publishMeta = {}) {
     yaw: packet.imuDisplayYawSign,
   });
   const bodyRateWzDisplaySign = normalizeSign(packet.bodyRateWzDisplaySign, DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN);
+  const rawText = typeof packet.raw === 'string' ? packet.raw.trim() : '';
+  const rawToken = rawText ? String(rawText.split(/[,\s]+/)[0] || '').trim().toUpperCase() : '';
+  const rawPrefix = String(packet.rawPrefix || packet.raw_prefix || rawToken || '').trim().toUpperCase();
+  const sampleType = String(
+    packet.sample_type || packet.sampleType
+      || (rawPrefix === 'IMU' ? 'IMU' : rawPrefix === 'ENC' ? 'ENC' : 'TEL')
+  ).trim().toUpperCase();
+  if (!['TEL', 'IMU', 'ENC'].includes(sampleType)) {
+    return { ok: false, error: 'Only TEL/IMU/ENC live telemetry can be published' };
+  }
 
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4 ? packet.q : [packet.q0, packet.q1, packet.q2, packet.q3];
   let q = normalizeQuat(rawQ);
@@ -1499,14 +1509,6 @@ function normalizePublishedPacket(packet, source, identity, publishMeta = {}) {
     encoderDisplayPitchSign: packet.encoderDisplayPitchSign,
     encoderDisplayYawSign: packet.encoderDisplayYawSign,
   });
-  const rawText = typeof packet.raw === 'string' ? packet.raw.trim() : '';
-  const rawToken = rawText ? String(rawText.split(/[,\s]+/)[0] || '').trim().toUpperCase() : '';
-  const rawPrefix = String(packet.rawPrefix || packet.raw_prefix || rawToken || '').trim().toUpperCase();
-  const sampleType = String(
-    packet.sample_type || packet.sampleType
-      || (rawPrefix === 'IMU' ? 'IMU' : rawPrefix === 'ENC' ? 'ENC' : 'TEL')
-  ).trim().toUpperCase();
-
   const publishedAt = now;
   const normalized = {
     pcTimeMs,
@@ -2080,7 +2082,7 @@ function sanitizeSharedState(clientId = '') {
   const liveStatus = publisherStatus === 'NONE'
     ? 'NO_ACTIVE_PUBLISHER'
     : !packet
-      ? 'STALE'
+      ? 'WAITING_FOR_TELEMETRY'
       : ageMs > LIVE_STALE_MS ? 'STALE' : 'LIVE';
   return {
     latestSharedPacket: packet,

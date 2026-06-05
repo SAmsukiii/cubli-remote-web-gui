@@ -67,6 +67,7 @@ const API_SERVER_VERIFY_TTL_MS = 15000;
 const LIVE_STREAM_ENABLED = false;
 const ACCESS_STATE_POLL_INTERVAL_MS = 1000;
 const SERVER_SERIAL_STATUS_POLL_INTERVAL_MS = 1000;
+const PUBLISHER_HEARTBEAT_INTERVAL_MS = 4000;
 
 function makeClientId() {
   const random = typeof crypto !== 'undefined' && crypto.randomUUID
@@ -1333,12 +1334,15 @@ export default function useServerSync() {
     }));
   }, []);
 
-  const claimPublisher = useCallback(async ({ force = false } = {}) => {
+  const claimPublisher = useCallback(async ({ force = false, refresh = false } = {}) => {
     if (!safeDisplayName) {
       setLastPublishError('Enter a display name before enabling Server Sharing.');
       return false;
     }
-    const nextPublishSessionId = makePublishSessionId(clientId);
+    const existingSessionId = publishSessionIdRef.current || activePublisherRef.current?.sessionId || '';
+    const nextPublishSessionId = !force && existingSessionId
+      ? existingSessionId
+      : makePublishSessionId(clientId);
     const firstBaseUrl = await ensureApiServerUrl(serverUrlRef.current);
     try {
       const data = await requestJson(`${cleanServerUrl(firstBaseUrl)}${LIVE_CLAIM_PUBLISHER_PATH}`, {
@@ -1356,7 +1360,7 @@ export default function useServerSync() {
       setPublishSessionId(data.publishSessionId || nextPublishSessionId);
       publishSessionIdRef.current = data.publishSessionId || nextPublishSessionId;
       setBridgeEnabledState(true);
-      resetPublishCountersForSession();
+      if (!refresh || data.publisherChanged) resetPublishCountersForSession();
       applyPublisherState({ ...data, publishSessionId: data.publishSessionId || nextPublishSessionId });
       setConnectionStatus('connected');
       setLastError('');
@@ -1441,6 +1445,14 @@ export default function useServerSync() {
       return null;
     }
   }, [applyPublisherState, requestJson]);
+
+  useEffect(() => {
+    if (!bridgeEnabled || !publishSessionId || !safeDisplayName) return undefined;
+    const timer = window.setInterval(() => {
+      claimPublisher({ refresh: true }).catch(() => {});
+    }, PUBLISHER_HEARTBEAT_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [bridgeEnabled, claimPublisher, publishSessionId, safeDisplayName]);
 
   const setUploadRateHz = useCallback((value) => {
     const number = Number(value);
@@ -2920,8 +2932,6 @@ export default function useServerSync() {
       sendWheelRpmAll: (x, y, z) => sendServerSerialCommand('wheelRpmAll', { x, y, z }, { eventType: 'WHEEL_RPM_COMMAND', label: 'Wheel RPM All', detail: { x, y, z } }),
       sendWheelRpmStop: () => sendServerSerialCommand('wheelRpmStop', {}, { eventType: 'WHEEL_RPM_STOP', label: 'Stop RPM Test' }),
       sendEbimuShortcut,
-      sendStatus: () => sendServerSerialCommand('status', {}, { eventType: 'STATUS_REQUEST', label: 'Status' }),
-      sendMacInfo: () => sendServerSerialCommand('macInfo', {}, { eventType: 'MAC_REQUEST', label: 'MAC Info' }),
       sendAccFactor: (factor) => sendEbimuShortcut('accFactor', 'Accel Filter Factor', { factor }),
       sendEbimuRuntime: (cmdId, value = 0, label = 'EBIMU Runtime') => sendServerControllerCommand(50, cmdId, value, 0, { eventType: 'EBIMU_RUNTIME', label, detail: { cmdId, value } }),
       clearStats: clearServerSerialStats,

@@ -26,6 +26,24 @@ const ENCODER_SYNC_THRESHOLD_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 const WEB_SERIAL_UNSUPPORTED_MESSAGE = 'Web Serial is supported only on Chrome/Edge desktop over HTTPS or localhost';
 const PORT_BUSY_MESSAGE = 'Port busy: close Arduino Serial Monitor or another app using the COM port';
 
+function makeEmptyCsvDebugStats() {
+  return {
+    rawLineHz: 0,
+    parsedTelemetryHz: 0,
+    parsedEncHz: 0,
+    appendedTotalHz: 0,
+    appendedTelemetryHz: 0,
+    appendedEncHz: 0,
+    rawLineCount: 0,
+    parsedTelemetryCount: 0,
+    parsedEncCount: 0,
+    appendedTotalCount: 0,
+    appendedTelemetryCount: 0,
+    appendedEncCount: 0,
+    invalidSkippedCount: 0,
+  };
+}
+
 const DEFAULT_PACKET = {
   source: 'none',
   pc_time_ms: 0,
@@ -1081,6 +1099,9 @@ export default function useEsp32Serial(options = {}) {
   const [encoderCount, setEncoderCount] = useState(0);
   const [inputHz, setInputHz] = useState(0);
   const [csvLoggedHz, setCsvLoggedHz] = useState(0);
+  const [csvLoggedTelemetryHz, setCsvLoggedTelemetryHz] = useState(0);
+  const [csvLoggedEncoderHz, setCsvLoggedEncoderHz] = useState(0);
+  const [csvDebugStats, setCsvDebugStats] = useState(() => makeEmptyCsvDebugStats());
   const [lastCommand, setLastCommand] = useState('');
   const [serialWriterReady, setSerialWriterReady] = useState(false);
   const [lastLocalWriteError, setLastLocalWriteError] = useState('');
@@ -1104,9 +1125,15 @@ export default function useEsp32Serial(options = {}) {
   const lastCsvSampleClockRef = useRef(null);
   const lastCsvUiStatsUpdateRef = useRef(0);
   const csvLoggedRateWindowRef = useRef([]);
+  const csvLoggedTelemetryRateWindowRef = useRef([]);
+  const csvLoggedEncoderRateWindowRef = useRef([]);
+  const rawLineRateWindowRef = useRef([]);
+  const parsedTelemetryRateWindowRef = useRef([]);
+  const parsedEncoderRateWindowRef = useRef([]);
   const recentPacketsRef = useRef([]);
   const chartDataRef = useRef([]);
   const countersRef = useRef({ valid: 0, invalid: 0, ignored: 0, warning: 0 });
+  const csvDebugCountersRef = useRef(makeEmptyCsvDebugStats());
   const lastRawLineRef = useRef('');
   const lastInvalidReasonRef = useRef('');
   const lastReceivedAtRef = useRef(null);
@@ -1132,10 +1159,17 @@ export default function useEsp32Serial(options = {}) {
     ];
   }, []);
 
+  const pushRateWindow = useCallback((ref, now = Date.now()) => {
+    ref.current = [...ref.current.filter((time) => now - time <= 1000), now];
+  }, []);
+
   const pushCsvLogPacket = useCallback((packet) => {
     if (!csvCaptureEnabledRef.current || !packet) return false;
     const sampleType = detectCsvSampleType(packet);
-    if (sampleType !== 'TEL' && sampleType !== 'IMU' && sampleType !== 'ENC') return false;
+    if (sampleType !== 'TEL' && sampleType !== 'IMU' && sampleType !== 'ENC') {
+      csvDebugCountersRef.current.invalidSkippedCount += 1;
+      return false;
+    }
 
     const now = Date.now();
     const nextClock = resolveCsvSampleClock(packet, lastCsvSampleClockRef.current, now);
@@ -1155,12 +1189,17 @@ export default function useEsp32Serial(options = {}) {
     if (csvLogQueueRef.current.length > MAX_CSV_LOG_QUEUE) {
       csvLogQueueRef.current.splice(0, csvLogQueueRef.current.length - MAX_CSV_LOG_QUEUE);
     }
-    csvLoggedRateWindowRef.current = [
-      ...csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000),
-      now,
-    ];
+    pushRateWindow(csvLoggedRateWindowRef, now);
+    if (sampleType === 'ENC') {
+      pushRateWindow(csvLoggedEncoderRateWindowRef, now);
+      csvDebugCountersRef.current.appendedEncCount += 1;
+    } else {
+      pushRateWindow(csvLoggedTelemetryRateWindowRef, now);
+      csvDebugCountersRef.current.appendedTelemetryCount += 1;
+    }
+    csvDebugCountersRef.current.appendedTotalCount += 1;
     return true;
-  }, []);
+  }, [pushRateWindow]);
 
   const applyLatestDesiredAttitude = useCallback((desired) => {
     if (!desired) return null;
@@ -1195,9 +1234,18 @@ export default function useEsp32Serial(options = {}) {
     lastCsvSampleClockRef.current = null;
     lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
+    csvLoggedTelemetryRateWindowRef.current = [];
+    csvLoggedEncoderRateWindowRef.current = [];
+    rawLineRateWindowRef.current = [];
+    parsedTelemetryRateWindowRef.current = [];
+    parsedEncoderRateWindowRef.current = [];
+    csvDebugCountersRef.current = makeEmptyCsvDebugStats();
     csvCaptureEnabledRef.current = true;
     setLatestCsvPacket(null);
     setCsvLoggedHz(0);
+    setCsvLoggedTelemetryHz(0);
+    setCsvLoggedEncoderHz(0);
+    setCsvDebugStats(makeEmptyCsvDebugStats());
     setCsvLogVersion((version) => version + 1);
   }, []);
 
@@ -1207,7 +1255,11 @@ export default function useEsp32Serial(options = {}) {
     lastCsvSampleClockRef.current = null;
     lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
+    csvLoggedTelemetryRateWindowRef.current = [];
+    csvLoggedEncoderRateWindowRef.current = [];
     setCsvLoggedHz(0);
+    setCsvLoggedTelemetryHz(0);
+    setCsvLoggedEncoderHz(0);
     return samples;
   }, [drainCsvLogSamples]);
 
@@ -1215,12 +1267,28 @@ export default function useEsp32Serial(options = {}) {
     const timer = setInterval(() => {
       const now = Date.now();
       csvLoggedRateWindowRef.current = csvLoggedRateWindowRef.current.filter((time) => now - time <= 1000);
+      csvLoggedTelemetryRateWindowRef.current = csvLoggedTelemetryRateWindowRef.current.filter((time) => now - time <= 1000);
+      csvLoggedEncoderRateWindowRef.current = csvLoggedEncoderRateWindowRef.current.filter((time) => now - time <= 1000);
+      rawLineRateWindowRef.current = rawLineRateWindowRef.current.filter((time) => now - time <= 1000);
+      parsedTelemetryRateWindowRef.current = parsedTelemetryRateWindowRef.current.filter((time) => now - time <= 1000);
+      parsedEncoderRateWindowRef.current = parsedEncoderRateWindowRef.current.filter((time) => now - time <= 1000);
       const shouldUpdateCsvStats = now - lastCsvUiStatsUpdateRef.current >= CSV_UI_STATS_INTERVAL_MS;
       if (shouldUpdateCsvStats) {
         lastCsvUiStatsUpdateRef.current = now;
-        setCsvLoggedHz((prev) => {
-          const next = csvCaptureEnabledRef.current ? csvLoggedRateWindowRef.current.length : 0;
-          return prev === next ? prev : next;
+        const nextTotalHz = csvCaptureEnabledRef.current ? csvLoggedRateWindowRef.current.length : 0;
+        const nextTelemetryHz = csvCaptureEnabledRef.current ? csvLoggedTelemetryRateWindowRef.current.length : 0;
+        const nextEncoderHz = csvCaptureEnabledRef.current ? csvLoggedEncoderRateWindowRef.current.length : 0;
+        setCsvLoggedHz((prev) => (prev === nextTotalHz ? prev : nextTotalHz));
+        setCsvLoggedTelemetryHz((prev) => (prev === nextTelemetryHz ? prev : nextTelemetryHz));
+        setCsvLoggedEncoderHz((prev) => (prev === nextEncoderHz ? prev : nextEncoderHz));
+        setCsvDebugStats({
+          ...csvDebugCountersRef.current,
+          rawLineHz: rawLineRateWindowRef.current.length,
+          parsedTelemetryHz: parsedTelemetryRateWindowRef.current.length,
+          parsedEncHz: parsedEncoderRateWindowRef.current.length,
+          appendedTotalHz: nextTotalHz,
+          appendedTelemetryHz: nextTelemetryHz,
+          appendedEncHz: nextEncoderHz,
         });
       }
 
@@ -1310,6 +1378,8 @@ export default function useEsp32Serial(options = {}) {
         pc_time_ms: currentPacket.pc_time_ms || currentPacket.pcTimeMs || now,
         raw: parsed.cleanLine || currentPacket.raw || '',
         updatedAt: now,
+        hasTelemetryAttitude: Boolean(currentPacket.hasTelemetryAttitude),
+        lastTelemetryAt: currentPacket.lastTelemetryAt || null,
       }, encoderFields, {
         useFallback: false,
         now,
@@ -1521,6 +1591,8 @@ export default function useEsp32Serial(options = {}) {
       sample_type: parsed.sample_type || parsed.sampleType || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
       sampleType: parsed.sampleType || parsed.sample_type || (parsed.source === 'Remote_ESPNOW_IMU' ? 'IMU' : 'TEL'),
       updatedAt: now,
+      hasTelemetryAttitude: true,
+      lastTelemetryAt: now,
     }, latestDesiredAttitudeRef.current);
 
     latestPacketRef.current = commonPacket;
@@ -1593,10 +1665,27 @@ export default function useEsp32Serial(options = {}) {
   }, [markPendingUiFlush]);
 
   const handleLine = useCallback((line) => {
+    const now = Date.now();
+    pushRateWindow(rawLineRateWindowRef, now);
+    csvDebugCountersRef.current.rawLineCount += 1;
     const parsed = parseSerialLine(line);
-    if (parsed.ok) registerValidPacketRefOnly(parsed);
-    else registerInvalidLineRefOnly(parsed);
-  }, [registerInvalidLineRefOnly, registerValidPacketRefOnly]);
+    if (parsed.ok) {
+      const sampleType = detectCsvSampleType(parsed);
+      if (sampleType === 'ENC') {
+        pushRateWindow(parsedEncoderRateWindowRef, now);
+        csvDebugCountersRef.current.parsedEncCount += 1;
+      } else if (sampleType === 'TEL' || sampleType === 'IMU') {
+        pushRateWindow(parsedTelemetryRateWindowRef, now);
+        csvDebugCountersRef.current.parsedTelemetryCount += 1;
+      }
+      registerValidPacketRefOnly(parsed);
+    } else {
+      if (csvCaptureEnabledRef.current && !parsed.ignored && !parsed.warning) {
+        csvDebugCountersRef.current.invalidSkippedCount += 1;
+      }
+      registerInvalidLineRefOnly(parsed);
+    }
+  }, [pushRateWindow, registerInvalidLineRefOnly, registerValidPacketRefOnly]);
 
   const processChunk = useCallback((text) => {
     bufferRef.current += text;
@@ -1858,6 +1947,12 @@ export default function useEsp32Serial(options = {}) {
     lastCsvSampleClockRef.current = null;
     lastCsvUiStatsUpdateRef.current = 0;
     csvLoggedRateWindowRef.current = [];
+    csvLoggedTelemetryRateWindowRef.current = [];
+    csvLoggedEncoderRateWindowRef.current = [];
+    rawLineRateWindowRef.current = [];
+    parsedTelemetryRateWindowRef.current = [];
+    parsedEncoderRateWindowRef.current = [];
+    csvDebugCountersRef.current = makeEmptyCsvDebugStats();
     recentPacketsRef.current = [];
     chartDataRef.current = [];
     countersRef.current = { valid: 0, invalid: 0, ignored: 0, warning: 0 };
@@ -1885,6 +1980,9 @@ export default function useEsp32Serial(options = {}) {
     setEncoderCount(0);
     setInputHz(0);
     setCsvLoggedHz(0);
+    setCsvLoggedTelemetryHz(0);
+    setCsvLoggedEncoderHz(0);
+    setCsvDebugStats(makeEmptyCsvDebugStats());
     setLastCommand('');
     lastLocalWriteErrorRef.current = '';
     setLastLocalWriteError('');
@@ -1918,6 +2016,9 @@ export default function useEsp32Serial(options = {}) {
     csvMode: 'Save every valid Serial sample',
     csvUiStatsIntervalMs: CSV_UI_STATS_INTERVAL_MS,
     csvLoggedHz,
+    csvLoggedTelemetryHz,
+    csvLoggedEncoderHz,
+    csvDebugStats,
     recentPackets,
     chartData,
     validCount,
