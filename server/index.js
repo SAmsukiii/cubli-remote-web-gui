@@ -132,6 +132,14 @@ const serialState = {
 const bridgeState = {
   sequence: 0,
   commandQueue: [],
+  calibrationLock: {
+    busy: false,
+    state: 'IDLE',
+    commandKey: '',
+    label: '',
+    message: '',
+    error: '',
+  },
 };
 
 let activeSessionId = '';
@@ -797,6 +805,7 @@ function buildLivePayload(packet, options = {}) {
     lastWrongPublisherAt: sharedState.lastWrongPublisherAt,
     droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
     lastWrongSessionAt: sharedState.lastWrongSessionAt,
+    calibrationLock: sanitizeCalibrationLock(),
     serverSentAt,
   };
 }
@@ -2014,6 +2023,7 @@ function setLatestSharedPacket(packet, meta = {}) {
   sharedState.publisherRole = sharedPacket.publisherRole;
   sharedState.publishSessionId = sharedPacket.publishSessionId;
   sharedState.publishedAt = publishedAt;
+  updateCalibrationLockWithPacket(sharedPacket, publishedAt);
   pushLimited(sharedState.chartData, {
     sample: sharedState.chartData.length + 1,
     time: sharedPacket.pc_time_ms ?? sharedPacket.pcTimeMs ?? publishedAt,
@@ -2090,6 +2100,7 @@ function sanitizeSharedState(clientId = '') {
     lastWrongPublisherAt: sharedState.lastWrongPublisherAt,
     droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
     lastWrongSessionAt: sharedState.lastWrongSessionAt,
+    calibrationLock: sanitizeCalibrationLock(),
     chartData: [],
     rawLines: [],
     visualSettings: publicVisualSettings(),
@@ -2148,6 +2159,7 @@ function sanitizeSerialStatus(clientId = '') {
     lastWrongPublisherAt: shared.lastWrongPublisherAt,
     droppedWrongSessionCount: shared.droppedWrongSessionCount,
     lastWrongSessionAt: shared.lastWrongSessionAt,
+    calibrationLock: shared.calibrationLock,
     visualSettings: shared.visualSettings,
     recentPackets: includeDebug ? serialState.recentPackets : [],
     chartData: [],
@@ -2285,6 +2297,201 @@ function buildSerialCommandFromKey(commandKey, params = {}) {
   }
 }
 
+const SAFE_DURING_CALIBRATION_COMMANDS = new Set(['stop', 'emergencyStop', 'wheelRpmStop']);
+const CALIBRATION_COMMAND_PROFILES = Object.freeze({
+  tare: { waitFor: 'tel', minWaitMs: 450, timeoutMs: 3000, label: 'Set Zero / Tare' },
+  cubliInitialize: { waitFor: 'tel', minWaitMs: 3000, timeoutMs: 10000, label: 'Cubli Initialize' },
+  encoderInitialize: { waitFor: 'enc', minWaitMs: 650, timeoutMs: 3000, label: 'Gimbal Encoder Initialize' },
+  encoderTare: { waitFor: 'enc', minWaitMs: 650, timeoutMs: 3000, label: 'Gimbal Encoder Zero' },
+  ebimuDefault: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Apply EBIMU Default Settings' },
+  ebimuStart: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'EBIMU Start' },
+  ebimuStop: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'EBIMU Stop' },
+  magOff: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Mag Off' },
+  magOn: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Mag On' },
+  magAuto: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Mag Auto' },
+  gyro250: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Gyro 250 dps' },
+  gyro500: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Gyro 500 dps' },
+  gyro1000: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Gyro 1000 dps' },
+  gyro2000: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Gyro 2000 dps' },
+  acc2g: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Accel 2 g' },
+  acc4g: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Accel 4 g' },
+  acc8g: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Accel 8 g' },
+  acc16g: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Accel 16 g' },
+  accFactor: { waitFor: 'tel', minWaitMs: 1200, timeoutMs: 5000, label: 'Accel Filter Factor' },
+});
+
+function quaternionNorm(values) {
+  const q = values.map((value) => finiteNumber(value, null));
+  if (!q.every((value) => value !== null)) return null;
+  const norm = Math.sqrt(q.reduce((sum, value) => sum + value * value, 0));
+  return Number.isFinite(norm) ? norm : null;
+}
+
+function isStableQuaternionNorm(norm) {
+  return Number.isFinite(norm) && norm >= 0.8 && norm <= 1.2;
+}
+
+function readAttitudeOrder(packet = {}) {
+  return {
+    seq: firstFinite([packet.seq, packet.rxCount, packet.packetCount], null),
+    timestamp: firstFinite([packet.timestamp, packet.ebimu_timestamp_ms, packet.ebimuTimestampMs], null),
+    pcTimeMs: firstFinite([packet.pcTimeMs, packet.pc_time_ms, packet.updatedAt, packet.publishedAt], null),
+  };
+}
+
+function readEncoderOrder(packet = {}) {
+  const encoder = packet.encoder || {};
+  return {
+    updatedAt: firstFinite([packet.encoderUpdatedAt, encoder.updatedAt, packet.updatedAt, packet.publishedAt], null),
+    timerX: firstFinite([packet.enc_timer_x, packet.encoderTimerX, encoder.timerX, encoder.timer_x], null),
+    timerY: firstFinite([packet.enc_timer_y, packet.encoderTimerY, encoder.timerY, encoder.timer_y], null),
+    timerZ: firstFinite([packet.enc_timer_z, packet.encoderTimerZ, encoder.timerZ, encoder.timer_z], null),
+  };
+}
+
+function readTelemetryBaseline(packet = {}) {
+  return {
+    attitude: readAttitudeOrder(packet || {}),
+    encoder: readEncoderOrder(packet || {}),
+  };
+}
+
+function commandCalibrationInfo(commandKey = '') {
+  const key = String(commandKey || '').trim();
+  return {
+    commandKey: key,
+    isSafe: SAFE_DURING_CALIBRATION_COMMANDS.has(key),
+    isCalibration: Boolean(CALIBRATION_COMMAND_PROFILES[key]),
+    profile: CALIBRATION_COMMAND_PROFILES[key] || null,
+  };
+}
+
+function attitudeProgressed(current = {}, baseline = {}) {
+  if (current.seq !== null && baseline.seq !== null && current.seq > baseline.seq) return true;
+  if (current.timestamp !== null && baseline.timestamp !== null && current.timestamp > baseline.timestamp) return true;
+  if (current.pcTimeMs !== null && baseline.pcTimeMs !== null && current.pcTimeMs > baseline.pcTimeMs) return true;
+  return baseline.seq === null && baseline.timestamp === null && current.pcTimeMs !== null;
+}
+
+function encoderProgressed(current = {}, baseline = {}) {
+  if (current.updatedAt !== null && baseline.updatedAt !== null && current.updatedAt > baseline.updatedAt) return true;
+  if (current.timerX !== null && baseline.timerX !== null && current.timerX !== baseline.timerX) return true;
+  if (current.timerY !== null && baseline.timerY !== null && current.timerY !== baseline.timerY) return true;
+  if (current.timerZ !== null && baseline.timerZ !== null && current.timerZ !== baseline.timerZ) return true;
+  return baseline.updatedAt === null && current.updatedAt !== null;
+}
+
+function makeCalibrationLock(commandKey, label = '', baselinePacket = {}, now = Date.now(), owner = {}) {
+  const info = commandCalibrationInfo(commandKey);
+  if (!info.isCalibration) return null;
+  const profile = info.profile;
+  return {
+    busy: true,
+    state: profile.waitFor === 'enc' ? 'WAITING_STABLE_ENC' : 'WAITING_STABLE_TEL',
+    commandKey: info.commandKey,
+    label: label || profile.label || info.commandKey,
+    clientId: String(owner.clientId || '').trim(),
+    displayName: sanitizeClientName(owner.displayName || owner.clientName || ''),
+    role: owner.role || '',
+    waitFor: profile.waitFor,
+    startedAt: now,
+    timeoutAt: now + profile.timeoutMs,
+    minWaitUntil: now + profile.minWaitMs,
+    timeoutMs: profile.timeoutMs,
+    minWaitMs: profile.minWaitMs,
+    completedAt: null,
+    error: '',
+    message: profile.waitFor === 'enc' ? 'Waiting for stable encoder telemetry...' : 'Waiting for stable IMU telemetry...',
+    baseline: readTelemetryBaseline(baselinePacket),
+  };
+}
+
+function sanitizeCalibrationLock(lock = bridgeState.calibrationLock) {
+  if (!lock) return { busy: false, state: 'IDLE', commandKey: '', label: '', message: '', error: '' };
+  return {
+    busy: Boolean(lock.busy),
+    state: lock.state || 'IDLE',
+    commandKey: lock.commandKey || '',
+    commandId: lock.commandId || '',
+    label: lock.label || '',
+    clientId: '',
+    displayName: lock.displayName || '',
+    role: lock.role || '',
+    waitFor: lock.waitFor || '',
+    startedAt: lock.startedAt || null,
+    timeoutAt: lock.timeoutAt || null,
+    minWaitUntil: lock.minWaitUntil || null,
+    timeoutMs: lock.timeoutMs || null,
+    minWaitMs: lock.minWaitMs || null,
+    completedAt: lock.completedAt || null,
+    error: lock.error || '',
+    message: lock.message || '',
+  };
+}
+
+function updateCalibrationLockWithPacket(packet = {}, now = Date.now()) {
+  const lock = bridgeState.calibrationLock;
+  if (!lock?.busy) return lock;
+  if (now >= lock.timeoutAt) {
+    bridgeState.calibrationLock = {
+      ...lock,
+      busy: false,
+      state: 'TIMEOUT',
+      completedAt: now,
+      error: lock.waitFor === 'enc'
+        ? 'Gimbal zero timeout: ENC telemetry not stable'
+        : 'Calibration timeout: IMU telemetry not stable',
+      message: 'Calibration timeout',
+    };
+    return bridgeState.calibrationLock;
+  }
+  if (now < lock.minWaitUntil) return lock;
+
+  const stable = lock.waitFor === 'enc'
+    ? (() => {
+        const encoder = packet.encoder || {};
+        const norm = quaternionNorm([
+          packet.enc_q0 ?? packet.encoderQ0 ?? encoder.q0,
+          packet.enc_q1 ?? packet.encoderQ1 ?? encoder.q1,
+          packet.enc_q2 ?? packet.encoderQ2 ?? encoder.q2,
+          packet.enc_q3 ?? packet.encoderQ3 ?? encoder.q3,
+        ]);
+        return isStableQuaternionNorm(norm) && encoderProgressed(readEncoderOrder(packet), lock.baseline?.encoder || {});
+      })()
+    : (() => {
+        const norm = quaternionNorm([packet.q0, packet.q1, packet.q2, packet.q3]);
+        return isStableQuaternionNorm(norm) && attitudeProgressed(readAttitudeOrder(packet), lock.baseline?.attitude || {});
+      })();
+
+  if (!stable) return lock;
+  bridgeState.calibrationLock = {
+    ...lock,
+    busy: false,
+    state: 'COMPLETE',
+    completedAt: now,
+    error: '',
+    message: `${lock.label || 'Calibration'} complete`,
+  };
+  return bridgeState.calibrationLock;
+}
+
+function isCommandBlockedByCalibration(commandKey, req = {}) {
+  updateCalibrationLockWithPacket(sharedState.latestSharedPacket || serialState.latestPacket || {}, Date.now());
+  const lock = bridgeState.calibrationLock;
+  if (!lock?.busy) return false;
+  if (Boolean(req.body?.bypassCalibrationLock) && req.identity?.clientId === lock.clientId) return false;
+  return !commandCalibrationInfo(commandKey).isSafe;
+}
+
+function isQueuedCommandBlockedByCalibration(command = {}) {
+  updateCalibrationLockWithPacket(sharedState.latestSharedPacket || serialState.latestPacket || {}, Date.now());
+  const lock = bridgeState.calibrationLock;
+  if (!lock?.busy) return false;
+  if (command.commandId && command.commandId === lock.commandId) return false;
+  if (Boolean(command.bypassCalibrationLock) && command.clientId === lock.clientId) return false;
+  return !commandCalibrationInfo(command.commandKey).isSafe;
+}
+
 function makeBridgeCommandId() {
   bridgeState.sequence += 1;
   return `bridge-${Date.now().toString(36)}-${bridgeState.sequence.toString(36)}`;
@@ -2301,6 +2508,7 @@ function bridgeStatus(options = {}) {
   const includeDebug = Boolean(options.includeDebug);
   const now = Date.now();
   cleanupStaleActivePublisher(now);
+  updateCalibrationLockWithPacket(sharedState.latestSharedPacket || serialState.latestPacket || {}, now);
   const publisherState = sanitizeActivePublisher(activePublisher, { includeDebug });
   const adminBridgeLive = Boolean(
     activePublisher?.clientId
@@ -2318,6 +2526,7 @@ function bridgeStatus(options = {}) {
     activePublisherStatus: publisherState.status,
     activePublisherHeartbeatAgeMs: publisherState.heartbeatAgeMs,
     pendingCount,
+    calibrationLock: sanitizeCalibrationLock(),
   };
   if (!includeDebug) return summary;
   return {
@@ -2430,6 +2639,7 @@ function statePayload(clientId = '') {
     droppedOutOfOrderCount: shared.droppedOutOfOrderCount,
     droppedWrongPublisherCount: shared.droppedWrongPublisherCount,
     droppedWrongSessionCount: shared.droppedWrongSessionCount,
+    calibrationLock: shared.calibrationLock,
     visualSettings: shared.visualSettings,
     bridge: bridgeStatus({ includeDebug }),
     serialStatus: serialState.isConnected ? 'connected' : serialState.isOpening ? 'opening' : 'disconnected',
@@ -2687,6 +2897,7 @@ app.post('/api/live/publish-fast', (req, res) => {
     droppedOutOfOrderCount: sharedState.droppedOutOfOrderCount,
     droppedWrongPublisherCount: sharedState.droppedWrongPublisherCount,
     droppedWrongSessionCount: sharedState.droppedWrongSessionCount,
+    calibrationLock: sanitizeCalibrationLock(),
   });
 });
 
@@ -2747,6 +2958,7 @@ app.post('/api/live/publish', (req, res) => {
     droppedOutOfOrderCount: shared.droppedOutOfOrderCount,
     droppedWrongPublisherCount: shared.droppedWrongPublisherCount,
     droppedWrongSessionCount: shared.droppedWrongSessionCount,
+    calibrationLock: shared.calibrationLock,
     bridge: bridgeStatus({ includeDebug: true }),
     access: publicAccessState(identity.clientId),
   });
@@ -2785,6 +2997,21 @@ app.post('/api/bridge/command-request', (req, res) => {
     return res.status(400).json({ ok: false, error: err?.message || 'Unsupported bridge command', access: publicAccessState(identity.clientId) });
   }
 
+  const includeDebug = identity.role === 'admin';
+  if (isCommandBlockedByCalibration(descriptor.commandKey, { body: req.body || {}, identity })) {
+    const lock = sanitizeCalibrationLock();
+    const message = 'Calibration in progress. Wait for stable telemetry, then try again.';
+    appendActiveSessionEvent({ source: 'admin-web-serial', eventType: 'BRIDGE_COMMAND_BLOCKED', label: descriptor.label, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, commandKey: descriptor.commandKey, params: descriptor.params, allowed: false, reason: message });
+    return res.status(409).json({
+      ok: false,
+      error: 'CALIBRATION_COMMAND_LOCK',
+      message,
+      calibrationLock: lock,
+      bridge: bridgeStatus({ includeDebug }),
+      access: publicAccessState(identity.clientId),
+    });
+  }
+
   const now = Date.now();
   const command = {
     commandId: makeBridgeCommandId(),
@@ -2798,13 +3025,22 @@ app.post('/api/bridge/command-request', (req, res) => {
     label: descriptor.label,
     params: descriptor.params || {},
     serialLine: descriptor.serialLine,
+    bypassCalibrationLock: Boolean(req.body?.bypassCalibrationLock),
     status: 'pending',
   };
   bridgeState.commandQueue.push(command);
   if (bridgeState.commandQueue.length > MAX_BRIDGE_COMMANDS) bridgeState.commandQueue.splice(0, bridgeState.commandQueue.length - MAX_BRIDGE_COMMANDS);
+  const commandInfo = commandCalibrationInfo(command.commandKey);
+  if (commandInfo.isCalibration && !Boolean(req.body?.bypassCalibrationLock)) {
+    const nextLock = makeCalibrationLock(command.commandKey, command.label, sharedState.latestSharedPacket || serialState.latestPacket || {}, now, identity);
+    if (nextLock) {
+      nextLock.commandId = command.commandId;
+      bridgeState.calibrationLock = nextLock;
+      appendActiveSessionEvent({ source: 'admin-web-serial', eventType: 'CALIBRATION_LOCK_STARTED', label: command.label, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, commandId: command.commandId, commandKey: command.commandKey, waitFor: nextLock.waitFor, timeoutMs: nextLock.timeoutMs });
+    }
+  }
   setLastCommandInfo(command, { ok: null, reason: 'queued for Admin Web Serial Bridge' });
   appendActiveSessionEvent({ source: 'admin-web-serial', eventType: 'BRIDGE_COMMAND_QUEUED', label: command.label, clientId: identity.clientId, displayName: identity.displayName, clientName: identity.displayName, role: identity.role, commandId: command.commandId, commandKey: command.commandKey, params: command.params, allowed: true });
-  const includeDebug = identity.role === 'admin';
   res.status(202).json({
     ok: true,
     commandId: command.commandId,
@@ -2812,6 +3048,7 @@ app.post('/api/bridge/command-request', (req, res) => {
     lastCommandInfo: sanitizeCommandInfo(sharedState.lastCommandInfo, { includeDebug }),
     latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug }),
     latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug }),
+    calibrationLock: sanitizeCalibrationLock(),
     bridge: bridgeStatus({ includeDebug }),
     access: publicAccessState(identity.clientId),
   });
@@ -2821,7 +3058,9 @@ app.get('/api/bridge/commands/poll', (req, res) => {
   const identity = requireAdmin(req, res);
   if (!identity) return;
   const now = Date.now();
-  const pending = bridgeState.commandQueue.filter((command) => command.status === 'pending').slice(0, 10);
+  const pending = bridgeState.commandQueue
+    .filter((command) => command.status === 'pending' && !isQueuedCommandBlockedByCalibration(command))
+    .slice(0, 10);
   pending.forEach((command) => {
     command.status = 'dispatching';
     command.adminClientId = identity.clientId;
@@ -2852,6 +3091,16 @@ app.post('/api/bridge/commands/:commandId/ack', (req, res) => {
   command.adminClientName = identity.displayName;
   command.ackedAt = new Date(now).toISOString();
   command.ackedAtMs = now;
+  if (!ok && commandCalibrationInfo(command.commandKey).isCalibration && bridgeState.calibrationLock?.commandKey === command.commandKey) {
+    bridgeState.calibrationLock = {
+      ...bridgeState.calibrationLock,
+      busy: false,
+      state: 'ERROR',
+      completedAt: now,
+      error,
+      message: error || 'Calibration command failed',
+    };
+  }
   const info = setLastCommandInfo(command, { ok, sentLine: ok ? sentLine : '', error, reason: ok ? 'Admin bridge relayed command.' : error });
   appendActiveSessionEvent({ source: 'admin-web-serial', eventType: ok ? 'BRIDGE_COMMAND_EXECUTED' : 'BRIDGE_COMMAND_FAILED', label: command.label, clientId: command.clientId, displayName: getStoredClientName(command.clientId), clientName: getStoredClientName(command.clientId), role: command.role, adminClientId: identity.clientId, adminDisplayName: identity.displayName, adminClientName: identity.displayName, commandId: command.commandId, commandKey: command.commandKey, params: command.params, serialLineSent: ok ? sentLine : '', allowed: ok, reason: error });
   res.json({
@@ -2860,6 +3109,7 @@ app.post('/api/bridge/commands/:commandId/ack', (req, res) => {
     lastCommandInfo: sanitizeCommandInfo(info, { includeDebug: true }),
     latestDesiredAttitude: sanitizeDesiredAttitude(sharedState.latestDesiredAttitude, { includeDebug: true }),
     latestSharedPacket: sanitizeSharedPacket(sharedState.latestSharedPacket, { includeDebug: true }),
+    calibrationLock: sanitizeCalibrationLock(),
     bridge: bridgeStatus({ includeDebug: true }),
     access: publicAccessState(identity.clientId),
   });

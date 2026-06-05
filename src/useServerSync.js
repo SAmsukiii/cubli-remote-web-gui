@@ -6,6 +6,14 @@ import {
   normalizeEulerSequence,
   normalizeLivePacket,
 } from './telemetryNormalize';
+import {
+  CALIBRATION_LOCK_STATES,
+  calibrationLockReason,
+  classifyCommandKey,
+  isCommandBlockedByCalibration,
+  makeCalibrationLock,
+  updateCalibrationLock,
+} from './calibrationLockUtils';
 
 const CLIENT_ID_KEY = 'cubliClientId';
 const DISPLAY_NAME_KEY = 'cubliDisplayName';
@@ -873,6 +881,14 @@ export default function useServerSync() {
   const [publishCount, setPublishCount] = useState(0);
   const [publishFailedCount, setPublishFailedCount] = useState(0);
   const [publishBackoffUntil, setPublishBackoffUntil] = useState(null);
+  const [calibrationLock, setCalibrationLock] = useState({
+    busy: false,
+    state: CALIBRATION_LOCK_STATES.IDLE,
+    commandKey: '',
+    label: '',
+    message: '',
+    error: '',
+  });
 
   const [serverSerialPorts, setServerSerialPorts] = useState([]);
   const [serverSerialPath, setServerSerialPath] = useState('');
@@ -933,6 +949,14 @@ export default function useServerSync() {
     lastCommand: '',
     access: null,
     serverInfo: null,
+    calibrationLock: {
+      busy: false,
+      state: CALIBRATION_LOCK_STATES.IDLE,
+      commandKey: '',
+      label: '',
+      message: '',
+      error: '',
+    },
   });
 
   const sampleQueueRef = useRef([]);
@@ -964,6 +988,7 @@ export default function useServerSync() {
   const activePublisherRef = useRef(null);
   const lastLivePayloadServerSentAtRef = useRef(0);
   const lastCommandRequestErrorRef = useRef('');
+  const calibrationLockRef = useRef(calibrationLock);
   const safeDisplayName = sanitizeDisplayName(displayName);
   const hasDisplayName = Boolean(safeDisplayName);
 
@@ -986,6 +1011,29 @@ export default function useServerSync() {
   useEffect(() => {
     activePublisherRef.current = activePublisher;
   }, [activePublisher]);
+
+  useEffect(() => {
+    calibrationLockRef.current = calibrationLock;
+  }, [calibrationLock]);
+
+  const setCalibrationLockState = useCallback((nextLock) => {
+    calibrationLockRef.current = nextLock;
+    setCalibrationLock(nextLock);
+    setServerSerialStatus((prev) => ({ ...prev, calibrationLock: nextLock }));
+  }, []);
+
+  const updateCalibrationLockFromPacket = useCallback((packet, now = Date.now()) => {
+    if (!calibrationLockRef.current?.busy || !packet) return calibrationLockRef.current;
+    const nextLock = updateCalibrationLock(calibrationLockRef.current, packet, now);
+    if (nextLock !== calibrationLockRef.current) setCalibrationLockState(nextLock);
+    return nextLock;
+  }, [setCalibrationLockState]);
+
+  const startCalibrationLock = useCallback((commandKey, label = '', baselinePacket = latestServerSerialPacketRef.current) => {
+    const nextLock = makeCalibrationLock(commandKey, label, baselinePacket || {}, Date.now());
+    if (nextLock) setCalibrationLockState(nextLock);
+    return nextLock;
+  }, [setCalibrationLockState]);
 
   useEffect(() => {
     const normalized = normalizeServerUrlForCurrentLocation(serverUrl);
@@ -1642,6 +1690,7 @@ export default function useServerSync() {
       if (latestSharedPacket) {
         publishPrevPacketRef.current = latestSharedPacket;
         latestServerSerialPacketRef.current = latestSharedPacket;
+        const nextCalibrationLock = updateCalibrationLockFromPacket(latestSharedPacket, Date.now());
         setServerSerialStatus((prev) => ({
           ...prev,
           latestPacket: latestSharedPacket,
@@ -1664,6 +1713,7 @@ export default function useServerSync() {
           droppedOutOfOrderCount: data.droppedOutOfOrderCount != null ? Number(data.droppedOutOfOrderCount) || 0 : prev.droppedOutOfOrderCount,
           droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
           droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
+          calibrationLock: nextCalibrationLock || prev.calibrationLock,
         }));
       }
       consecutivePublish404Ref.current = 0;
@@ -1817,6 +1867,7 @@ export default function useServerSync() {
     recordRateSample,
     serverPublishHz,
     serverSerialStatus.latestDesiredAttitude,
+    updateCalibrationLockFromPacket,
   ]);
 
   const publishCommandState = useCallback(async (commandKey, params = {}, label = '') => {
@@ -1852,12 +1903,29 @@ export default function useServerSync() {
       lastCommandRequestErrorRef.current = 'Command key is empty';
       return false;
     }
+    const now = Date.now();
+    const currentLock = updateCalibrationLockFromPacket(latestServerSerialPacketRef.current, now);
+    const bypassCalibrationLock = Boolean(eventMeta.bypassCalibrationLock);
+    if (!bypassCalibrationLock && isCommandBlockedByCalibration(currentLock, key)) {
+      const message = calibrationLockReason(currentLock);
+      setConnectionStatus('error');
+      setLastError(message);
+      lastCommandRequestErrorRef.current = message;
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message, calibrationLock: currentLock }));
+      return false;
+    }
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/command-request`, {
         method: 'POST',
-        body: JSON.stringify({ clientId, commandKey: key, params }),
+        body: JSON.stringify({ clientId, commandKey: key, params, bypassCalibrationLock }),
       });
+      const nextCalibrationLock = data.calibrationLock || data.bridge?.calibrationLock || null;
+      if (nextCalibrationLock) {
+        setCalibrationLockState(nextCalibrationLock);
+      } else if (!bypassCalibrationLock && classifyCommandKey(key).isCalibration) {
+        startCalibrationLock(key, eventMeta.label || data.command?.label || key);
+      }
       setServerSerialStatus((prev) => ({
         ...prev,
         bridge: data.bridge || prev.bridge,
@@ -1867,6 +1935,7 @@ export default function useServerSync() {
         latestSharedPacket: data.latestSharedPacket || prev.latestSharedPacket,
         latestPacket: data.latestSharedPacket || prev.latestPacket,
         access: data.access || prev.access,
+        calibrationLock: nextCalibrationLock || prev.calibrationLock,
         lastError: '',
       }));
       recordEvent({
@@ -1884,19 +1953,24 @@ export default function useServerSync() {
       setConnectionStatus('error');
       setLastError(message);
       lastCommandRequestErrorRef.current = message;
-      setServerSerialStatus((prev) => ({ ...prev, lastError: message }));
+      const nextCalibrationLock = err?.data?.calibrationLock || err?.data?.bridge?.calibrationLock || null;
+      if (nextCalibrationLock) setCalibrationLockState(nextCalibrationLock);
+      setServerSerialStatus((prev) => ({ ...prev, lastError: message, calibrationLock: nextCalibrationLock || prev.calibrationLock }));
       return false;
     }
-  }, [clientId, recordEvent, requestJson]);
+  }, [clientId, recordEvent, requestJson, setCalibrationLockState, startCalibrationLock, updateCalibrationLockFromPacket]);
 
   const pollBridgeCommands = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
     try {
       const data = await requestJson(`${baseUrl}/api/bridge/commands/poll?clientId=${encodeURIComponent(clientId)}&clientName=${encodeURIComponent(safeDisplayName)}`, { method: 'GET' });
+      const nextCalibrationLock = data.calibrationLock || data.bridge?.calibrationLock || null;
+      if (nextCalibrationLock) setCalibrationLockState(nextCalibrationLock);
       setServerSerialStatus((prev) => ({
         ...prev,
         bridge: data.bridge || prev.bridge,
         lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
+        calibrationLock: nextCalibrationLock || prev.calibrationLock,
         access: data.access || prev.access,
       }));
       setConnectionStatus('connected');
@@ -1905,7 +1979,7 @@ export default function useServerSync() {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Bridge command polling failed' }));
       return [];
     }
-  }, [clientId, safeDisplayName, requestJson]);
+  }, [clientId, safeDisplayName, requestJson, setCalibrationLockState]);
 
   const ackBridgeCommand = useCallback(async (commandId, ok, sentLine = '', error = '') => {
     const id = String(commandId || '').trim();
@@ -1916,6 +1990,8 @@ export default function useServerSync() {
         method: 'POST',
         body: JSON.stringify({ clientId, ok: Boolean(ok), sentLine, error }),
       });
+      const nextCalibrationLock = data.calibrationLock || data.bridge?.calibrationLock || null;
+      if (nextCalibrationLock) setCalibrationLockState(nextCalibrationLock);
       setServerSerialStatus((prev) => ({
         ...prev,
         bridge: data.bridge || prev.bridge,
@@ -1924,6 +2000,7 @@ export default function useServerSync() {
         lastCommandInfo: data.lastCommandInfo || prev.lastCommandInfo,
         latestSharedPacket: data.latestSharedPacket || prev.latestSharedPacket,
         latestPacket: data.latestSharedPacket || prev.latestPacket,
+        calibrationLock: nextCalibrationLock || prev.calibrationLock,
         access: data.access || prev.access,
       }));
       setConnectionStatus('connected');
@@ -1933,7 +2010,7 @@ export default function useServerSync() {
       setServerSerialStatus((prev) => ({ ...prev, lastError: err?.message || 'Bridge command ack failed' }));
       return false;
     }
-  }, [clientId, requestJson]);
+  }, [clientId, requestJson, setCalibrationLockState]);
 
 
   const setServerSerialBaudRate = useCallback((value) => {
@@ -1972,10 +2049,13 @@ export default function useServerSync() {
   const updateServerSerialStatusState = useCallback((data) => {
     if (!data) return data;
     applyPublisherState(data);
+    const nextCalibrationLock = data.calibrationLock || data.bridge?.calibrationLock || null;
+    if (nextCalibrationLock) setCalibrationLockState(nextCalibrationLock);
     const nextVisualSettings = applyVisualSettings(data.visualSettings);
     setServerSerialStatus((prev) => ({
       ...prev,
       ...data,
+      calibrationLock: nextCalibrationLock || data.calibrationLock || prev.calibrationLock,
       visualSettings: nextVisualSettings || data.visualSettings || prev.visualSettings,
     }));
     if (data.latestPacket?.updatedAt) {
@@ -1987,7 +2067,7 @@ export default function useServerSync() {
     if (data.path) setServerSerialPath(data.path);
     if (data.baudRate) setServerSerialBaudRateState(data.baudRate);
     return data;
-  }, [applyPublisherState, applyVisualSettings]);
+  }, [applyPublisherState, applyVisualSettings, setCalibrationLockState]);
 
   const refreshServerSerialStatus = useCallback(async () => {
     const baseUrl = normalizeServerUrlForCurrentLocation(serverUrlRef.current);
@@ -2131,12 +2211,14 @@ export default function useServerSync() {
       eventType: 'EBIMU_RUNTIME',
       label: 'Default IMU Magnetometer Off',
       detail: { defaultImuSetting: true },
+      bypassCalibrationLock: true,
     });
     if (!magOk) return false;
     const gyroOk = await sendServerSerialCommand('gyro500', {}, {
       eventType: 'EBIMU_RUNTIME',
       label: 'Default IMU Gyro 500 dps',
       detail: { defaultImuSetting: true },
+      bypassCalibrationLock: true,
     });
     return Boolean(gyroOk);
   }, [sendServerSerialCommand]);
@@ -2185,8 +2267,8 @@ export default function useServerSync() {
     return sendAttitudeKd(dx, dy, dz);
   }, [sendAttitudeKd, sendAttitudeKp]);
 
-  const sendEbimuShortcut = useCallback((commandKey, label, params = {}) => (
-    sendServerSerialCommand(commandKey, params, { eventType: 'EBIMU_RUNTIME', label, detail: params })
+  const sendEbimuShortcut = useCallback((commandKey, label, params = {}, eventMeta = {}) => (
+    sendServerSerialCommand(commandKey, params, { eventType: 'EBIMU_RUNTIME', label, detail: params, ...eventMeta })
   ), [sendServerSerialCommand]);
 
   const clearServerSerialStats = useCallback(async () => {
@@ -2363,8 +2445,10 @@ export default function useServerSync() {
     setLiveDataStatus(data.liveStatus || liveDataStatusFromAge(packetAgeMs));
     recordRateSample(receiveTimesRef, setActualReceiveHz, now);
 
+    let nextCalibrationLock = calibrationLockRef.current;
     if (packet?.updatedAt || packet?.publishedAt) {
       latestServerSerialPacketRef.current = packet;
+      nextCalibrationLock = updateCalibrationLockFromPacket(packet, now);
       if (typeof window !== 'undefined') {
         window.__CUBLI_SERVER_SERIAL_PACKET = packet;
       }
@@ -2397,6 +2481,7 @@ export default function useServerSync() {
       droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
       serverToViewerLatencyMs: receiveLatencyMs,
       receiveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs),
+      calibrationLock: data.calibrationLock || data.bridge?.calibrationLock || nextCalibrationLock || prev.calibrationLock,
       chartData: packet && !outOfOrder
         ? [...(streamChanged ? [] : (Array.isArray(prev.chartData) ? prev.chartData : [])), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
         : (Array.isArray(prev.chartData) ? prev.chartData : []),
@@ -2404,7 +2489,7 @@ export default function useServerSync() {
     }));
 
     return packet;
-  }, [applyPublisherState, applyVisualSettings, droppedOutOfOrderCount, recordRateSample]);
+  }, [applyPublisherState, applyVisualSettings, droppedOutOfOrderCount, recordRateSample, updateCalibrationLockFromPacket]);
 
   const scheduleLiveStateFlush = useCallback((data) => {
     applyLivePayload(data, { updateState: false });
@@ -2776,6 +2861,7 @@ export default function useServerSync() {
     activeSharedSource: serverSerialStatus.activeSharedSource,
     publishedAt: serverSerialStatus.publishedAt,
     liveStatus: serverSerialStatus.liveStatus,
+    calibrationLock,
     sessionId,
     sessionStartedAt,
     sessionEndedAt,
@@ -2809,6 +2895,7 @@ export default function useServerSync() {
       activePublisherHeartbeatAgeMs: serverSerialStatus.activePublisherHeartbeatAgeMs,
       publishSessionId: serverSerialStatus.publishSessionId || publishSessionId,
       lastBridgeCommand: serverSerialStatus.lastBridgeCommand,
+      calibrationLock: serverSerialStatus.calibrationLock || calibrationLock,
       listPorts: listServerSerialPorts,
       connect: connectServerSerial,
       disconnect: disconnectServerSerial,

@@ -9,6 +9,15 @@ import {
   detectSampleType,
   finalizeCsvLogRows,
 } from './csvLogUtils';
+import {
+  CALIBRATION_LOCK_STATES,
+  calibrationLockReason,
+  classifyCommandKey,
+  commandLineToCalibrationKey,
+  isCommandBlockedByCalibration,
+  makeCalibrationLock,
+  updateCalibrationLock,
+} from './calibrationLockUtils';
 import { eulerDegToQuat, normalizeEulerSequence } from './telemetryNormalize';
 import TelemetryDataView from './TelemetryDataView';
 
@@ -489,13 +498,14 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
   );
 }
 
-function CommandButton({ label, onClick, disabled }) {
+function CommandButton({ label, onClick, disabled, title = '' }) {
   return (
     <Button
       variant="outline-light"
       className="serial-command-button simple-command-button"
       disabled={disabled}
       onClick={onClick}
+      title={title}
     >
       <span className="serial-command-label">{label}</span>
     </Button>
@@ -522,6 +532,46 @@ function CommandFeedback({ feedback }) {
       {feedback?.message || ''}
     </div>
   );
+}
+
+function normalizeCalibrationLock(lock = {}) {
+  if (!lock || typeof lock !== 'object') {
+    return {
+      busy: false,
+      state: CALIBRATION_LOCK_STATES.IDLE,
+      commandKey: '',
+      label: '',
+      message: '',
+      error: '',
+    };
+  }
+  return {
+    busy: Boolean(lock.busy),
+    state: lock.state || CALIBRATION_LOCK_STATES.IDLE,
+    commandKey: lock.commandKey || '',
+    commandId: lock.commandId || '',
+    label: lock.label || '',
+    waitFor: lock.waitFor || '',
+    startedAt: lock.startedAt || null,
+    timeoutAt: lock.timeoutAt || null,
+    completedAt: lock.completedAt || null,
+    error: lock.error || '',
+    message: lock.message || '',
+  };
+}
+
+function calibrationLockRows(lock = {}) {
+  const normalized = normalizeCalibrationLock(lock);
+  const now = Date.now();
+  return [
+    { label: 'Command lock', value: normalized.busy ? 'ON' : 'OFF' },
+    { label: 'Calibration state', value: normalized.state || '-' },
+    { label: 'Last command', value: normalized.label || normalized.commandKey || '-' },
+    { label: 'Wait target', value: normalized.waitFor ? normalized.waitFor.toUpperCase() : '-' },
+    { label: 'Elapsed', value: normalized.startedAt ? formatFixedMs(now - normalized.startedAt) : '---- ms' },
+    { label: 'Timeout left', value: normalized.busy && normalized.timeoutAt ? formatFixedMs(Math.max(0, normalized.timeoutAt - now)) : '---- ms' },
+    { label: 'Error', value: normalized.error || '-' },
+  ];
 }
 
 function CommandAccordionItem({ eventKey, title, children }) {
@@ -1009,14 +1059,18 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const [rpmStatus, setRpmStatus] = useState('');
   const [localCommand, setLocalCommand] = useState('');
   const [lastCommandFeedbackByCategory, setLastCommandFeedbackByCategory] = useState({});
+  const [localCalibrationLock, setLocalCalibrationLock] = useState(() => normalizeCalibrationLock());
+  const [, setCalibrationLockClock] = useState(0);
   const commandFeedbackTimersRef = useRef({});
+  const localCalibrationLockRef = useRef(localCalibrationLock);
 
   const isAdmin = role === 'admin';
   const canViewCommand = isAdmin || isController;
   const bridge = safeStatus.bridge || safeSerial.bridge || {};
   const bridgeLive = Boolean(bridge.adminBridgeLive);
-  const canSendCommand = bridgeLive && (isController || (isAdmin && !controllerClientId));
+  const canSendCommandBase = bridgeLive && (isController || (isAdmin && !controllerClientId));
   const adminDelegated = isAdmin && controllerClientId;
+  const serverCalibrationLock = normalizeCalibrationLock(safeSerial.calibrationLock || safeStatus.calibrationLock || bridge.calibrationLock);
   const lastBridgeCommand = bridge.lastBridgeCommand || safeStatus.lastBridgeCommand || safeSerial.lastBridgeCommand || null;
   const commandWaiting = lastBridgeCommand && (lastBridgeCommand.status === 'pending' || lastBridgeCommand.status === 'dispatching');
   const kpValues = readGainTriplet(kpGain);
@@ -1034,14 +1088,56 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const qdPreviewText = targetPreview.qd.map((value) => formatNumber(value, 6)).join(', ');
   const localWriterReady = Boolean(safeLocalSerial.serialWriterReady);
   const localSerialConnected = Boolean(safeLocalSerial.isConnected);
-  const canSendLocalCommand = isAdmin && localSerialConnected && localWriterReady && typeof safeLocalSerial.sendLine === 'function';
+  const canSendLocalCommandBase = isAdmin && localSerialConnected && localWriterReady && typeof safeLocalSerial.sendLine === 'function';
   const lastRemoteAckErr = /^(ACK|ERR|ERROR|OK|WARN|PONG)(?:,|\s|$)/i.test(String(safeLocalSerial.lastRawLine || ''))
     ? safeLocalSerial.lastRawLine
     : '-';
+  const canSendServerCommand = (commandKey) => canSendCommandBase && !isCommandBlockedByCalibration(serverCalibrationLock, commandKey);
+  const commandTitle = (commandKey, scope = 'server') => {
+    const lock = scope === 'local' ? localCalibrationLock : serverCalibrationLock;
+    return isCommandBlockedByCalibration(lock, commandKey) ? calibrationLockReason(lock) : '';
+  };
+  const localLinesToLockKey = (lines, label = '') => {
+    const lowerLabel = String(label || '').toLowerCase();
+    if (lowerLabel.includes('cubli initialize')) return 'cubliInitialize';
+    if (lowerLabel.includes('encoder')) return 'encoderInitialize';
+    if (lowerLabel.includes('default imu')) return 'ebimuDefault';
+    const normalizedLines = (Array.isArray(lines) ? lines : [lines]).map((line) => String(line || '').trim()).filter(Boolean);
+    return normalizedLines.map(commandLineToCalibrationKey).find((key) => classifyCommandKey(key).isCalibration || classifyCommandKey(key).isSafe) || '';
+  };
+  const localLinesBlocked = (lines, label = '') => {
+    const key = localLinesToLockKey(lines, label);
+    return isCommandBlockedByCalibration(localCalibrationLock, key);
+  };
+  const canSendLocalLines = (lines = '', label = '') => (
+    canSendLocalCommandBase && !localLinesBlocked(lines, label)
+  );
 
   useEffect(() => () => {
     Object.values(commandFeedbackTimersRef.current).forEach((timer) => window.clearTimeout(timer));
   }, []);
+
+  useEffect(() => {
+    localCalibrationLockRef.current = localCalibrationLock;
+  }, [localCalibrationLock]);
+
+  useEffect(() => {
+    const anyBusy = Boolean(serverCalibrationLock.busy || localCalibrationLock.busy);
+    if (!anyBusy) return undefined;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setCalibrationLockClock(now);
+      if (localCalibrationLockRef.current?.busy) {
+        const packet = safeLocalSerial.latestPacketRef?.current || safeLocalSerial.latestPacket || {};
+        setLocalCalibrationLock((prev) => {
+          const next = updateCalibrationLock(prev, packet, now);
+          localCalibrationLockRef.current = next;
+          return next;
+        });
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [localCalibrationLock.busy, safeLocalSerial.latestPacket, safeLocalSerial.latestPacketRef, serverCalibrationLock.busy]);
 
   if (!canViewCommand) return null;
 
@@ -1065,7 +1161,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const serverCommandFailureReason = () => {
     if (!bridgeLive) return 'Admin bridge is not publishing';
     if (adminDelegated) return 'control assigned to another user';
-    if (!canSendCommand) return 'server command queue is not available';
+    if (!canSendCommandBase) return 'server command queue is not available';
+    if (serverCalibrationLock.busy) return calibrationLockReason(serverCalibrationLock);
     return safeSerial.getLastCommandRequestError?.()
       || safeStatus.lastError
       || safeSerial.status?.lastError
@@ -1075,6 +1172,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const localCommandFailureReason = (fallback = 'writer not ready') => {
     if (!localSerialConnected) return 'Serial receiver is not connected';
     if (!localWriterReady) return 'writer not ready';
+    if (localCalibrationLock.busy) return calibrationLockReason(localCalibrationLock);
     return safeLocalSerial.getLastLocalWriteError?.()
       || safeLocalSerial.lastLocalWriteError
       || safeLocalSerial.error
@@ -1093,18 +1191,22 @@ function CommandSection({ serial, status, role, controllerClientId, isController
     }
   };
 
-  const sendShortcut = (commandKey, label, params = {}) => safeSerial.sendEbimuShortcut?.(commandKey, label, params);
+  const sendShortcut = (commandKey, label, params = {}, eventMeta = {}) => safeSerial.sendEbimuShortcut?.(commandKey, label, params, eventMeta);
   const sendAccFactor = (value) => safeSerial.sendAccFactor?.(Number(value) || 10);
   const sendLocalLines = async (lines, label = 'Local command') => {
     const normalizedLines = (Array.isArray(lines) ? lines : [lines])
       .map((line) => String(line || '').trim())
       .filter(Boolean);
-    if (!canSendLocalCommand) {
+    if (!canSendLocalCommandBase) {
       showCommandFeedback('localDirect', 'error', localCommandFailureReason());
       return false;
     }
     if (normalizedLines.length === 0) {
       showCommandFeedback('localDirect', 'error', 'command line is empty');
+      return false;
+    }
+    if (localLinesBlocked(normalizedLines, label)) {
+      showCommandFeedback('localDirect', 'error', calibrationLockReason(localCalibrationLock));
       return false;
     }
     for (const line of normalizedLines) {
@@ -1116,6 +1218,15 @@ function CommandSection({ serial, status, role, controllerClientId, isController
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
+    const lockKey = localLinesToLockKey(normalizedLines, label);
+    if (classifyCommandKey(lockKey).isCalibration) {
+      const packet = safeLocalSerial.latestPacketRef?.current || safeLocalSerial.latestPacket || {};
+      const nextLock = makeCalibrationLock(lockKey, label, packet, Date.now());
+      if (nextLock) {
+        localCalibrationLockRef.current = nextLock;
+        setLocalCalibrationLock(nextLock);
+      }
+    }
     showCommandFeedback('localDirect', 'success');
     return true;
   };
@@ -1126,9 +1237,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   const applyDefaultImuSetting = async () => {
     const setupOk = await sendShortcut('ebimuDefault', 'EBIMU Default Setup');
     if (!setupOk) return false;
-    const magOk = await sendShortcut('magOff', 'Default IMU Magnetometer Off');
+    const magOk = await sendShortcut('magOff', 'Default IMU Magnetometer Off', {}, { bypassCalibrationLock: true });
     if (!magOk) return false;
-    return Boolean(await sendShortcut('gyro500', 'Default IMU Gyro 500 dps'));
+    return Boolean(await sendShortcut('gyro500', 'Default IMU Gyro 500 dps', {}, { bypassCalibrationLock: true }));
   };
   const updateKpGain = (axis, value) => {
     setKpGain((prev) => ({ ...prev, [axis]: value }));
@@ -1231,6 +1342,21 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           Waiting for Admin bridge to relay command...
         </Alert>
       ) : null}
+      {serverCalibrationLock.busy || localCalibrationLock.busy ? (
+        <Alert variant="warning" className="py-2">
+          Calibration/zero is waiting for stable telemetry. STOP, RPM Stop, and Emergency Stop remain available.
+        </Alert>
+      ) : null}
+      <Row className="g-2 mb-3">
+        <Col xs={12} md={isAdmin ? 6 : 12}>
+          <ValueGrid title="Server Command Lock" rows={calibrationLockRows(serverCalibrationLock)} />
+        </Col>
+        {isAdmin ? (
+          <Col xs={12} md={6}>
+            <ValueGrid title="Local Web Serial Lock" rows={calibrationLockRows(localCalibrationLock)} />
+          </Col>
+        ) : null}
+      </Row>
 
       <Accordion defaultActiveKey="control" flush alwaysOpen className="command-accordion">
         <CommandAccordionItem eventKey="control" title="Control">
@@ -1241,11 +1367,11 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             Mode: Server Command Queue. Controller/Admin commands are queued on the server and relayed by the Admin bridge.
           </div>
           <CommandGroup>
-            <CommandButton label="Cubli Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendCubliInitialize?.())} disabled={!canSendCommand} />
-            <CommandButton label="Gimbal Encoder Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEncoderInitialize?.())} disabled={!canSendCommand} />
-            <CommandButton label="Set Zero / Tare" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendTare?.())} disabled={!canSendCommand} />
-            <CommandButton label="Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendStop?.())} disabled={!canSendCommand} />
-            <CommandButton label="Emergency Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEmergencyStop?.())} disabled={!canSendCommand} />
+            <CommandButton label="Cubli Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendCubliInitialize?.())} disabled={!canSendServerCommand('cubliInitialize')} title={commandTitle('cubliInitialize')} />
+            <CommandButton label="Gimbal Encoder Initialize" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEncoderInitialize?.())} disabled={!canSendServerCommand('encoderInitialize')} title={commandTitle('encoderInitialize')} />
+            <CommandButton label="Set Zero / Tare" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendTare?.())} disabled={!canSendServerCommand('tare')} title={commandTitle('tare')} />
+            <CommandButton label="Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendStop?.())} disabled={!canSendServerCommand('stop')} title={commandTitle('stop')} />
+            <CommandButton label="Emergency Stop" onClick={() => runCommandWithFeedback('serverQueue', () => safeSerial.sendEmergencyStop?.())} disabled={!canSendServerCommand('emergencyStop')} title={commandTitle('emergencyStop')} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.serverQueue} />
         </CommandAccordionItem>
@@ -1280,17 +1406,23 @@ function CommandSection({ serial, status, role, controllerClientId, isController
                 />
               </Col>
               <Col xs={12} md={4}>
-                <Button variant="outline-info" className="w-100" onClick={sendLocalInput} disabled={!canSendLocalCommand || !String(localCommand || '').trim()}>
+                <Button
+                  variant="outline-info"
+                  className="w-100"
+                  onClick={sendLocalInput}
+                  disabled={!canSendLocalLines(localCommand, 'Direct Web Serial command') || !String(localCommand || '').trim()}
+                  title={localLinesBlocked(localCommand, 'Direct Web Serial command') ? calibrationLockReason(localCalibrationLock) : ''}
+                >
                   Send
                 </Button>
               </Col>
             </Row>
             <div className="serial-subsection-title mt-3 mb-2">Quick Direct Commands</div>
             <CommandGroup>
-              <CommandButton label="Cubli Initialize" onClick={() => sendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} disabled={!canSendLocalCommand} />
-              <CommandButton label="Encoder Initialize" onClick={() => sendLocalLines('TARE', 'Encoder Initialize')} disabled={!canSendLocalCommand} />
-              <CommandButton label="Stop / RPM Stop" onClick={() => sendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} disabled={!canSendLocalCommand} />
-              <CommandButton label="Apply Default IMU Setting" onClick={() => sendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} disabled={!canSendLocalCommand} />
+              <CommandButton label="Cubli Initialize" onClick={() => sendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} disabled={!canSendLocalLines(['TARE', 'MAG_OFF', 'GYRO_500'], 'Cubli Initialize')} title={commandTitle('cubliInitialize', 'local')} />
+              <CommandButton label="Encoder Initialize" onClick={() => sendLocalLines('TARE', 'Encoder Initialize')} disabled={!canSendLocalLines('TARE', 'Encoder Initialize')} title={commandTitle('encoderInitialize', 'local')} />
+              <CommandButton label="Stop / RPM Stop" onClick={() => sendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} disabled={!canSendLocalLines(['STOP', 'RPMSTOP'], 'Stop / RPM Stop')} title={commandTitle('stop', 'local')} />
+              <CommandButton label="Apply Default IMU Setting" onClick={() => sendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} disabled={!canSendLocalLines(['EBIMU_DEFAULT', 'MAG_OFF', 'GYRO_500'], 'Default IMU Setting')} title={commandTitle('ebimuDefault', 'local')} />
             </CommandGroup>
             <CommandFeedback feedback={lastCommandFeedbackByCategory.localDirect} />
           </CommandAccordionItem>
@@ -1336,7 +1468,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
               <Button
                 variant="outline-light"
                 className="w-100"
-                disabled={!canSendCommand}
+                disabled={!canSendServerCommand('targetAttitude')}
+                title={commandTitle('targetAttitude')}
                 onClick={() => runCommandWithFeedback('targetAttitude', () => safeSerial.sendTarget?.(Number(targetRoll) || 0, Number(targetPitch) || 0, Number(targetYaw) || 0))}
               >
                 Send Target Attitude
@@ -1388,11 +1521,11 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           ) : null}
           {rpmStatus ? <div className="server-small-note mb-2">{rpmStatus}</div> : null}
           <CommandGroup>
-            <CommandButton label="Send RPM X" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('x'))} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.x) === null} />
-            <CommandButton label="Send RPM Y" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('y'))} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.y) === null} />
-            <CommandButton label="Send RPM Z" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('z'))} disabled={!canSendCommand || parseWheelRpmValue(rpmCommand.z) === null} />
-            <CommandButton label="Send All RPM" onClick={() => runCommandWithFeedback('wheelRpm', sendWheelRpmAll)} disabled={!canSendCommand || !rpmValues} />
-            <CommandButton label="Stop RPM Test" onClick={() => runCommandWithFeedback('wheelRpm', stopWheelRpmTest)} disabled={!canSendCommand} />
+            <CommandButton label="Send RPM X" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('x'))} disabled={!canSendServerCommand('wheelRpmX') || parseWheelRpmValue(rpmCommand.x) === null} title={commandTitle('wheelRpmX')} />
+            <CommandButton label="Send RPM Y" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('y'))} disabled={!canSendServerCommand('wheelRpmY') || parseWheelRpmValue(rpmCommand.y) === null} title={commandTitle('wheelRpmY')} />
+            <CommandButton label="Send RPM Z" onClick={() => runCommandWithFeedback('wheelRpm', () => sendWheelRpmAxis('z'))} disabled={!canSendServerCommand('wheelRpmZ') || parseWheelRpmValue(rpmCommand.z) === null} title={commandTitle('wheelRpmZ')} />
+            <CommandButton label="Send All RPM" onClick={() => runCommandWithFeedback('wheelRpm', sendWheelRpmAll)} disabled={!canSendServerCommand('wheelRpmAll') || !rpmValues} title={commandTitle('wheelRpmAll')} />
+            <CommandButton label="Stop RPM Test" onClick={() => runCommandWithFeedback('wheelRpm', stopWheelRpmTest)} disabled={!canSendServerCommand('wheelRpmStop')} title={commandTitle('wheelRpmStop')} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.wheelRpm} />
         </CommandAccordionItem>
@@ -1438,9 +1571,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           {gainStatus ? <div className="server-small-note mb-2">{gainStatus}</div> : null}
 
           <CommandGroup>
-            <CommandButton label="Send Kp" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeKp)} disabled={!canSendCommand || !kpValues} />
-            <CommandButton label="Send Kd" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeKd)} disabled={!canSendCommand || !kdValues} />
-            <CommandButton label="Send Kp + Kd" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeGains)} disabled={!canSendCommand || gainInputInvalid} />
+            <CommandButton label="Send Kp" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeKp)} disabled={!canSendServerCommand('attitudeKp') || !kpValues} title={commandTitle('attitudeKp')} />
+            <CommandButton label="Send Kd" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeKd)} disabled={!canSendServerCommand('attitudeKd') || !kdValues} title={commandTitle('attitudeKd')} />
+            <CommandButton label="Send Kp + Kd" onClick={() => runCommandWithFeedback('attitudeGain', sendAttitudeGains)} disabled={!canSendServerCommand('attitudeKp') || !canSendServerCommand('attitudeKd') || gainInputInvalid} title={commandTitle('attitudeKp') || commandTitle('attitudeKd')} />
             <CommandButton label="Reset to Default" onClick={resetAttitudeGains} disabled={false} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.attitudeGain} />
@@ -1456,9 +1589,9 @@ function CommandSection({ serial, status, role, controllerClientId, isController
             </div>
           </div>
           <CommandGroup>
-            <CommandButton label="Apply Default Setting" onClick={() => runCommandWithFeedback('ebimuStream', applyDefaultImuSetting)} disabled={!canSendCommand} />
-            <CommandButton label="EBIMU Start" onClick={() => runCommandWithFeedback('ebimuStream', () => sendShortcut('ebimuStart', 'EBIMU Start'))} disabled={!canSendCommand} />
-            <CommandButton label="EBIMU Stop" onClick={() => runCommandWithFeedback('ebimuStream', () => sendShortcut('ebimuStop', 'EBIMU Stop'))} disabled={!canSendCommand} />
+            <CommandButton label="Apply Default Setting" onClick={() => runCommandWithFeedback('ebimuStream', applyDefaultImuSetting)} disabled={!canSendServerCommand('ebimuDefault')} title={commandTitle('ebimuDefault')} />
+            <CommandButton label="EBIMU Start" onClick={() => runCommandWithFeedback('ebimuStream', () => sendShortcut('ebimuStart', 'EBIMU Start'))} disabled={!canSendServerCommand('ebimuStart')} title={commandTitle('ebimuStart')} />
+            <CommandButton label="EBIMU Stop" onClick={() => runCommandWithFeedback('ebimuStream', () => sendShortcut('ebimuStop', 'EBIMU Stop'))} disabled={!canSendServerCommand('ebimuStop')} title={commandTitle('ebimuStop')} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.ebimuStream} />
         </CommandAccordionItem>
@@ -1466,7 +1599,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         <CommandAccordionItem eventKey="mag" title="Magnetometer">
           <CommandGroup>
             {MAG_OPTIONS.map((item) => (
-              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('magnetometer', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendCommand} />
+              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('magnetometer', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendServerCommand(item.commandKey)} title={commandTitle(item.commandKey)} />
             ))}
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.magnetometer} />
@@ -1475,7 +1608,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
         <CommandAccordionItem eventKey="gyro" title="Gyro Range">
           <CommandGroup>
             {GYRO_OPTIONS.map((item) => (
-              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('gyroRange', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendCommand} />
+              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('gyroRange', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendServerCommand(item.commandKey)} title={commandTitle(item.commandKey)} />
             ))}
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.gyroRange} />
@@ -1485,7 +1618,7 @@ function CommandSection({ serial, status, role, controllerClientId, isController
           <div className="serial-subsection-title mb-2">Range</div>
           <CommandGroup>
             {ACCEL_OPTIONS.map((item) => (
-              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('accelerometer', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendCommand} />
+              <CommandButton key={item.commandKey} label={item.label} onClick={() => runCommandWithFeedback('accelerometer', () => sendShortcut(item.commandKey, item.label))} disabled={!canSendServerCommand(item.commandKey)} title={commandTitle(item.commandKey)} />
             ))}
           </CommandGroup>
 
@@ -1495,14 +1628,14 @@ function CommandSection({ serial, status, role, controllerClientId, isController
               <Form.Control size="sm" type="number" min="1" max="50" value={accFactor} onChange={(event) => setAccFactor(event.target.value)} />
             </Col>
             <Col xs={5}>
-              <Button variant="outline-light" className="w-100" disabled={!canSendCommand} onClick={() => runCommandWithFeedback('accelerometer', () => sendAccFactor(accFactor))}>
+              <Button variant="outline-light" className="w-100" disabled={!canSendServerCommand('accFactor')} title={commandTitle('accFactor')} onClick={() => runCommandWithFeedback('accelerometer', () => sendAccFactor(accFactor))}>
                 Apply
               </Button>
             </Col>
           </Row>
           <CommandGroup>
             {FILTER_PRESETS.map((value) => (
-              <CommandButton key={value} label={`${value}`} onClick={() => runCommandWithFeedback('accelerometer', () => sendAccFactor(value))} disabled={!canSendCommand} />
+              <CommandButton key={value} label={`${value}`} onClick={() => runCommandWithFeedback('accelerometer', () => sendAccFactor(value))} disabled={!canSendServerCommand('accFactor')} title={commandTitle('accFactor')} />
             ))}
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.accelerometer} />
@@ -1510,8 +1643,8 @@ function CommandSection({ serial, status, role, controllerClientId, isController
 
         <CommandAccordionItem eventKey="receiver" title="Receiver Info">
           <CommandGroup>
-            <CommandButton label="Status" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendStatus?.())} disabled={!canSendCommand} />
-            <CommandButton label="MAC Info" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendMacInfo?.())} disabled={!canSendCommand} />
+            <CommandButton label="Status" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendStatus?.())} disabled={!canSendServerCommand('status')} title={commandTitle('status')} />
+            <CommandButton label="MAC Info" onClick={() => runCommandWithFeedback('receiverInfo', () => safeSerial.sendMacInfo?.())} disabled={!canSendServerCommand('macInfo')} title={commandTitle('macInfo')} />
             <CommandButton label="Refresh Status" onClick={safeSerial.refreshStatus} disabled={false} />
           </CommandGroup>
           <CommandFeedback feedback={lastCommandFeedbackByCategory.receiverInfo} />
