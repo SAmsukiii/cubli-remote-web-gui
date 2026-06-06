@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE,
   EULER_SEQUENCES,
+  attachEncoderAlignment,
   eulerDegToQuat,
   normalizeEulerSequence,
   normalizeLivePacket,
@@ -303,9 +304,22 @@ const ENCODER_PACKET_FIELDS = [
   'enc_x_deg', 'enc_y_deg', 'enc_z_deg',
   'encoderXDeg', 'encoderYDeg', 'encoderZDeg',
   'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
+  'enc_q0_raw', 'enc_q1_raw', 'enc_q2_raw', 'enc_q3_raw',
+  'enc_q0_aligned', 'enc_q1_aligned', 'enc_q2_aligned', 'enc_q3_aligned',
   'encoderQ0', 'encoderQ1', 'encoderQ2', 'encoderQ3',
+  'encoderQ0Raw', 'encoderQ1Raw', 'encoderQ2Raw', 'encoderQ3Raw',
+  'encoderQ0Aligned', 'encoderQ1Aligned', 'encoderQ2Aligned', 'encoderQ3Aligned',
   'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
   'encoderRawRollDeg', 'encoderRawPitchDeg', 'encoderRawYawDeg',
+  'enc_roll_raw_deg', 'enc_pitch_raw_deg', 'enc_yaw_raw_deg',
+  'enc_roll_aligned_deg', 'enc_pitch_aligned_deg', 'enc_yaw_aligned_deg',
+  'encoderRollAlignedDeg', 'encoderPitchAlignedDeg', 'encoderYawAlignedDeg',
+  'dot_raw', 'dotRaw', 'dot_abs', 'dotAbs', 'theta_err_deg', 'thetaErrDeg',
+  'enc_age_ms', 'encAgeMs', 'enc_valid', 'encValid', 'encoderAlignmentValid',
+  'encoder_alignment_source', 'encoderAlignmentSource',
+  'encoder_alignment_updated_at_ms', 'encoderAlignmentUpdatedAtMs',
+  'encoder_alignment_sat_seq', 'encoderAlignmentSatSeq',
+  'encoder_alignment_sat_timestamp_us', 'encoderAlignmentSatTimestampUs',
   'encoderAngleToQuatSequence', 'encoderEulerSequence', 'encoderStatus', 'encoderSource', 'encoderQuatSource', 'encoderRpySource',
   'encoderHasQuaternion', 'encoderFresh',
   'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
@@ -329,7 +343,7 @@ function mergeEncoderPacket(previousPacket = {}, nextPacket = {}) {
   });
   merged.sample_type = 'ENC';
   merged.sampleType = 'ENC';
-  return merged;
+  return attachEncoderAlignment(merged, { now: Date.now() });
 }
 
 function compactChartPoint(packet = {}, sample = 1) {
@@ -339,6 +353,10 @@ function compactChartPoint(packet = {}, sample = 1) {
     roll: finiteNumber(packet.roll_deg ?? packet.rollDeg, null),
     pitch: finiteNumber(packet.pitch_deg ?? packet.pitchDeg, null),
     yaw: finiteNumber(packet.yaw_deg ?? packet.yawDeg, null),
+    satQ0: finiteNumber(packet.sat_q0 ?? packet.q0 ?? packet.q?.[0], null),
+    satQ1: finiteNumber(packet.sat_q1 ?? packet.q1 ?? packet.q?.[1], null),
+    satQ2: finiteNumber(packet.sat_q2 ?? packet.q2 ?? packet.q?.[2], null),
+    satQ3: finiteNumber(packet.sat_q3 ?? packet.q3 ?? packet.q?.[3], null),
     qerr: finiteNumber(packet.qerr_deg ?? packet.qerrDeg, null),
     wx: finiteNumber(packet.wx, null),
     wy: finiteNumber(packet.wy, null),
@@ -355,6 +373,26 @@ function compactChartPoint(packet = {}, sample = 1) {
     encoderRoll: finiteNumber(packet.encoderRollDeg, null),
     encoderPitch: finiteNumber(packet.encoderPitchDeg, null),
     encoderYaw: finiteNumber(packet.encoderYawDeg, null),
+    encQ0: finiteNumber(packet.enc_q0 ?? packet.encoderQ0, null),
+    encQ1: finiteNumber(packet.enc_q1 ?? packet.encoderQ1, null),
+    encQ2: finiteNumber(packet.enc_q2 ?? packet.encoderQ2, null),
+    encQ3: finiteNumber(packet.enc_q3 ?? packet.encoderQ3, null),
+    encQ0Raw: finiteNumber(packet.enc_q0_raw ?? packet.encoderQ0Raw ?? packet.encoder?.q0Raw ?? packet.enc_q0 ?? packet.encoderQ0, null),
+    encQ1Raw: finiteNumber(packet.enc_q1_raw ?? packet.encoderQ1Raw ?? packet.encoder?.q1Raw ?? packet.enc_q1 ?? packet.encoderQ1, null),
+    encQ2Raw: finiteNumber(packet.enc_q2_raw ?? packet.encoderQ2Raw ?? packet.encoder?.q2Raw ?? packet.enc_q2 ?? packet.encoderQ2, null),
+    encQ3Raw: finiteNumber(packet.enc_q3_raw ?? packet.encoderQ3Raw ?? packet.encoder?.q3Raw ?? packet.enc_q3 ?? packet.encoderQ3, null),
+    encoderRollAligned: packet.enc_valid ? finiteNumber(packet.enc_roll_aligned_deg ?? packet.encoderRollAlignedDeg, null) : null,
+    encoderPitchAligned: packet.enc_valid ? finiteNumber(packet.enc_pitch_aligned_deg ?? packet.encoderPitchAlignedDeg, null) : null,
+    encoderYawAligned: packet.enc_valid ? finiteNumber(packet.enc_yaw_aligned_deg ?? packet.encoderYawAlignedDeg, null) : null,
+    encQ0Aligned: packet.enc_valid ? finiteNumber(packet.enc_q0_aligned ?? packet.encoderQ0Aligned, null) : null,
+    encQ1Aligned: packet.enc_valid ? finiteNumber(packet.enc_q1_aligned ?? packet.encoderQ1Aligned, null) : null,
+    encQ2Aligned: packet.enc_valid ? finiteNumber(packet.enc_q2_aligned ?? packet.encoderQ2Aligned, null) : null,
+    encQ3Aligned: packet.enc_valid ? finiteNumber(packet.enc_q3_aligned ?? packet.encoderQ3Aligned, null) : null,
+    dotRaw: finiteNumber(packet.dot_raw ?? packet.dotRaw, null),
+    dotAbs: finiteNumber(packet.dot_abs ?? packet.dotAbs, null),
+    thetaErr: finiteNumber(packet.theta_err_deg ?? packet.thetaErrDeg, null),
+    encAgeMs: finiteNumber(packet.enc_age_ms ?? packet.encAgeMs, null),
+    encValid: finiteNumber(packet.enc_valid ?? packet.encValid, null),
   };
 }
 
@@ -2443,6 +2481,15 @@ export default function useServerSync() {
     }
 
     const now = Date.now();
+    if (packet) {
+      packet = attachEncoderAlignment(packet, {
+        now,
+        encoderEulerSequence,
+        encoderDisplayRollSign,
+        encoderDisplayPitchSign,
+        encoderDisplayYawSign,
+      });
+    }
     const packetAgeMs = data.latestSharedPacketAgeMs ?? data.ageMs ?? (
       packet?.publishedAt ? Math.max(0, now - packet.publishedAt) : null
     );
@@ -2504,7 +2551,17 @@ export default function useServerSync() {
     }));
 
     return packet;
-  }, [applyPublisherState, applyVisualSettings, droppedOutOfOrderCount, recordRateSample, updateCalibrationLockFromPacket]);
+  }, [
+    applyPublisherState,
+    applyVisualSettings,
+    droppedOutOfOrderCount,
+    encoderDisplayPitchSign,
+    encoderDisplayRollSign,
+    encoderDisplayYawSign,
+    encoderEulerSequence,
+    recordRateSample,
+    updateCalibrationLockFromPacket,
+  ]);
 
   const scheduleLiveStateFlush = useCallback((data) => {
     applyLivePayload(data, { updateState: false });

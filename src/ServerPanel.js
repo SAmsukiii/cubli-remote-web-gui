@@ -117,8 +117,8 @@ function encoderNumber(packet, snakeKey, camelKey, nestedKey) {
   return Number.isFinite(number) ? number : null;
 }
 
-function encoderText(packet, key, nestedKey, fallback = '') {
-  return String(packet?.[key] ?? packet?.encoder?.[nestedKey] ?? fallback ?? '').trim();
+function encoderText(packet, key, nestedKey, fallback = '', camelKey = '') {
+  return String(packet?.[key] ?? (camelKey ? packet?.[camelKey] : undefined) ?? packet?.encoder?.[nestedKey] ?? fallback ?? '').trim();
 }
 
 function getEncoderSnapshot(packet = {}, now = Date.now()) {
@@ -129,6 +129,14 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const q1 = encoderNumber(packet, 'enc_q1', 'encoderQ1', 'q1');
   const q2 = encoderNumber(packet, 'enc_q2', 'encoderQ2', 'q2');
   const q3 = encoderNumber(packet, 'enc_q3', 'encoderQ3', 'q3');
+  const q0Raw = encoderNumber(packet, 'enc_q0_raw', 'encoderQ0Raw', 'q0Raw') ?? q0;
+  const q1Raw = encoderNumber(packet, 'enc_q1_raw', 'encoderQ1Raw', 'q1Raw') ?? q1;
+  const q2Raw = encoderNumber(packet, 'enc_q2_raw', 'encoderQ2Raw', 'q2Raw') ?? q2;
+  const q3Raw = encoderNumber(packet, 'enc_q3_raw', 'encoderQ3Raw', 'q3Raw') ?? q3;
+  const q0Aligned = encoderNumber(packet, 'enc_q0_aligned', 'encoderQ0Aligned', 'q0Aligned');
+  const q1Aligned = encoderNumber(packet, 'enc_q1_aligned', 'encoderQ1Aligned', 'q1Aligned');
+  const q2Aligned = encoderNumber(packet, 'enc_q2_aligned', 'encoderQ2Aligned', 'q2Aligned');
+  const q3Aligned = encoderNumber(packet, 'enc_q3_aligned', 'encoderQ3Aligned', 'q3Aligned');
   const timerX = encoderNumber(packet, 'enc_timer_x', 'encoderTimerX', 'timerX');
   const timerY = encoderNumber(packet, 'enc_timer_y', 'encoderTimerY', 'timerY');
   const timerZ = encoderNumber(packet, 'enc_timer_z', 'encoderTimerZ', 'timerZ');
@@ -139,6 +147,12 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const rollDeg = encoderNumber(packet, 'encoderRollDeg', 'encoderRollDeg', 'rollDeg');
   const pitchDeg = encoderNumber(packet, 'encoderPitchDeg', 'encoderPitchDeg', 'pitchDeg');
   const yawDeg = encoderNumber(packet, 'encoderYawDeg', 'encoderYawDeg', 'yawDeg');
+  const rollRawDeg = encoderNumber(packet, 'enc_roll_raw_deg', 'encoderRawRollDeg', 'rollRawDeg') ?? rollDeg;
+  const pitchRawDeg = encoderNumber(packet, 'enc_pitch_raw_deg', 'encoderRawPitchDeg', 'pitchRawDeg') ?? pitchDeg;
+  const yawRawDeg = encoderNumber(packet, 'enc_yaw_raw_deg', 'encoderRawYawDeg', 'yawRawDeg') ?? yawDeg;
+  const rollAlignedDeg = encoderNumber(packet, 'enc_roll_aligned_deg', 'encoderRollAlignedDeg', 'rollAlignedDeg');
+  const pitchAlignedDeg = encoderNumber(packet, 'enc_pitch_aligned_deg', 'encoderPitchAlignedDeg', 'pitchAlignedDeg');
+  const yawAlignedDeg = encoderNumber(packet, 'enc_yaw_aligned_deg', 'encoderYawAlignedDeg', 'yawAlignedDeg');
   const rawYawDeg = encoderNumber(packet, 'encoderRawYawDeg', 'encoderRawYawDeg', 'rawYawDeg');
   const displayYawSign = encoderNumber(packet, 'encoderDisplayYawSign', 'encoderDisplayYawSign', 'displayYawSign');
   const source = encoderText(packet, 'encoderSource', 'source');
@@ -146,9 +160,21 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
   const eulerSequence = encoderText(packet, 'encoderEulerSequence', 'eulerSequence', 'ZYX') || 'ZYX';
   const quatSource = encoderText(packet, 'encoderQuatSource', 'quatSource');
   const rpySource = encoderText(packet, 'encoderRpySource', 'rpySource');
+  const dotRaw = encoderNumber(packet, 'dot_raw', 'dotRaw', 'dotRaw');
+  const dotAbs = encoderNumber(packet, 'dot_abs', 'dotAbs', 'dotAbs');
+  const thetaErrDeg = encoderNumber(packet, 'theta_err_deg', 'thetaErrDeg', 'thetaErrDeg');
+  const encAgeMs = encoderNumber(packet, 'enc_age_ms', 'encAgeMs', 'ageMs');
+  const encValidNumber = encoderNumber(packet, 'enc_valid', 'encValid', 'alignmentValid')
+    ?? encoderNumber(packet, 'encoderAlignmentValid', 'encoderAlignmentValid', 'valid');
+  const alignmentSource = encoderText(packet, 'encoder_alignment_source', 'alignmentSource', '', 'encoderAlignmentSource');
+  const alignmentUpdatedAtMs = encoderNumber(packet, 'encoder_alignment_updated_at_ms', 'encoderAlignmentUpdatedAtMs', 'alignmentUpdatedAtMs');
+  const alignmentSatSeq = encoderNumber(packet, 'encoder_alignment_sat_seq', 'encoderAlignmentSatSeq', 'alignmentSatSeq');
+  const alignmentSatTimestampUs = encoderNumber(packet, 'encoder_alignment_sat_timestamp_us', 'encoderAlignmentSatTimestampUs', 'alignmentSatTimestampUs');
   const explicitStatus = encoderText(packet, 'encoderStatus', 'status').toUpperCase();
   const hasValues = [x, y, z, q0, q1, q2, q3, timerX, timerY, timerZ].some((value) => value !== null);
   const hasQuaternion = [q0, q1, q2, q3].every((value) => value !== null);
+  const hasRawQuaternion = [q0Raw, q1Raw, q2Raw, q3Raw].every((value) => value !== null);
+  const hasAlignedQuaternion = [q0Aligned, q1Aligned, q2Aligned, q3Aligned].every((value) => value !== null);
   const ageMs = hasValues && updatedAt ? Math.max(0, now - updatedAt) : null;
   const timerDelta = [timerX, timerY, timerZ].every((value) => value !== null) ? Math.max(timerX, timerY, timerZ) - Math.min(timerX, timerY, timerZ) : null;
   const status = explicitStatus || (!hasValues ? 'NONE' : (ageMs !== null && ageMs > 300 ? 'STALE' : (!hasQuaternion ? 'PARTIAL' : (timerDelta !== null && timerDelta > 100 ? 'MIXED' : 'LIVE'))));
@@ -160,6 +186,14 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     q1,
     q2,
     q3,
+    q0Raw,
+    q1Raw,
+    q2Raw,
+    q3Raw,
+    q0Aligned,
+    q1Aligned,
+    q2Aligned,
+    q3Aligned,
     timerX,
     timerY,
     timerZ,
@@ -169,16 +203,33 @@ function getEncoderSnapshot(packet = {}, now = Date.now()) {
     rollDeg,
     pitchDeg,
     yawDeg,
+    rollRawDeg,
+    pitchRawDeg,
+    yawRawDeg,
+    rollAlignedDeg,
+    pitchAlignedDeg,
+    yawAlignedDeg,
     updatedAt,
     ageMs,
+    encAgeMs,
     source,
     angleToQuatSequence,
     eulerSequence,
     quatSource,
     rpySource,
     hasQuaternion,
+    hasRawQuaternion,
+    hasAlignedQuaternion,
     rawYawDeg,
     displayYawSign,
+    dotRaw,
+    dotAbs,
+    thetaErrDeg,
+    encValid: encValidNumber !== null ? encValidNumber : null,
+    alignmentSource,
+    alignmentUpdatedAtMs,
+    alignmentSatSeq,
+    alignmentSatTimestampUs,
     status,
   };
 }
@@ -188,18 +239,37 @@ function buildEncoderRows(packet = {}) {
   const rows = [
     { label: 'Status', value: encoder.status },
     { label: 'Gimbal encoder angle fields', value: [encoder.x, encoder.y, encoder.z].some((value) => value !== null) ? 'legacy ENC format' : 'unavailable in current ENC format' },
-    { label: 'Remote Encoder Quaternion', value: encoder.hasQuaternion ? 'available' : 'unavailable' },
-    { label: 'Encoder q0', value: encoder.q0 !== null ? formatNumber(encoder.q0, 5) : '-' },
-    { label: 'Encoder q1', value: encoder.q1 !== null ? formatNumber(encoder.q1, 5) : '-' },
-    { label: 'Encoder q2', value: encoder.q2 !== null ? formatNumber(encoder.q2, 5) : '-' },
-    { label: 'Encoder q3', value: encoder.q3 !== null ? formatNumber(encoder.q3, 5) : '-' },
+    { label: 'Raw ENC quaternion', value: encoder.hasRawQuaternion ? 'available' : 'unavailable' },
+    { label: 'Raw ENC q0', value: encoder.q0Raw !== null ? formatNumber(encoder.q0Raw, 5) : '-' },
+    { label: 'Raw ENC q1', value: encoder.q1Raw !== null ? formatNumber(encoder.q1Raw, 5) : '-' },
+    { label: 'Raw ENC q2', value: encoder.q2Raw !== null ? formatNumber(encoder.q2Raw, 5) : '-' },
+    { label: 'Raw ENC q3', value: encoder.q3Raw !== null ? formatNumber(encoder.q3Raw, 5) : '-' },
+    { label: 'Aligned ENC quaternion', value: encoder.hasAlignedQuaternion ? 'available' : 'unavailable' },
+    { label: 'Aligned ENC q0', value: encoder.q0Aligned !== null ? formatNumber(encoder.q0Aligned, 5) : '-' },
+    { label: 'Aligned ENC q1', value: encoder.q1Aligned !== null ? formatNumber(encoder.q1Aligned, 5) : '-' },
+    { label: 'Aligned ENC q2', value: encoder.q2Aligned !== null ? formatNumber(encoder.q2Aligned, 5) : '-' },
+    { label: 'Aligned ENC q3', value: encoder.q3Aligned !== null ? formatNumber(encoder.q3Aligned, 5) : '-' },
   ];
   rows.push(
-    { label: `Gimbal Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasQuaternion ? 'available' : 'unavailable' },
-    { label: 'Encoder Roll', value: encoder.rollDeg !== null ? `${formatNumber(encoder.rollDeg, 2)} deg` : 'unavailable' },
-    { label: 'Encoder Pitch', value: encoder.pitchDeg !== null ? `${formatNumber(encoder.pitchDeg, 2)} deg` : 'unavailable' },
-    { label: 'Encoder Yaw', value: encoder.yawDeg !== null ? `${formatNumber(encoder.yawDeg, 2)} deg` : 'unavailable' },
+    { label: `Raw Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasRawQuaternion ? 'available' : 'unavailable' },
+    { label: 'Raw Encoder Roll', value: encoder.rollRawDeg !== null ? `${formatNumber(encoder.rollRawDeg, 2)} deg` : 'unavailable' },
+    { label: 'Raw Encoder Pitch', value: encoder.pitchRawDeg !== null ? `${formatNumber(encoder.pitchRawDeg, 2)} deg` : 'unavailable' },
+    { label: 'Raw Encoder Yaw', value: encoder.yawRawDeg !== null ? `${formatNumber(encoder.yawRawDeg, 2)} deg` : 'unavailable' },
+    { label: `Aligned Encoder RPY [${encoder.eulerSequence}]`, value: encoder.hasAlignedQuaternion ? 'available' : 'unavailable' },
+    { label: 'Aligned Encoder Roll', value: encoder.rollAlignedDeg !== null ? `${formatNumber(encoder.rollAlignedDeg, 2)} deg` : '-' },
+    { label: 'Aligned Encoder Pitch', value: encoder.pitchAlignedDeg !== null ? `${formatNumber(encoder.pitchAlignedDeg, 2)} deg` : '-' },
+    { label: 'Aligned Encoder Yaw', value: encoder.yawAlignedDeg !== null ? `${formatNumber(encoder.yawAlignedDeg, 2)} deg` : '-' },
     { label: 'Encoder Raw Yaw', value: encoder.rawYawDeg !== null ? `${formatNumber(encoder.rawYawDeg, 2)} deg` : '-' },
+    { label: 'Alignment note', value: 'raw stays remote; aligned flips whole q/-q only for TEL comparison' },
+    { label: 'enc_valid', value: encoder.encValid !== null ? formatNumber(encoder.encValid, 0) : '-' },
+    { label: 'enc_age_ms', value: encoder.encAgeMs !== null ? `${formatNumber(encoder.encAgeMs, 0)} ms` : '-' },
+    { label: 'dot_raw', value: encoder.dotRaw !== null ? formatNumber(encoder.dotRaw, 5) : '-' },
+    { label: 'dot_abs', value: encoder.dotAbs !== null ? formatNumber(encoder.dotAbs, 5) : '-' },
+    { label: 'theta_err_deg', value: encoder.thetaErrDeg !== null ? `${formatNumber(encoder.thetaErrDeg, 3)} deg` : '-' },
+    { label: 'Alignment source', value: encoder.alignmentSource || '-' },
+    { label: 'Alignment updated', value: formatDateTime(encoder.alignmentUpdatedAtMs) },
+    { label: 'Alignment TEL seq', value: encoder.alignmentSatSeq !== null ? formatNumber(encoder.alignmentSatSeq, 0) : '-' },
+    { label: 'Alignment TEL timestamp', value: encoder.alignmentSatTimestampUs !== null ? formatNumber(encoder.alignmentSatTimestampUs, 0) : '-' },
     { label: 'Quaternion source', value: encoder.quatSource || '-' },
     { label: 'RPY source', value: encoder.rpySource || '-' },
   );
@@ -455,9 +525,20 @@ function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
 }
 
 function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
+  const chartIdPrefix = String(title || 'chart').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
+  const [enabledKeys, setEnabledKeys] = useState(() => new Set(lines.map((line) => line.key)));
+  const activeLines = lines.filter((line) => enabledKeys.has(line.key));
   const hasData = Array.isArray(data) && data.some((row) =>
-    lines.some((line) => row[line.key] !== null && row[line.key] !== undefined)
+    activeLines.some((line) => row[line.key] !== null && row[line.key] !== undefined)
   );
+  const toggleLine = (key) => {
+    setEnabledKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   return (
     <div className="serial-value-card rounded p-2">
@@ -465,8 +546,22 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
         <div className="serial-section-title">{title}</div>
         {yLabel ? <div className="server-small-note">{yLabel}</div> : null}
       </div>
+      <div className="d-flex flex-wrap align-items-center gap-2 mb-2">
+        {lines.map((line) => (
+          <Form.Check
+            key={line.key}
+            type="checkbox"
+            id={`${chartIdPrefix}-${line.key}`}
+            className="server-small-note m-0"
+            label={line.name || line.key}
+            checked={enabledKeys.has(line.key)}
+            onChange={() => toggleLine(line.key)}
+            style={{ color: line.stroke }}
+          />
+        ))}
+      </div>
       <div style={{ width: '100%', minHeight: 220, height: 220 }}>
-        {hasData ? (
+        {hasData && activeLines.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
@@ -474,7 +569,7 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
               <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={48} />
               <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
               <Legend wrapperStyle={{ color: '#dbe4ea', fontSize: 12 }} />
-              {lines.map((line) => (
+              {activeLines.map((line) => (
                 <Line
                   key={line.key}
                   type="monotone"
@@ -1724,6 +1819,10 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
         roll: n(row.roll),
         pitch: n(row.pitch),
         yaw: n(row.yaw),
+        satQ0: n(row.satQ0 ?? row.q0),
+        satQ1: n(row.satQ1 ?? row.q1),
+        satQ2: n(row.satQ2 ?? row.q2),
+        satQ3: n(row.satQ3 ?? row.q3),
         qerr: n(row.qerr),
         wx: n(row.wx),
         wy: n(row.wy),
@@ -1737,6 +1836,26 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
         encoderRoll: n(row.encoderRoll ?? row.encoderRollDeg),
         encoderPitch: n(row.encoderPitch ?? row.encoderPitchDeg),
         encoderYaw: n(row.encoderYaw ?? row.encoderYawDeg),
+        encoderRollAligned: n(row.encoderRollAligned ?? row.encoderRollAlignedDeg),
+        encoderPitchAligned: n(row.encoderPitchAligned ?? row.encoderPitchAlignedDeg),
+        encoderYawAligned: n(row.encoderYawAligned ?? row.encoderYawAlignedDeg),
+        encQ0: n(row.encQ0 ?? row.enc_q0 ?? row.encoderQ0),
+        encQ1: n(row.encQ1 ?? row.enc_q1 ?? row.encoderQ1),
+        encQ2: n(row.encQ2 ?? row.enc_q2 ?? row.encoderQ2),
+        encQ3: n(row.encQ3 ?? row.enc_q3 ?? row.encoderQ3),
+        encQ0Raw: n(row.encQ0Raw ?? row.enc_q0_raw ?? row.encoderQ0Raw ?? row.encQ0 ?? row.enc_q0 ?? row.encoderQ0),
+        encQ1Raw: n(row.encQ1Raw ?? row.enc_q1_raw ?? row.encoderQ1Raw ?? row.encQ1 ?? row.enc_q1 ?? row.encoderQ1),
+        encQ2Raw: n(row.encQ2Raw ?? row.enc_q2_raw ?? row.encoderQ2Raw ?? row.encQ2 ?? row.enc_q2 ?? row.encoderQ2),
+        encQ3Raw: n(row.encQ3Raw ?? row.enc_q3_raw ?? row.encoderQ3Raw ?? row.encQ3 ?? row.enc_q3 ?? row.encoderQ3),
+        encQ0Aligned: n(row.encQ0Aligned ?? row.enc_q0_aligned ?? row.encoderQ0Aligned),
+        encQ1Aligned: n(row.encQ1Aligned ?? row.enc_q1_aligned ?? row.encoderQ1Aligned),
+        encQ2Aligned: n(row.encQ2Aligned ?? row.enc_q2_aligned ?? row.encoderQ2Aligned),
+        encQ3Aligned: n(row.encQ3Aligned ?? row.enc_q3_aligned ?? row.encoderQ3Aligned),
+        dotRaw: n(row.dotRaw ?? row.dot_raw),
+        dotAbs: n(row.dotAbs ?? row.dot_abs),
+        thetaErr: n(row.thetaErr ?? row.theta_err_deg ?? row.thetaErrDeg),
+        encAgeMs: n(row.encAgeMs ?? row.enc_age_ms),
+        encValid: n(row.encValid ?? row.enc_valid),
       };
     });
   }, [safeStatus.chartData]);
@@ -1862,9 +1981,47 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'encoderRoll', name: 'Gimbal Encoder Roll', stroke: '#63e6be' },
-                  { key: 'encoderPitch', name: 'Gimbal Encoder Pitch', stroke: '#ffd43b' },
-                  { key: 'encoderYaw', name: 'Gimbal Encoder Yaw', stroke: '#ff8787' },
+                  { key: 'encoderRoll', name: 'Raw Roll', stroke: '#63e6be' },
+                  { key: 'encoderPitch', name: 'Raw Pitch', stroke: '#ffd43b' },
+                  { key: 'encoderYaw', name: 'Raw Yaw', stroke: '#ff8787' },
+                  { key: 'encoderRollAligned', name: 'Aligned Roll', stroke: '#20c997' },
+                  { key: 'encoderPitchAligned', name: 'Aligned Pitch', stroke: '#fab005' },
+                  { key: 'encoderYawAligned', name: 'Aligned Yaw', stroke: '#fa5252' },
+                ]}
+              />
+            </Col>
+            <Col xs={12}>
+              <LiveTelemetryChart
+                title="TEL / ENC Quaternion"
+                data={livePlotData}
+                yLabel="q"
+                lines={[
+                  { key: 'satQ0', name: 'TEL q0', stroke: '#4dabf7' },
+                  { key: 'satQ1', name: 'TEL q1', stroke: '#74c0fc' },
+                  { key: 'satQ2', name: 'TEL q2', stroke: '#a5d8ff' },
+                  { key: 'satQ3', name: 'TEL q3', stroke: '#d0ebff' },
+                  { key: 'encQ0Raw', name: 'Raw ENC q0', stroke: '#63e6be' },
+                  { key: 'encQ1Raw', name: 'Raw ENC q1', stroke: '#96f2d7' },
+                  { key: 'encQ2Raw', name: 'Raw ENC q2', stroke: '#c3fae8' },
+                  { key: 'encQ3Raw', name: 'Raw ENC q3', stroke: '#e6fcf5' },
+                  { key: 'encQ0Aligned', name: 'Aligned ENC q0', stroke: '#ff8787' },
+                  { key: 'encQ1Aligned', name: 'Aligned ENC q1', stroke: '#ffa8a8' },
+                  { key: 'encQ2Aligned', name: 'Aligned ENC q2', stroke: '#ffc9c9' },
+                  { key: 'encQ3Aligned', name: 'Aligned ENC q3', stroke: '#ffe3e3' },
+                ]}
+              />
+            </Col>
+            <Col xs={12} xl={6}>
+              <LiveTelemetryChart
+                title="Encoder Alignment Metrics"
+                data={livePlotData}
+                yLabel="deg, ms, dot"
+                lines={[
+                  { key: 'thetaErr', name: 'theta_err_deg', stroke: '#ff8787' },
+                  { key: 'dotRaw', name: 'dot_raw', stroke: '#4dabf7' },
+                  { key: 'dotAbs', name: 'dot_abs', stroke: '#51cf66' },
+                  { key: 'encAgeMs', name: 'enc_age_ms', stroke: '#ffd43b' },
+                  { key: 'encValid', name: 'enc_valid', stroke: '#f783ac' },
                 ]}
               />
             </Col>

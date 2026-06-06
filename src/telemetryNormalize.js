@@ -10,6 +10,8 @@ const DEFAULT_EULER_SEQUENCE = 'ZYX';
 export const DEFAULT_ENCODER_ANGLE_TO_QUAT_SEQUENCE = 'ZYX';
 export const DEFAULT_ENCODER_FRESH_MS = 300;
 export const DEFAULT_ENCODER_TIMER_SPREAD_MS = 100;
+export const ENCODER_ALIGNMENT_MAX_AGE_MS = 500;
+export const ENCODER_ALIGNMENT_SOURCE = 'pwa-latest-encoder-cache';
 const DEFAULT_ENCODER_SYNC_MS = DEFAULT_ENCODER_TIMER_SPREAD_MS;
 export const DEFAULT_RPY_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
 export const DEFAULT_ENCODER_DISPLAY_SIGNS = Object.freeze({ roll: 1, pitch: 1, yaw: 1 });
@@ -407,6 +409,208 @@ function firstTelemetryNumber(values, fallback = null) {
   return fallback;
 }
 
+function encoderAlignmentBaseFields(packet = {}, options = {}) {
+  const encoder = packet.encoder || {};
+  const now = finiteNumber(options.now, Date.now());
+  const encoderUpdatedAt = firstTelemetryNumber([
+    options.encoderReceivedAtMs,
+    packet.latestEncoderReceivedAtMs,
+    packet.encoderReceivedAtMs,
+    packet.encoderUpdatedAt,
+    packet.encoder?.updatedAt,
+    packet.lastEncoderPacketAt,
+  ], null);
+  const encAgeMs = encoderUpdatedAt !== null ? Math.max(0, now - encoderUpdatedAt) : null;
+  const satRaw = [
+    firstTelemetryNumber([packet.sat_q0, packet.q0, packet.q?.[0]], null),
+    firstTelemetryNumber([packet.sat_q1, packet.q1, packet.q?.[1]], null),
+    firstTelemetryNumber([packet.sat_q2, packet.q2, packet.q?.[2]], null),
+    firstTelemetryNumber([packet.sat_q3, packet.q3, packet.q?.[3]], null),
+  ];
+  const satAvailable = packet.hasTelemetryAttitude !== false
+    && satRaw.every((value) => value !== null);
+  const encRaw = [
+    firstTelemetryNumber([packet.enc_q0_raw, packet.encoderQ0Raw, encoder.q0Raw, packet.enc_q0, packet.encoderQ0, encoder.q0], null),
+    firstTelemetryNumber([packet.enc_q1_raw, packet.encoderQ1Raw, encoder.q1Raw, packet.enc_q1, packet.encoderQ1, encoder.q1], null),
+    firstTelemetryNumber([packet.enc_q2_raw, packet.encoderQ2Raw, encoder.q2Raw, packet.enc_q2, packet.encoderQ2, encoder.q2], null),
+    firstTelemetryNumber([packet.enc_q3_raw, packet.encoderQ3Raw, encoder.q3Raw, packet.enc_q3, packet.encoderQ3, encoder.q3], null),
+  ];
+  const satTimestampUs = firstTelemetryNumber([
+    packet.timestamp_us,
+    packet.remote_timestamp_us,
+    packet.timestamp,
+    packet.ebimu_timestamp_ms,
+    packet.ebimuTimestampMs,
+  ], null);
+  const satSeq = firstTelemetryNumber([packet.seq, packet.rxCount, packet.packetCount], null);
+
+  return {
+    satRaw,
+    encRaw,
+    encAgeMs,
+    satAvailable,
+    now,
+    encoderUpdatedAt,
+    satSeq,
+    satTimestampUs,
+    base: {
+      sat_q0: satRaw[0],
+      sat_q1: satRaw[1],
+      sat_q2: satRaw[2],
+      sat_q3: satRaw[3],
+      enc_q0_raw: encRaw[0],
+      enc_q1_raw: encRaw[1],
+      enc_q2_raw: encRaw[2],
+      enc_q3_raw: encRaw[3],
+      enc_age_ms: encAgeMs,
+      encAgeMs: encAgeMs,
+      encoder_alignment_source: ENCODER_ALIGNMENT_SOURCE,
+      encoderAlignmentSource: ENCODER_ALIGNMENT_SOURCE,
+      encoder_alignment_updated_at_ms: now,
+      encoderAlignmentUpdatedAtMs: now,
+      encoder_alignment_sat_seq: satSeq,
+      encoderAlignmentSatSeq: satSeq,
+      encoder_alignment_sat_timestamp_us: satTimestampUs,
+      encoderAlignmentSatTimestampUs: satTimestampUs,
+    },
+  };
+}
+
+function invalidEncoderAlignmentFields(packet = {}, options = {}) {
+  const { base } = encoderAlignmentBaseFields(packet, options);
+  return {
+    ...base,
+    enc_q0_aligned: null,
+    enc_q1_aligned: null,
+    enc_q2_aligned: null,
+    enc_q3_aligned: null,
+    encoderQ0Aligned: null,
+    encoderQ1Aligned: null,
+    encoderQ2Aligned: null,
+    encoderQ3Aligned: null,
+    dot_raw: null,
+    dotRaw: null,
+    dot_abs: null,
+    dotAbs: null,
+    theta_err_deg: null,
+    thetaErrDeg: null,
+    enc_valid: 0,
+    encValid: 0,
+    encoderAlignmentValid: false,
+    enc_roll_raw_deg: firstTelemetryNumber([packet.enc_roll_raw_deg, packet.encoder_roll_deg, packet.encoderRollDeg, packet.encoder?.rollDeg], null),
+    enc_pitch_raw_deg: firstTelemetryNumber([packet.enc_pitch_raw_deg, packet.encoder_pitch_deg, packet.encoderPitchDeg, packet.encoder?.pitchDeg], null),
+    enc_yaw_raw_deg: firstTelemetryNumber([packet.enc_yaw_raw_deg, packet.encoder_yaw_deg, packet.encoderYawDeg, packet.encoder?.yawDeg], null),
+    enc_roll_aligned_deg: null,
+    enc_pitch_aligned_deg: null,
+    enc_yaw_aligned_deg: null,
+    encoderRollAlignedDeg: null,
+    encoderPitchAlignedDeg: null,
+    encoderYawAlignedDeg: null,
+  };
+}
+
+export function computeEncoderAlignmentFields(packet = {}, options = {}) {
+  const { satRaw, encRaw, encAgeMs, satAvailable, now, satSeq, satTimestampUs, base } = encoderAlignmentBaseFields(packet, options);
+  const maxAgeMs = finiteNumber(options.encoderAlignmentMaxAgeMs, ENCODER_ALIGNMENT_MAX_AGE_MS);
+  const sat = normalizeQuaternion(satRaw);
+  const enc = normalizeQuaternion(encRaw);
+
+  if (!satAvailable || !sat.ok || !enc.ok || encAgeMs === null || encAgeMs > maxAgeMs) {
+    return invalidEncoderAlignmentFields(packet, options);
+  }
+
+  const dotRaw = sat.q[0] * enc.q[0] + sat.q[1] * enc.q[1] + sat.q[2] * enc.q[2] + sat.q[3] * enc.q[3];
+  if (!Number.isFinite(dotRaw)) return invalidEncoderAlignmentFields(packet, options);
+
+  const encAligned = dotRaw < 0 ? enc.q.map((value) => -value) : [...enc.q];
+  const dotAbs = Math.min(1, Math.max(0, Math.abs(dotRaw)));
+  const thetaErrDeg = 2 * Math.acos(dotAbs) * 180 / Math.PI;
+  if (!Number.isFinite(thetaErrDeg)) return invalidEncoderAlignmentFields(packet, options);
+
+  const encoderEulerSequence = normalizeEulerSequence(
+    options.encoderEulerSequence || packet.encoderEulerSequence || packet.encoder?.eulerSequence
+  );
+  const encoderDisplaySigns = normalizeRpySigns({
+    roll: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign ?? packet.encoder?.displayRollSign,
+    pitch: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign ?? packet.encoder?.displayPitchSign,
+    yaw: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign ?? packet.encoder?.displayYawSign,
+  }, DEFAULT_ENCODER_DISPLAY_SIGNS);
+  const alignedEulerRaw = quaternionToEulerDeg(encAligned, encoderEulerSequence);
+  const alignedEuler = alignedEulerRaw ? applyEulerDisplaySigns(alignedEulerRaw, encoderDisplaySigns) : null;
+
+  return {
+    ...base,
+    enc_q0_aligned: encAligned[0],
+    enc_q1_aligned: encAligned[1],
+    enc_q2_aligned: encAligned[2],
+    enc_q3_aligned: encAligned[3],
+    encoderQ0Aligned: encAligned[0],
+    encoderQ1Aligned: encAligned[1],
+    encoderQ2Aligned: encAligned[2],
+    encoderQ3Aligned: encAligned[3],
+    dot_raw: dotRaw,
+    dotRaw,
+    dot_abs: dotAbs,
+    dotAbs,
+    theta_err_deg: thetaErrDeg,
+    thetaErrDeg,
+    enc_valid: 1,
+    encValid: 1,
+    encoderAlignmentValid: true,
+    enc_roll_raw_deg: firstTelemetryNumber([packet.enc_roll_raw_deg, packet.encoder_roll_deg, packet.encoderRollDeg, packet.encoder?.rollDeg], null),
+    enc_pitch_raw_deg: firstTelemetryNumber([packet.enc_pitch_raw_deg, packet.encoder_pitch_deg, packet.encoderPitchDeg, packet.encoder?.pitchDeg], null),
+    enc_yaw_raw_deg: firstTelemetryNumber([packet.enc_yaw_raw_deg, packet.encoder_yaw_deg, packet.encoderYawDeg, packet.encoder?.yawDeg], null),
+    enc_roll_aligned_deg: alignedEuler?.roll ?? null,
+    enc_pitch_aligned_deg: alignedEuler?.pitch ?? null,
+    enc_yaw_aligned_deg: alignedEuler?.yaw ?? null,
+    encoderRollAlignedDeg: alignedEuler?.roll ?? null,
+    encoderPitchAlignedDeg: alignedEuler?.pitch ?? null,
+    encoderYawAlignedDeg: alignedEuler?.yaw ?? null,
+    encoder_alignment_source: ENCODER_ALIGNMENT_SOURCE,
+    encoderAlignmentSource: ENCODER_ALIGNMENT_SOURCE,
+    encoder_alignment_updated_at_ms: now,
+    encoderAlignmentUpdatedAtMs: now,
+    encoder_alignment_sat_seq: satSeq,
+    encoderAlignmentSatSeq: satSeq,
+    encoder_alignment_sat_timestamp_us: satTimestampUs,
+    encoderAlignmentSatTimestampUs: satTimestampUs,
+  };
+}
+
+export function attachEncoderAlignment(packet = {}, options = {}) {
+  const alignment = computeEncoderAlignmentFields(packet, options);
+  return {
+    ...packet,
+    ...alignment,
+    encoder: {
+      ...(packet.encoder || {}),
+      q0Raw: alignment.enc_q0_raw,
+      q1Raw: alignment.enc_q1_raw,
+      q2Raw: alignment.enc_q2_raw,
+      q3Raw: alignment.enc_q3_raw,
+      q0Aligned: alignment.enc_q0_aligned,
+      q1Aligned: alignment.enc_q1_aligned,
+      q2Aligned: alignment.enc_q2_aligned,
+      q3Aligned: alignment.enc_q3_aligned,
+      rollRawDeg: alignment.enc_roll_raw_deg,
+      pitchRawDeg: alignment.enc_pitch_raw_deg,
+      yawRawDeg: alignment.enc_yaw_raw_deg,
+      rollAlignedDeg: alignment.enc_roll_aligned_deg,
+      pitchAlignedDeg: alignment.enc_pitch_aligned_deg,
+      yawAlignedDeg: alignment.enc_yaw_aligned_deg,
+      dotRaw: alignment.dot_raw,
+      dotAbs: alignment.dot_abs,
+      thetaErrDeg: alignment.theta_err_deg,
+      alignmentSource: alignment.encoder_alignment_source,
+      alignmentUpdatedAtMs: alignment.encoder_alignment_updated_at_ms,
+      alignmentSatSeq: alignment.encoder_alignment_sat_seq,
+      alignmentSatTimestampUs: alignment.encoder_alignment_sat_timestamp_us,
+      alignmentValid: Boolean(alignment.enc_valid),
+      alignmentAgeMs: alignment.enc_age_ms,
+    },
+  };
+}
+
 function encoderTimerDelta(timerX, timerY, timerZ) {
   const timers = [timerX, timerY, timerZ].map((value) => telemetryNumber(value));
   if (!timers.every((value) => value !== null)) return null;
@@ -477,7 +681,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const ageX = firstTelemetryNumber([packet.enc_age_x, packet.encoderAgeX, nested.ageX, nested.age_x], null);
   const ageY = firstTelemetryNumber([packet.enc_age_y, packet.encoderAgeY, nested.ageY, nested.age_y], null);
   const ageZ = firstTelemetryNumber([packet.enc_age_z, packet.encoderAgeZ, nested.ageZ, nested.age_z], null);
-  const encoderUpdatedAt = firstTelemetryNumber([packet.encoderUpdatedAt, nested.updatedAt], null);
+  const rawEncoderUpdatedAt = firstTelemetryNumber([packet.encoderUpdatedAt, nested.updatedAt], null);
   const rawQ0 = firstTelemetryNumber([packet.enc_q0, packet.encoderQ0, nested.q0], null);
   const rawQ1 = firstTelemetryNumber([packet.enc_q1, packet.encoderQ1, nested.q1], null);
   const rawQ2 = firstTelemetryNumber([packet.enc_q2, packet.encoderQ2, nested.q2], null);
@@ -492,6 +696,7 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
   const hasInvalidRawQ = hasCompleteRawQ && !normalizedRawQ.ok;
   const hasEncoderData = [encX, encY, encZ, rawQ0, rawQ1, rawQ2, rawQ3, timerX, timerY, timerZ, ageX, ageY, ageZ]
     .some((value) => value !== null);
+  const encoderUpdatedAt = rawEncoderUpdatedAt ?? (hasEncoderData ? now : null);
   const hasAllAxes = [encX, encY, encZ].every((value) => value !== null);
   const canUseLegacyAngles = !hasAnyRawQ && hasAllAxes;
   const hasRemoteQuaternion = Boolean(normalizedRawQ.ok);
@@ -553,10 +758,18 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
     enc_q1: encQ1,
     enc_q2: encQ2,
     enc_q3: encQ3,
+    enc_q0_raw: rawQ0,
+    enc_q1_raw: rawQ1,
+    enc_q2_raw: rawQ2,
+    enc_q3_raw: rawQ3,
     encoderQ0: encQ0,
     encoderQ1: encQ1,
     encoderQ2: encQ2,
     encoderQ3: encQ3,
+    encoderQ0Raw: rawQ0,
+    encoderQ1Raw: rawQ1,
+    encoderQ2Raw: rawQ2,
+    encoderQ3Raw: rawQ3,
     enc_timer_x: timerX,
     enc_timer_y: timerY,
     enc_timer_z: timerZ,
@@ -595,6 +808,10 @@ function normalizeEncoderTelemetry(packet = {}, options = {}) {
       q1: encQ1,
       q2: encQ2,
       q3: encQ3,
+      q0Raw: rawQ0,
+      q1Raw: rawQ1,
+      q2Raw: rawQ2,
+      q3Raw: rawQ3,
       timerX,
       timerY,
       timerZ,
@@ -637,6 +854,11 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     pitch: options.imuDisplayPitchSign ?? packet.imuDisplayPitchSign,
     yaw: options.imuDisplayYawSign ?? packet.imuDisplayYawSign,
   });
+  const encoderDisplaySigns = normalizeRpySigns({
+    roll: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign ?? packet.encoder?.displayRollSign,
+    pitch: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign ?? packet.encoder?.displayPitchSign,
+    yaw: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign ?? packet.encoder?.displayYawSign,
+  }, DEFAULT_ENCODER_DISPLAY_SIGNS);
   const bodyRateWzDisplaySign = normalizeSign(
     options.bodyRateWzDisplaySign ?? packet.bodyRateWzDisplaySign,
     DEFAULT_BODY_RATE_WZ_DISPLAY_SIGN
@@ -647,9 +869,9 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     encoderAngleToQuatSequence,
     encoderFreshMs: options.encoderFreshMs,
     encoderTimerSpreadMs: options.encoderTimerSpreadMs,
-    encoderDisplayRollSign: options.encoderDisplayRollSign ?? packet.encoderDisplayRollSign,
-    encoderDisplayPitchSign: options.encoderDisplayPitchSign ?? packet.encoderDisplayPitchSign,
-    encoderDisplayYawSign: options.encoderDisplayYawSign ?? packet.encoderDisplayYawSign,
+    encoderDisplayRollSign: encoderDisplaySigns.roll,
+    encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+    encoderDisplayYawSign: encoderDisplaySigns.yaw,
   });
   const rawQ = Array.isArray(packet.q) && packet.q.length === 4
     ? packet.q
@@ -723,6 +945,8 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     sourceLabel,
     sample_type: sampleType,
     sampleType,
+    hasTelemetryAttitude: sampleType !== 'ENC' || Boolean(packet.hasTelemetryAttitude || packet.lastTelemetryAt),
+    lastTelemetryAt: firstFinite([packet.lastTelemetryAt], sampleType !== 'ENC' ? now : null),
     rawPrefix,
     raw_prefix: rawPrefix,
 
@@ -827,9 +1051,17 @@ export function normalizeLivePacket(packet, source = 'unknown', options = {}) {
     ...encoderTelemetry,
   };
 
-  common.hasWheelTelemetry = hasWheelTelemetry(common);
-  common.hasDebugTelemetry = hasDebugTelemetry(common);
-  return common;
+  const aligned = attachEncoderAlignment(common, {
+    now,
+    encoderEulerSequence,
+    encoderDisplayRollSign: encoderDisplaySigns.roll,
+    encoderDisplayPitchSign: encoderDisplaySigns.pitch,
+    encoderDisplayYawSign: encoderDisplaySigns.yaw,
+    encoderAlignmentMaxAgeMs: options.encoderAlignmentMaxAgeMs,
+  });
+  aligned.hasWheelTelemetry = hasWheelTelemetry(aligned);
+  aligned.hasDebugTelemetry = hasDebugTelemetry(aligned);
+  return aligned;
 }
 
 export { SOURCE_LABELS };
