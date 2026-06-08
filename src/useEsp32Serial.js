@@ -1167,6 +1167,7 @@ export default function useEsp32Serial(options = {}) {
     yaw: options.encoderDisplayYawSign,
   }, DEFAULT_ENCODER_DISPLAY_SIGNS);
   const bodyRateWzDisplaySign = normalizeSign(options.bodyRateWzDisplaySign, 1);
+  const chartHistoryEnabled = options.chartHistoryEnabled === true;
   const [isSupported] = useState(
     typeof navigator !== 'undefined' && typeof navigator.serial !== 'undefined'
   );
@@ -1222,6 +1223,7 @@ export default function useEsp32Serial(options = {}) {
   const parsedEncoderRateWindowRef = useRef([]);
   const recentPacketsRef = useRef([]);
   const chartDataRef = useRef([]);
+  const chartHistoryEnabledRef = useRef(chartHistoryEnabled);
   const countersRef = useRef({ valid: 0, invalid: 0, ignored: 0, warning: 0 });
   const csvDebugCountersRef = useRef(makeEmptyCsvDebugStats());
   const lastRawLineRef = useRef('');
@@ -1237,6 +1239,14 @@ export default function useEsp32Serial(options = {}) {
     const total = validCount + invalidCount;
     return total > 0 ? validCount / total : 0;
   }, [validCount, invalidCount]);
+
+  useEffect(() => {
+    chartHistoryEnabledRef.current = chartHistoryEnabled;
+    if (!chartHistoryEnabled) {
+      chartDataRef.current = [];
+      setChartData([]);
+    }
+  }, [chartHistoryEnabled]);
 
   const markPendingUiFlush = useCallback(() => {
     pendingUiFlushRef.current = true;
@@ -1391,7 +1401,7 @@ export default function useEsp32Serial(options = {}) {
         setCsvLogVersion((version) => version + 1);
       }
       setRecentPackets([...recentPacketsRef.current]);
-      setChartData([...chartDataRef.current]);
+      if (chartHistoryEnabledRef.current) setChartData([...chartDataRef.current]);
       setValidCount(countersRef.current.valid);
       setInvalidCount(countersRef.current.invalid);
       setIgnoredCount(countersRef.current.ignored);
@@ -1524,7 +1534,9 @@ export default function useEsp32Serial(options = {}) {
         encAgeMs: latestPacketRef.current.enc_age_ms,
         encValid: latestPacketRef.current.enc_valid,
       };
-      chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
+      if (chartHistoryEnabledRef.current) {
+        chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
+      }
 
       lastRawLineRef.current = parsed.cleanLine || '';
       lastReceivedAtRef.current = now;
@@ -1795,7 +1807,9 @@ export default function useEsp32Serial(options = {}) {
       encAgeMs: commonPacket.enc_age_ms,
       encValid: commonPacket.enc_valid,
     };
-    chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
+    if (chartHistoryEnabledRef.current) {
+      chartDataRef.current = [...chartDataRef.current, chartPoint].slice(-MAX_CHART_POINTS);
+    }
 
     if (typeof window !== 'undefined') {
       window.__CUBLI_SERIAL_PACKET = commonPacket;

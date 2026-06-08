@@ -51,6 +51,9 @@ const TWO_PI = Math.PI * 2;
 const DEFAULT_VIEW_DIRECTION = new THREE.Vector3(1, 0.72, 1).normalize();
 const WEB_SERIAL_BRIDGE_COMMAND_POLL_MS = 50; // faster bridge command relay
 const EMPTY_OBJECT = Object.freeze({});
+const SERVER_LIVE_PLOT_STORAGE_KEY = 'cubliServerLivePlotEnabled';
+const SERVER_LIVE_PLOT_MIGRATION_KEY = 'cubliServerLivePlotDefaultOffVersion';
+const SERVER_LIVE_PLOT_DEFAULT_OFF_VERSION = '2026-06-default-off';
 const IDENTITY_LIVE_PACKET = Object.freeze({
   q0: 1,
   q1: 0,
@@ -439,6 +442,29 @@ function shouldAutoShowTutorial() {
 function getStoredTutorialGuideMode(fallbackRole = 'viewer') {
   const fallbackMode = getTutorialGuideModeForRole(fallbackRole);
   return normalizeTutorialGuideMode(readTutorialStorage(TUTORIAL_STORAGE_KEYS.guideMode, fallbackMode));
+}
+
+function getStoredServerLivePlotEnabled() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const migratedVersion = window.localStorage.getItem(SERVER_LIVE_PLOT_MIGRATION_KEY);
+    if (migratedVersion !== SERVER_LIVE_PLOT_DEFAULT_OFF_VERSION) {
+      window.localStorage.setItem(SERVER_LIVE_PLOT_STORAGE_KEY, 'false');
+      window.localStorage.setItem(SERVER_LIVE_PLOT_MIGRATION_KEY, SERVER_LIVE_PLOT_DEFAULT_OFF_VERSION);
+      return false;
+    }
+    return window.localStorage.getItem(SERVER_LIVE_PLOT_STORAGE_KEY) === 'true';
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeServerLivePlotEnabled(value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SERVER_LIVE_PLOT_STORAGE_KEY, value ? 'true' : 'false');
+    window.localStorage.setItem(SERVER_LIVE_PLOT_MIGRATION_KEY, SERVER_LIVE_PLOT_DEFAULT_OFF_VERSION);
+  } catch (_) {}
 }
 
 function remapSensorQuatToCubliFrame(sourceQuat, targetQuat) {
@@ -1454,10 +1480,12 @@ export default function CubliSimulator() {
   const panelDragActiveRef = useRef(false);
   const tutorialAutoCheckedRef = useRef(false);
   const [isPanelDragging, setIsPanelDragging] = useState(false);
+  const [serverLivePlotEnabled, setServerLivePlotEnabled] = useState(getStoredServerLivePlotEnabled);
 
-  const rawServerSync = useServerSync();
+  const rawServerSync = useServerSync({ chartHistoryEnabled: serverLivePlotEnabled });
   const serverSync = rawServerSync ?? EMPTY_OBJECT;
   const serial = useEsp32Serial({
+    chartHistoryEnabled: serverLivePlotEnabled,
     imuEulerSequence: serverSync?.imuEulerSequence,
     encoderEulerSequence: serverSync?.encoderEulerSequence,
     encoderAngleToQuatSequence: serverSync?.encoderAngleToQuatSequence,
@@ -1492,6 +1520,10 @@ export default function CubliSimulator() {
   const suggestedDisplayName = useMemo(() => (
     serverSync?.getSuggestedDisplayName?.(isAdmin ? 'Admin' : 'Viewer') || ''
   ), [isAdmin, serverSync]);
+
+  useEffect(() => {
+    writeServerLivePlotEnabled(serverLivePlotEnabled);
+  }, [serverLivePlotEnabled]);
 
   const handleTutorialGuideModeChange = React.useCallback((mode) => {
     const nextMode = normalizeTutorialGuideMode(mode);
@@ -2746,6 +2778,8 @@ export default function CubliSimulator() {
                     webSerialInputHz={serial.inputHz}
                     onChangeDisplayName={handleOpenNameModal}
                     isActive={activeTab === 'server'}
+                    livePlotEnabled={serverLivePlotEnabled}
+                    onLivePlotEnabledChange={setServerLivePlotEnabled}
                   />
                 </Tab>
               </Tabs>

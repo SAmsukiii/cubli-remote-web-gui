@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Accordion, Badge, Button, Col, Form, Row } from 'react-bootstrap';
 
-const DEFAULT_PRESET = 'imu_encoder_basic';
+const DEFAULT_PRESET = 'quaternion_aligned_comparison';
+const RAW_ENCODER_FIELD_ALIASES = Object.freeze({
+  enc_q0_raw: 'enc_q0',
+  enc_q1_raw: 'enc_q1',
+  enc_q2_raw: 'enc_q2',
+  enc_q3_raw: 'enc_q3',
+});
 
 const IMU_GROUP_SELECTION_FIELDS = Object.freeze([
   'imu_q0', 'imu_q1', 'imu_q2', 'imu_q3',
@@ -15,7 +21,6 @@ const IMU_GROUP_SELECTION_FIELDS = Object.freeze([
 
 const GIMBAL_GROUP_SELECTION_FIELDS = Object.freeze([
   'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
-  'enc_q0_raw', 'enc_q1_raw', 'enc_q2_raw', 'enc_q3_raw',
   'enc_q0_aligned', 'enc_q1_aligned', 'enc_q2_aligned', 'enc_q3_aligned',
   'encoderQ0', 'encoderQ1', 'encoderQ2', 'encoderQ3',
   'encoder_roll_deg', 'encoder_pitch_deg', 'encoder_yaw_deg',
@@ -54,7 +59,6 @@ const FIELD_GROUPS = Object.freeze([
     label: 'Gimbal Encoder',
     fields: [
       'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
-      'enc_q0_raw', 'enc_q1_raw', 'enc_q2_raw', 'enc_q3_raw',
       'enc_q0_aligned', 'enc_q1_aligned', 'enc_q2_aligned', 'enc_q3_aligned',
       'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
       'enc_roll_raw_deg', 'enc_pitch_raw_deg', 'enc_yaw_raw_deg',
@@ -97,23 +101,22 @@ const FIELD_GROUPS = Object.freeze([
 const PRESETS = Object.freeze([
   {
     id: DEFAULT_PRESET,
-    label: 'IMU vs Encoder Basic',
+    label: 'Quaternion Aligned Comparison',
     fields: [
-      'q0', 'q1', 'q2', 'q3', 'rollDeg', 'pitchDeg', 'yawDeg', 'imuEulerSequence',
-      'qerr_deg', 'source', 'timestamp', 'seq',
-      'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
-      'enc_q0_raw', 'enc_q1_raw', 'enc_q2_raw', 'enc_q3_raw',
+      'q0', 'q1', 'q2', 'q3',
       'enc_q0_aligned', 'enc_q1_aligned', 'enc_q2_aligned', 'enc_q3_aligned',
-      'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
-      'enc_roll_aligned_deg', 'enc_pitch_aligned_deg', 'enc_yaw_aligned_deg',
-      'dot_raw', 'dot_abs', 'theta_err_deg', 'enc_age_ms', 'enc_valid',
-      'encoderEulerSequence', 'encoderStatus', 'encoderSource',
-      'encoderQuatSource',
-      'enc_timer_x', 'enc_timer_y', 'enc_timer_z',
-      'enc_age_x', 'enc_age_y', 'enc_age_z',
-      'wx', 'wy', 'wz',
-      'RPM1', 'RPM2', 'RPM3', 'RPMcmd1', 'RPMcmd2', 'RPMcmd3',
+      'dot_abs', 'theta_err_deg', 'enc_age_ms', 'enc_valid',
     ],
+  },
+  {
+    id: 'quaternion_alignment_metrics',
+    label: 'Quaternion Alignment Metrics',
+    fields: ['theta_err_deg', 'dot_raw', 'dot_abs', 'enc_valid', 'enc_age_ms', 'encoder_alignment_source'],
+  },
+  {
+    id: 'encoder_raw_vs_aligned',
+    label: 'Encoder Raw vs Aligned',
+    fields: ['enc_q0', 'enc_q0_aligned', 'dot_raw', 'dot_abs'],
   },
   {
     id: 'demo_basic',
@@ -130,7 +133,6 @@ const PRESETS = Object.freeze([
     label: 'Encoder',
     fields: [
       'enc_q0', 'enc_q1', 'enc_q2', 'enc_q3',
-      'enc_q0_raw', 'enc_q1_raw', 'enc_q2_raw', 'enc_q3_raw',
       'enc_q0_aligned', 'enc_q1_aligned', 'enc_q2_aligned', 'enc_q3_aligned',
       'encoderRollDeg', 'encoderPitchDeg', 'encoderYawDeg',
       'enc_roll_raw_deg', 'enc_pitch_raw_deg', 'enc_yaw_raw_deg',
@@ -179,10 +181,10 @@ const FIELD_META = Object.freeze({
   enc_x_deg: { label: 'Legacy Enc X', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_x_deg ?? p.encoderXDeg ?? p.encoder?.x },
   enc_y_deg: { label: 'Legacy Enc Y', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_y_deg ?? p.encoderYDeg ?? p.encoder?.y },
   enc_z_deg: { label: 'Legacy Enc Z', section: 'encoder', unit: 'deg', digits: 2, value: (p) => p.enc_z_deg ?? p.encoderZDeg ?? p.encoder?.z },
-  enc_q0: { label: 'enc_q0', section: 'encoder', digits: 6, value: (p) => p.enc_q0 ?? p.encoderQ0 ?? p.encoder?.q0 },
-  enc_q1: { label: 'enc_q1', section: 'encoder', digits: 6, value: (p) => p.enc_q1 ?? p.encoderQ1 ?? p.encoder?.q1 },
-  enc_q2: { label: 'enc_q2', section: 'encoder', digits: 6, value: (p) => p.enc_q2 ?? p.encoderQ2 ?? p.encoder?.q2 },
-  enc_q3: { label: 'enc_q3', section: 'encoder', digits: 6, value: (p) => p.enc_q3 ?? p.encoderQ3 ?? p.encoder?.q3 },
+  enc_q0: { label: 'enc_q0 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q0_raw ?? p.encoderQ0Raw ?? p.encoder?.q0Raw ?? p.enc_q0 ?? p.encoderQ0 ?? p.encoder?.q0 },
+  enc_q1: { label: 'enc_q1 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q1_raw ?? p.encoderQ1Raw ?? p.encoder?.q1Raw ?? p.enc_q1 ?? p.encoderQ1 ?? p.encoder?.q1 },
+  enc_q2: { label: 'enc_q2 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q2_raw ?? p.encoderQ2Raw ?? p.encoder?.q2Raw ?? p.enc_q2 ?? p.encoderQ2 ?? p.encoder?.q2 },
+  enc_q3: { label: 'enc_q3 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q3_raw ?? p.encoderQ3Raw ?? p.encoder?.q3Raw ?? p.enc_q3 ?? p.encoderQ3 ?? p.encoder?.q3 },
   enc_q0_raw: { label: 'enc_q0 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q0_raw ?? p.encoderQ0Raw ?? p.encoder?.q0Raw ?? p.enc_q0 ?? p.encoderQ0 ?? p.encoder?.q0 },
   enc_q1_raw: { label: 'enc_q1 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q1_raw ?? p.encoderQ1Raw ?? p.encoder?.q1Raw ?? p.enc_q1 ?? p.encoderQ1 ?? p.encoder?.q1 },
   enc_q2_raw: { label: 'enc_q2 raw', section: 'encoder', digits: 6, value: (p) => p.enc_q2_raw ?? p.encoderQ2Raw ?? p.encoder?.q2Raw ?? p.enc_q2 ?? p.encoderQ2 ?? p.encoder?.q2 },
@@ -264,13 +266,29 @@ function getPreset(id) {
   return PRESETS.find((preset) => preset.id === id) || PRESETS[0];
 }
 
+function canonicalFieldKey(key) {
+  return RAW_ENCODER_FIELD_ALIASES[key] || key;
+}
+
+function normalizeFieldKeys(fields, isAdmin = true) {
+  const seen = new Set();
+  return fields
+    .map(canonicalFieldKey)
+    .filter((key) => {
+      const meta = FIELD_META[key];
+      if (!meta || (!isAdmin && meta.adminOnly) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function safeReadSelection(storageKey) {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.fields) ? parsed.fields.filter((key) => FIELD_META[key]) : null;
+    return Array.isArray(parsed?.fields) ? normalizeFieldKeys(parsed.fields) : null;
   } catch (_) {
     return null;
   }
@@ -353,7 +371,7 @@ export default function TelemetryDataView({
 
   const visiblePresets = useMemo(() => PRESETS.filter((preset) => !preset.adminOnly || isAdmin), [isAdmin]);
   const visibleGroups = useMemo(() => FIELD_GROUPS.filter((group) => !group.adminOnly || isAdmin), [isAdmin]);
-  const selectedSet = useMemo(() => new Set(selectedFields.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin))), [isAdmin, selectedFields]);
+  const selectedSet = useMemo(() => new Set(normalizeFieldKeys(selectedFields, isAdmin)), [isAdmin, selectedFields]);
   const fields = useMemo(() => Array.from(selectedSet), [selectedSet]);
 
   useEffect(() => {
@@ -363,7 +381,7 @@ export default function TelemetryDataView({
   const handlePresetChange = (nextPresetId) => {
     const preset = getPreset(nextPresetId);
     setPresetId(preset.id);
-    setSelectedFields(preset.fields.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin)));
+    setSelectedFields(normalizeFieldKeys(preset.fields, isAdmin));
   };
 
   const toggleField = (fieldKey) => {
@@ -377,7 +395,7 @@ export default function TelemetryDataView({
   };
 
   const setFieldGroupSelected = (fieldKeys, selected) => {
-    const allowedKeys = fieldKeys.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin));
+    const allowedKeys = normalizeFieldKeys(fieldKeys, isAdmin);
     setPresetId('custom');
     setSelectedFields((prev) => {
       const next = new Set(prev.filter((key) => FIELD_META[key] && (!FIELD_META[key].adminOnly || isAdmin)));
@@ -401,7 +419,7 @@ export default function TelemetryDataView({
           <div>
             <div className="serial-section-title">Data View</div>
             <div className="server-small-note">
-              Raw ENC is the Remote quaternion; aligned ENC is a comparison value that flips q/-q as one whole quaternion to match TEL sign.
+              Raw ENC is the Remote quaternion. Aligned ENC is raw unchanged when dot_raw is non-negative, or all q0-q3 signs flipped together when dot_raw is negative for TEL comparison.
             </div>
           </div>
           <Badge bg="info">{fields.length}</Badge>
@@ -418,7 +436,7 @@ export default function TelemetryDataView({
           </Col>
           <Col xs={12} md={6}>
             <Button size="sm" variant="outline-light" className="w-100" onClick={() => handlePresetChange(DEFAULT_PRESET)}>
-              Reset to IMU vs Encoder Basic
+              Reset to Quaternion Aligned Comparison
             </Button>
           </Col>
         </Row>

@@ -870,7 +870,8 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-export default function useServerSync() {
+export default function useServerSync(options = {}) {
+  const chartHistoryEnabled = options?.chartHistoryEnabled === true;
   const [clientId] = useState(getStoredClientId);
   const [displayName, setDisplayNameState] = useState(getStoredDisplayName);
   const [serverUrl, setServerUrlState] = useState(DEFAULT_SERVER_URL);
@@ -1057,6 +1058,16 @@ export default function useServerSync() {
   useEffect(() => {
     calibrationLockRef.current = calibrationLock;
   }, [calibrationLock]);
+
+  useEffect(() => {
+    if (chartHistoryEnabled) return;
+    localChartSampleRef.current = 0;
+    setServerSerialStatus((prev) => (
+      Array.isArray(prev.chartData) && prev.chartData.length > 0
+        ? { ...prev, chartData: [] }
+        : prev
+    ));
+  }, [chartHistoryEnabled]);
 
   const setCalibrationLockState = useCallback((nextLock) => {
     calibrationLockRef.current = nextLock;
@@ -2518,42 +2529,46 @@ export default function useServerSync() {
 
     if (!updateState) return packet;
 
-    setServerSerialStatus((prev) => ({
-      ...prev,
-      latestSharedPacket: packet || prev.latestSharedPacket,
-      latestPacket: packet || prev.latestPacket,
-      activeSharedSource: data.activeSharedSource || packet?.source || prev.activeSharedSource,
-      publisherClientId: data.publisherClientId || packet?.publisherClientId || prev.publisherClientId,
-      publisherDisplayName: data.publisherDisplayName || packet?.publisherDisplayName || prev.publisherDisplayName,
-      publisherRole: data.publisherRole || packet?.publisherRole || prev.publisherRole,
-      publishSessionId: data.publishSessionId || packet?.publishSessionId || prev.publishSessionId,
-      activePublisher: data.activePublisher || prev.activePublisher,
-      activePublisherStatus: data.activePublisherStatus || prev.activePublisherStatus,
-      activePublisherHeartbeatAgeMs: data.activePublisherHeartbeatAgeMs ?? prev.activePublisherHeartbeatAgeMs,
-      publishedAt: data.publishedAt || packet?.publishedAt || prev.publishedAt,
-      latestSharedPacketAgeMs: packetAgeMs ?? prev.latestSharedPacketAgeMs,
-      liveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs) || prev.liveStatus,
-      bridge: data.bridge || prev.bridge,
-      visualSettings: nextVisualSettings || prev.visualSettings,
-      lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
-      latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
-      access: data.access || prev.access,
-      droppedOutOfOrderCount: Number(data.droppedOutOfOrderCount) || droppedOutOfOrderCount,
-      droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
-      droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
-      serverToViewerLatencyMs: receiveLatencyMs,
-      receiveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs),
-      calibrationLock: data.calibrationLock || data.bridge?.calibrationLock || nextCalibrationLock || prev.calibrationLock,
-      chartData: packet && !outOfOrder
-        ? [...(streamChanged ? [] : (Array.isArray(prev.chartData) ? prev.chartData : [])), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
-        : (Array.isArray(prev.chartData) ? prev.chartData : []),
-      lastError: '',
-    }));
+    setServerSerialStatus((prev) => {
+      const shouldAppendChartPoint = chartHistoryEnabled && packet && !outOfOrder;
+      return {
+        ...prev,
+        latestSharedPacket: packet || prev.latestSharedPacket,
+        latestPacket: packet || prev.latestPacket,
+        activeSharedSource: data.activeSharedSource || packet?.source || prev.activeSharedSource,
+        publisherClientId: data.publisherClientId || packet?.publisherClientId || prev.publisherClientId,
+        publisherDisplayName: data.publisherDisplayName || packet?.publisherDisplayName || prev.publisherDisplayName,
+        publisherRole: data.publisherRole || packet?.publisherRole || prev.publisherRole,
+        publishSessionId: data.publishSessionId || packet?.publishSessionId || prev.publishSessionId,
+        activePublisher: data.activePublisher || prev.activePublisher,
+        activePublisherStatus: data.activePublisherStatus || prev.activePublisherStatus,
+        activePublisherHeartbeatAgeMs: data.activePublisherHeartbeatAgeMs ?? prev.activePublisherHeartbeatAgeMs,
+        publishedAt: data.publishedAt || packet?.publishedAt || prev.publishedAt,
+        latestSharedPacketAgeMs: packetAgeMs ?? prev.latestSharedPacketAgeMs,
+        liveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs) || prev.liveStatus,
+        bridge: data.bridge || prev.bridge,
+        visualSettings: nextVisualSettings || prev.visualSettings,
+        lastBridgeCommand: data.bridge?.lastBridgeCommand || prev.lastBridgeCommand,
+        latestDesiredAttitude: data.latestDesiredAttitude || prev.latestDesiredAttitude,
+        access: data.access || prev.access,
+        droppedOutOfOrderCount: Number(data.droppedOutOfOrderCount) || droppedOutOfOrderCount,
+        droppedWrongPublisherCount: data.droppedWrongPublisherCount != null ? Number(data.droppedWrongPublisherCount) || 0 : prev.droppedWrongPublisherCount,
+        droppedWrongSessionCount: data.droppedWrongSessionCount != null ? Number(data.droppedWrongSessionCount) || 0 : prev.droppedWrongSessionCount,
+        serverToViewerLatencyMs: receiveLatencyMs,
+        receiveStatus: data.liveStatus || liveDataStatusFromAge(packetAgeMs),
+        calibrationLock: data.calibrationLock || data.bridge?.calibrationLock || nextCalibrationLock || prev.calibrationLock,
+        chartData: shouldAppendChartPoint
+          ? [...(streamChanged ? [] : (Array.isArray(prev.chartData) ? prev.chartData : [])), compactChartPoint(packet, ++localChartSampleRef.current)].slice(-MAX_LOCAL_CHART_POINTS)
+          : (chartHistoryEnabled && Array.isArray(prev.chartData) ? prev.chartData : []),
+        lastError: '',
+      };
+    });
 
     return packet;
   }, [
     applyPublisherState,
     applyVisualSettings,
+    chartHistoryEnabled,
     droppedOutOfOrderCount,
     encoderDisplayPitchSign,
     encoderDisplayRollSign,

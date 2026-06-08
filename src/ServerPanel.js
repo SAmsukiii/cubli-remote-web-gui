@@ -53,6 +53,20 @@ const WHEEL_RPM_COMMAND_MAX = 2500;
 const WHEEL_RPM_MIN = -WHEEL_RPM_COMMAND_MAX;
 const WHEEL_RPM_MAX = WHEEL_RPM_COMMAND_MAX;
 const WHEEL_RPM_STEP = 10;
+const PLOT_COLORS = Object.freeze({
+  imu: Object.freeze(['#6f99bd', '#b49a62', '#b87068']),
+  telQuat: Object.freeze(['#6f99bd', '#86a9c8', '#a5b9ca', '#c1cad1']),
+  encoderRaw: Object.freeze(['#858d96', '#9ba3ab', '#b1b8be', '#c7ccd1']),
+  encoderAligned: Object.freeze(['#4f7fb0', '#6691bc', '#7fa4c8', '#9ab7d3']),
+  error: '#bd6b5d',
+  dotRaw: '#8c82aa',
+  dotAbs: '#747f8b',
+  age: '#aa874f',
+  valid: '#6e9b74',
+  rate: Object.freeze(['#6f99bd', '#7b9b77', '#b47f52']),
+  rpm: Object.freeze(['#6f99bd', '#7b9b77', '#b87068']),
+  command: Object.freeze(['#96abc0', '#9db797', '#c79886']),
+});
 const LOG_COLUMNS = DEFAULT_CSV_LOG_COLUMNS;
 const EMPTY_OBJECT = Object.freeze({});
 const COMMAND_FEEDBACK_CLEAR_MS = 2600;
@@ -512,8 +526,8 @@ function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
               <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} />
               <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={44} />
               <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
-              <Line type="monotone" dataKey={rpmKey} stroke="#4dabf7" strokeWidth={2} dot={false} isAnimationActive={false} name={rpmKey} />
-              <Line type="monotone" dataKey={commandKey} stroke="#ffd43b" strokeWidth={2} dot={false} isAnimationActive={false} name={commandKey} />
+              <Line type="monotone" dataKey={rpmKey} stroke={PLOT_COLORS.rpm[0]} strokeWidth={2} dot={false} isAnimationActive={false} name={rpmKey} />
+              <Line type="monotone" dataKey={commandKey} stroke={PLOT_COLORS.command[0]} strokeWidth={2} dot={false} isAnimationActive={false} name={commandKey} />
             </LineChart>
           </ResponsiveContainer>
         ) : (
@@ -526,8 +540,9 @@ function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
 
 function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
   const chartIdPrefix = String(title || 'chart').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
-  const [enabledKeys, setEnabledKeys] = useState(() => new Set(lines.map((line) => line.key)));
+  const [enabledKeys, setEnabledKeys] = useState(() => new Set(lines.filter((line) => line.defaultEnabled !== false).map((line) => line.key)));
   const activeLines = lines.filter((line) => enabledKeys.has(line.key));
+  const denseLineOpacity = activeLines.length > 6 ? 0.78 : 0.92;
   const hasData = Array.isArray(data) && data.some((row) =>
     activeLines.some((line) => row[line.key] !== null && row[line.key] !== undefined)
   );
@@ -575,7 +590,8 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
                   type="monotone"
                   dataKey={line.key}
                   stroke={line.stroke}
-                  strokeWidth={2}
+                  strokeWidth={line.strokeWidth || 1.8}
+                  strokeOpacity={line.opacity ?? denseLineOpacity}
                   dot={false}
                   isAnimationActive={false}
                   connectNulls={false}
@@ -1702,12 +1718,18 @@ function CommandSection({ serial, status, role, controllerClientId, isController
   );
 }
 
-function MonitoringSection({ status, isActive = true, isAdmin = false }) {
+function MonitoringSection({
+  status,
+  isActive = true,
+  isAdmin = false,
+  livePlotEnabled = false,
+  onLivePlotEnabledChange = null,
+}) {
   const safeStatus = status ?? EMPTY_OBJECT;
   const latest = useMemo(() => safeStatus.latestPacket || {}, [safeStatus.latestPacket]);
   const lastCommandInfo = useMemo(() => safeStatus.lastCommandInfo || {}, [safeStatus.lastCommandInfo]);
   const latestDesired = useMemo(() => safeStatus.latestDesiredAttitude || {}, [safeStatus.latestDesiredAttitude]);
-  const [showLivePlot, setShowLivePlot] = useState(true);
+  const showLivePlot = Boolean(livePlotEnabled);
   const [showWheelGraphs, setShowWheelGraphs] = useState(false);
   const [showDebugTelemetry, setShowDebugTelemetry] = useState(false);
 
@@ -1808,6 +1830,7 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
   }, [safeStatus.chartData]);
 
   const livePlotData = useMemo(() => {
+    if (!showLivePlot || !isActive) return [];
     const rows = Array.isArray(safeStatus.chartData) ? safeStatus.chartData.slice(-240) : [];
     return rows.map((row, index) => {
       const n = (value) => {
@@ -1858,7 +1881,7 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
         encValid: n(row.encValid ?? row.enc_valid),
       };
     });
-  }, [safeStatus.chartData]);
+  }, [isActive, safeStatus.chartData, showLivePlot]);
 
   const smoothedRows = useMemo(() => [
     { label: 'Roll (display computed)', value: `${formatNumber(latest.rollSmoothedDeg, 2)} deg` },
@@ -1959,7 +1982,13 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
             <div className="serial-section-title">Live Plot</div>
             <div className="server-small-note">Recent shared packets from Admin Web Serial Bridge.</div>
           </div>
-          <Form.Check type="switch" id="show-server-live-plot" label="Show" checked={showLivePlot} onChange={(event) => setShowLivePlot(event.target.checked)} />
+          <Form.Check
+            type="switch"
+            id="show-server-live-plot"
+            label="Show"
+            checked={showLivePlot}
+            onChange={(event) => onLivePlotEnabledChange?.(event.target.checked)}
+          />
         </div>
         {showLivePlot && isActive ? (
           <Row className="g-2">
@@ -1969,9 +1998,9 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'roll', name: 'Roll', stroke: '#4dabf7' },
-                  { key: 'pitch', name: 'Pitch', stroke: '#ffd43b' },
-                  { key: 'yaw', name: 'Yaw', stroke: '#ff8787' },
+                  { key: 'roll', name: 'Roll', stroke: PLOT_COLORS.imu[0] },
+                  { key: 'pitch', name: 'Pitch', stroke: PLOT_COLORS.imu[1] },
+                  { key: 'yaw', name: 'Yaw', stroke: PLOT_COLORS.imu[2] },
                 ]}
               />
             </Col>
@@ -1981,33 +2010,33 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'encoderRoll', name: 'Raw Roll', stroke: '#63e6be' },
-                  { key: 'encoderPitch', name: 'Raw Pitch', stroke: '#ffd43b' },
-                  { key: 'encoderYaw', name: 'Raw Yaw', stroke: '#ff8787' },
-                  { key: 'encoderRollAligned', name: 'Aligned Roll', stroke: '#20c997' },
-                  { key: 'encoderPitchAligned', name: 'Aligned Pitch', stroke: '#fab005' },
-                  { key: 'encoderYawAligned', name: 'Aligned Yaw', stroke: '#fa5252' },
+                  { key: 'encoderRoll', name: 'Raw Roll', stroke: PLOT_COLORS.encoderRaw[0], defaultEnabled: false },
+                  { key: 'encoderPitch', name: 'Raw Pitch', stroke: PLOT_COLORS.encoderRaw[1], defaultEnabled: false },
+                  { key: 'encoderYaw', name: 'Raw Yaw', stroke: PLOT_COLORS.encoderRaw[2], defaultEnabled: false },
+                  { key: 'encoderRollAligned', name: 'Aligned Roll', stroke: PLOT_COLORS.encoderAligned[0] },
+                  { key: 'encoderPitchAligned', name: 'Aligned Pitch', stroke: PLOT_COLORS.encoderAligned[1] },
+                  { key: 'encoderYawAligned', name: 'Aligned Yaw', stroke: PLOT_COLORS.encoderAligned[2] },
                 ]}
               />
             </Col>
             <Col xs={12}>
               <LiveTelemetryChart
-                title="TEL / ENC Quaternion"
+                title="Quaternion Aligned Comparison"
                 data={livePlotData}
                 yLabel="q"
                 lines={[
-                  { key: 'satQ0', name: 'TEL q0', stroke: '#4dabf7' },
-                  { key: 'satQ1', name: 'TEL q1', stroke: '#74c0fc' },
-                  { key: 'satQ2', name: 'TEL q2', stroke: '#a5d8ff' },
-                  { key: 'satQ3', name: 'TEL q3', stroke: '#d0ebff' },
-                  { key: 'encQ0Raw', name: 'Raw ENC q0', stroke: '#63e6be' },
-                  { key: 'encQ1Raw', name: 'Raw ENC q1', stroke: '#96f2d7' },
-                  { key: 'encQ2Raw', name: 'Raw ENC q2', stroke: '#c3fae8' },
-                  { key: 'encQ3Raw', name: 'Raw ENC q3', stroke: '#e6fcf5' },
-                  { key: 'encQ0Aligned', name: 'Aligned ENC q0', stroke: '#ff8787' },
-                  { key: 'encQ1Aligned', name: 'Aligned ENC q1', stroke: '#ffa8a8' },
-                  { key: 'encQ2Aligned', name: 'Aligned ENC q2', stroke: '#ffc9c9' },
-                  { key: 'encQ3Aligned', name: 'Aligned ENC q3', stroke: '#ffe3e3' },
+                  { key: 'satQ0', name: 'TEL q0', stroke: PLOT_COLORS.telQuat[0] },
+                  { key: 'satQ1', name: 'TEL q1', stroke: PLOT_COLORS.telQuat[1] },
+                  { key: 'satQ2', name: 'TEL q2', stroke: PLOT_COLORS.telQuat[2] },
+                  { key: 'satQ3', name: 'TEL q3', stroke: PLOT_COLORS.telQuat[3] },
+                  { key: 'encQ0Raw', name: 'ENC q0 raw', stroke: PLOT_COLORS.encoderRaw[0], defaultEnabled: false },
+                  { key: 'encQ1Raw', name: 'ENC q1 raw', stroke: PLOT_COLORS.encoderRaw[1], defaultEnabled: false },
+                  { key: 'encQ2Raw', name: 'ENC q2 raw', stroke: PLOT_COLORS.encoderRaw[2], defaultEnabled: false },
+                  { key: 'encQ3Raw', name: 'ENC q3 raw', stroke: PLOT_COLORS.encoderRaw[3], defaultEnabled: false },
+                  { key: 'encQ0Aligned', name: 'ENC q0 aligned', stroke: PLOT_COLORS.encoderAligned[0] },
+                  { key: 'encQ1Aligned', name: 'ENC q1 aligned', stroke: PLOT_COLORS.encoderAligned[1] },
+                  { key: 'encQ2Aligned', name: 'ENC q2 aligned', stroke: PLOT_COLORS.encoderAligned[2] },
+                  { key: 'encQ3Aligned', name: 'ENC q3 aligned', stroke: PLOT_COLORS.encoderAligned[3] },
                 ]}
               />
             </Col>
@@ -2017,11 +2046,11 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="deg, ms, dot"
                 lines={[
-                  { key: 'thetaErr', name: 'theta_err_deg', stroke: '#ff8787' },
-                  { key: 'dotRaw', name: 'dot_raw', stroke: '#4dabf7' },
-                  { key: 'dotAbs', name: 'dot_abs', stroke: '#51cf66' },
-                  { key: 'encAgeMs', name: 'enc_age_ms', stroke: '#ffd43b' },
-                  { key: 'encValid', name: 'enc_valid', stroke: '#f783ac' },
+                  { key: 'thetaErr', name: 'theta_err_deg', stroke: PLOT_COLORS.error },
+                  { key: 'dotRaw', name: 'dot_raw', stroke: PLOT_COLORS.dotRaw },
+                  { key: 'dotAbs', name: 'dot_abs', stroke: PLOT_COLORS.dotAbs },
+                  { key: 'encAgeMs', name: 'enc_age_ms', stroke: PLOT_COLORS.age },
+                  { key: 'encValid', name: 'enc_valid', stroke: PLOT_COLORS.valid },
                 ]}
               />
             </Col>
@@ -2031,10 +2060,10 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="deg, rad/s"
                 lines={[
-                  { key: 'qerr', name: 'qerr', stroke: '#b197fc' },
-                  { key: 'wx', name: 'wx', stroke: '#4dabf7' },
-                  { key: 'wy', name: 'wy', stroke: '#51cf66' },
-                  { key: 'wz', name: 'wz', stroke: '#ff922b' },
+                  { key: 'qerr', name: 'qerr', stroke: PLOT_COLORS.dotRaw },
+                  { key: 'wx', name: 'wx', stroke: PLOT_COLORS.rate[0] },
+                  { key: 'wy', name: 'wy', stroke: PLOT_COLORS.rate[1] },
+                  { key: 'wz', name: 'wz', stroke: PLOT_COLORS.rate[2] },
                 ]}
               />
             </Col>
@@ -2044,12 +2073,12 @@ function MonitoringSection({ status, isActive = true, isAdmin = false }) {
                 data={livePlotData}
                 yLabel="RPM"
                 lines={[
-                  { key: 'RPM1', name: 'RPM1', stroke: '#4dabf7' },
-                  { key: 'RPMcmd1', name: 'RPMcmd1', stroke: '#74c0fc' },
-                  { key: 'RPM2', name: 'RPM2', stroke: '#51cf66' },
-                  { key: 'RPMcmd2', name: 'RPMcmd2', stroke: '#8ce99a' },
-                  { key: 'RPM3', name: 'RPM3', stroke: '#ff8787' },
-                  { key: 'RPMcmd3', name: 'RPMcmd3', stroke: '#ffa8a8' },
+                  { key: 'RPM1', name: 'RPM1', stroke: PLOT_COLORS.rpm[0] },
+                  { key: 'RPMcmd1', name: 'RPMcmd1', stroke: PLOT_COLORS.command[0] },
+                  { key: 'RPM2', name: 'RPM2', stroke: PLOT_COLORS.rpm[1] },
+                  { key: 'RPMcmd2', name: 'RPMcmd2', stroke: PLOT_COLORS.command[1] },
+                  { key: 'RPM3', name: 'RPM3', stroke: PLOT_COLORS.rpm[2] },
+                  { key: 'RPMcmd3', name: 'RPMcmd3', stroke: PLOT_COLORS.command[2] },
                 ]}
               />
             </Col>
@@ -2461,7 +2490,17 @@ function WebSerialBridgeDebugSection({ serverSync, status, isAdmin, webSerialCon
   );
 }
 
-export default function ServerPanel({ serverSync, localSerial = null, webSerialConnected = false, webSerialLatestPacketUpdatedAt = null, webSerialInputHz = null, onChangeDisplayName = null, isActive = true }) {
+export default function ServerPanel({
+  serverSync,
+  localSerial = null,
+  webSerialConnected = false,
+  webSerialLatestPacketUpdatedAt = null,
+  webSerialInputHz = null,
+  onChangeDisplayName = null,
+  isActive = true,
+  livePlotEnabled = false,
+  onLivePlotEnabledChange = null,
+}) {
   const safeServerSync = serverSync || {};
   const serial = safeServerSync.serverSerial || {};
   const status = serial.status || {};
@@ -2539,7 +2578,13 @@ export default function ServerPanel({ serverSync, localSerial = null, webSerialC
         localSerial={localSerial}
       />
 
-      <MonitoringSection status={status} isActive={isActive} isAdmin={isAdmin} />
+      <MonitoringSection
+        status={status}
+        isActive={isActive}
+        isAdmin={isAdmin}
+        livePlotEnabled={livePlotEnabled}
+        onLivePlotEnabledChange={onLivePlotEnabledChange}
+      />
     </div>
   );
 }

@@ -57,7 +57,7 @@ export const TUTORIAL_GUIDES = Object.freeze({
         image: image('data-view-selector.png'),
         body: Object.freeze([
           'Data View에서 원하는 데이터만 숫자로 관측할 수 있다.',
-          '기본 preset은 IMU vs Encoder Basic이다.',
+          '기본 preset은 Quaternion Aligned Comparison이다.',
           'IMU/TEL attitude와 Gimbal Encoder Reference를 좌우로 비교한다.',
         ]),
       }),
@@ -65,7 +65,7 @@ export const TUTORIAL_GUIDES = Object.freeze({
         title: 'Live Plot',
         image: image('live-plot.png'),
         body: Object.freeze([
-          'Live Plot은 실시간 그래프를 보여준다.',
+          'Live Plot은 필요할 때 켜서 실시간 그래프를 보여준다.',
           '필요하지 않을 때는 Show 토글을 꺼서 화면 부담을 줄인다.',
           '화면 느림이나 멈춤이 있으면 Live Plot을 먼저 꺼본다.',
         ]),
