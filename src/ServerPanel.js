@@ -54,18 +54,38 @@ const WHEEL_RPM_MIN = -WHEEL_RPM_COMMAND_MAX;
 const WHEEL_RPM_MAX = WHEEL_RPM_COMMAND_MAX;
 const WHEEL_RPM_STEP = 10;
 const PLOT_COLORS = Object.freeze({
-  imu: Object.freeze(['#6f99bd', '#b49a62', '#b87068']),
-  telQuat: Object.freeze(['#6f99bd', '#86a9c8', '#a5b9ca', '#c1cad1']),
-  encoderRaw: Object.freeze(['#858d96', '#9ba3ab', '#b1b8be', '#c7ccd1']),
-  encoderAligned: Object.freeze(['#4f7fb0', '#6691bc', '#7fa4c8', '#9ab7d3']),
-  error: '#bd6b5d',
+  rollColor: '#6f99bd',
+  pitchColor: '#b49a62',
+  yawColor: '#b87068',
+  q0Color: '#6f99bd',
+  q1Color: '#8b83b5',
+  q2Color: '#7b9b77',
+  q3Color: '#b47f52',
+  wheel1Color: '#6f99bd',
+  wheel2Color: '#7b9b77',
+  wheel3Color: '#b87068',
+  errorColor: '#bd6b5d',
+  rateXColor: '#6f99bd',
+  rateYColor: '#7b9b77',
+  rateZColor: '#b47f52',
   dotRaw: '#8c82aa',
   dotAbs: '#747f8b',
-  age: '#aa874f',
-  valid: '#6e9b74',
-  rate: Object.freeze(['#6f99bd', '#7b9b77', '#b47f52']),
-  rpm: Object.freeze(['#6f99bd', '#7b9b77', '#b87068']),
-  command: Object.freeze(['#96abc0', '#9db797', '#c79886']),
+  ageColor: '#aa874f',
+  validColor: '#6e9b74',
+  neutralTextColor: '#d2d8df',
+  mutedTextColor: '#98a2ad',
+  axisTextColor: '#adb5bd',
+  gridColor: '#2d3741',
+  tooltipBgColor: '#111418',
+  tooltipBorderColor: '#2a3138',
+});
+const PLOT_LINE_STYLES = Object.freeze({
+  tel: Object.freeze({ strokeWidth: 2, opacity: 0.95 }),
+  aligned: Object.freeze({ strokeWidth: 2.15, opacity: 0.95, dash: '7 4' }),
+  raw: Object.freeze({ strokeWidth: 1.6, opacity: 0.48, dash: '2 5' }),
+  measured: Object.freeze({ strokeWidth: 2, opacity: 0.95 }),
+  command: Object.freeze({ strokeWidth: 2, opacity: 0.9, dash: '7 4' }),
+  metric: Object.freeze({ strokeWidth: 1.85, opacity: 0.9 }),
 });
 const LOG_COLUMNS = DEFAULT_CSV_LOG_COLUMNS;
 const EMPTY_OBJECT = Object.freeze({});
@@ -513,8 +533,50 @@ function ValueGrid({ title, rows }) {
   );
 }
 
+function formatTooltipValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? '-');
+  if (Math.abs(number) >= 1000) return number.toFixed(0);
+  if (Math.abs(number) >= 10) return number.toFixed(2);
+  return number.toFixed(4);
+}
+
+function LiveChartTooltip({ active, payload, label }) {
+  const rows = Array.isArray(payload)
+    ? payload.filter((item) => item && item.value !== null && item.value !== undefined)
+    : [];
+  if (!active || rows.length === 0) return null;
+  return (
+    <div
+      style={{
+        background: PLOT_COLORS.tooltipBgColor,
+        border: `1px solid ${PLOT_COLORS.tooltipBorderColor}`,
+        borderRadius: 6,
+        padding: '8px 10px',
+        color: PLOT_COLORS.neutralTextColor,
+        fontSize: 12,
+      }}
+    >
+      <div style={{ color: PLOT_COLORS.mutedTextColor, marginBottom: 4 }}>sample {label}</div>
+      {rows.map((item) => (
+        <div key={`${item.dataKey}-${item.name}`} style={{ color: item.color || PLOT_COLORS.neutralTextColor }}>
+          {item.name || item.dataKey}: {formatTooltipValue(item.value)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function wheelColorForKey(key) {
+  if (String(key).includes('1')) return PLOT_COLORS.wheel1Color;
+  if (String(key).includes('2')) return PLOT_COLORS.wheel2Color;
+  if (String(key).includes('3')) return PLOT_COLORS.wheel3Color;
+  return PLOT_COLORS.neutralTextColor;
+}
+
 function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
   const hasData = Array.isArray(data) && data.some((row) => row[rpmKey] != null || row[commandKey] != null);
+  const wheelColor = wheelColorForKey(rpmKey);
   return (
     <div className="serial-value-card rounded p-2">
       <div className="serial-section-title mb-2">{title}</div>
@@ -522,16 +584,16 @@ function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
         {hasData ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
-              <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={44} />
-              <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
-              <Line type="monotone" dataKey={rpmKey} stroke={PLOT_COLORS.rpm[0]} strokeWidth={2} dot={false} isAnimationActive={false} name={rpmKey} />
-              <Line type="monotone" dataKey={commandKey} stroke={PLOT_COLORS.command[0]} strokeWidth={2} dot={false} isAnimationActive={false} name={commandKey} />
+              <CartesianGrid stroke={PLOT_COLORS.gridColor} strokeDasharray="3 3" />
+              <XAxis dataKey="sample" tick={{ fill: PLOT_COLORS.axisTextColor, fontSize: 11 }} />
+              <YAxis tick={{ fill: PLOT_COLORS.axisTextColor, fontSize: 11 }} width={44} />
+              <Tooltip content={<LiveChartTooltip />} />
+              <Line type="monotone" dataKey={rpmKey} stroke={wheelColor} strokeWidth={PLOT_LINE_STYLES.measured.strokeWidth} strokeOpacity={PLOT_LINE_STYLES.measured.opacity} dot={false} isAnimationActive={false} name={rpmKey} />
+              <Line type="monotone" dataKey={commandKey} stroke={wheelColor} strokeWidth={PLOT_LINE_STYLES.command.strokeWidth} strokeOpacity={PLOT_LINE_STYLES.command.opacity} strokeDasharray={PLOT_LINE_STYLES.command.dash} dot={false} isAnimationActive={false} name={commandKey} />
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="server-small-note d-flex align-items-center h-100">No plot data yet</div>
+          <div className="server-small-note d-flex align-items-center h-100" style={{ color: PLOT_COLORS.mutedTextColor }}>No plot data yet</div>
         )}
       </div>
     </div>
@@ -541,6 +603,7 @@ function WheelSpeedChart({ title, data, rpmKey, commandKey }) {
 function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
   const chartIdPrefix = String(title || 'chart').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
   const [enabledKeys, setEnabledKeys] = useState(() => new Set(lines.filter((line) => line.defaultEnabled !== false).map((line) => line.key)));
+  const lineColorByKey = useMemo(() => new Map(lines.map((line) => [line.key, line.stroke])), [lines]);
   const activeLines = lines.filter((line) => enabledKeys.has(line.key));
   const denseLineOpacity = activeLines.length > 6 ? 0.78 : 0.92;
   const hasData = Array.isArray(data) && data.some((row) =>
@@ -579,11 +642,18 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
         {hasData && activeLines.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke="#26313a" strokeDasharray="3 3" />
-              <XAxis dataKey="sample" tick={{ fill: '#adb5bd', fontSize: 11 }} interval="preserveStartEnd" />
-              <YAxis tick={{ fill: '#adb5bd', fontSize: 11 }} width={48} />
-              <Tooltip contentStyle={{ background: '#111418', border: '1px solid #2a3138', color: '#f8fafc' }} />
-              <Legend wrapperStyle={{ color: '#dbe4ea', fontSize: 12 }} />
+              <CartesianGrid stroke={PLOT_COLORS.gridColor} strokeDasharray="3 3" />
+              <XAxis dataKey="sample" tick={{ fill: PLOT_COLORS.axisTextColor, fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: PLOT_COLORS.axisTextColor, fontSize: 11 }} width={48} />
+              <Tooltip content={<LiveChartTooltip />} />
+              <Legend
+                wrapperStyle={{ color: PLOT_COLORS.neutralTextColor, fontSize: 12 }}
+                formatter={(value, entry) => (
+                  <span style={{ color: entry?.color || lineColorByKey.get(entry?.dataKey) || PLOT_COLORS.neutralTextColor }}>
+                    {value}
+                  </span>
+                )}
+              />
               {activeLines.map((line) => (
                 <Line
                   key={line.key}
@@ -592,6 +662,7 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
                   stroke={line.stroke}
                   strokeWidth={line.strokeWidth || 1.8}
                   strokeOpacity={line.opacity ?? denseLineOpacity}
+                  strokeDasharray={line.dash}
                   dot={false}
                   isAnimationActive={false}
                   connectNulls={false}
@@ -601,7 +672,7 @@ function LiveTelemetryChart({ title, data, lines, yLabel = '' }) {
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="server-small-note d-flex align-items-center h-100">
+          <div className="server-small-note d-flex align-items-center h-100" style={{ color: PLOT_COLORS.mutedTextColor }}>
             No plot data yet. Start Admin Web Serial Bridge sharing and wait for live packets.
           </div>
         )}
@@ -1998,9 +2069,9 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'roll', name: 'Roll', stroke: PLOT_COLORS.imu[0] },
-                  { key: 'pitch', name: 'Pitch', stroke: PLOT_COLORS.imu[1] },
-                  { key: 'yaw', name: 'Yaw', stroke: PLOT_COLORS.imu[2] },
+                  { key: 'roll', name: 'TEL Roll', stroke: PLOT_COLORS.rollColor, ...PLOT_LINE_STYLES.tel },
+                  { key: 'pitch', name: 'TEL Pitch', stroke: PLOT_COLORS.pitchColor, ...PLOT_LINE_STYLES.tel },
+                  { key: 'yaw', name: 'TEL Yaw', stroke: PLOT_COLORS.yawColor, ...PLOT_LINE_STYLES.tel },
                 ]}
               />
             </Col>
@@ -2010,12 +2081,12 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="deg"
                 lines={[
-                  { key: 'encoderRoll', name: 'Raw Roll', stroke: PLOT_COLORS.encoderRaw[0], defaultEnabled: false },
-                  { key: 'encoderPitch', name: 'Raw Pitch', stroke: PLOT_COLORS.encoderRaw[1], defaultEnabled: false },
-                  { key: 'encoderYaw', name: 'Raw Yaw', stroke: PLOT_COLORS.encoderRaw[2], defaultEnabled: false },
-                  { key: 'encoderRollAligned', name: 'Aligned Roll', stroke: PLOT_COLORS.encoderAligned[0] },
-                  { key: 'encoderPitchAligned', name: 'Aligned Pitch', stroke: PLOT_COLORS.encoderAligned[1] },
-                  { key: 'encoderYawAligned', name: 'Aligned Yaw', stroke: PLOT_COLORS.encoderAligned[2] },
+                  { key: 'encoderRoll', name: 'Raw Roll', stroke: PLOT_COLORS.rollColor, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encoderPitch', name: 'Raw Pitch', stroke: PLOT_COLORS.pitchColor, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encoderYaw', name: 'Raw Yaw', stroke: PLOT_COLORS.yawColor, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encoderRollAligned', name: 'Aligned Roll', stroke: PLOT_COLORS.rollColor, ...PLOT_LINE_STYLES.aligned },
+                  { key: 'encoderPitchAligned', name: 'Aligned Pitch', stroke: PLOT_COLORS.pitchColor, ...PLOT_LINE_STYLES.aligned },
+                  { key: 'encoderYawAligned', name: 'Aligned Yaw', stroke: PLOT_COLORS.yawColor, ...PLOT_LINE_STYLES.aligned },
                 ]}
               />
             </Col>
@@ -2025,18 +2096,18 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="q"
                 lines={[
-                  { key: 'satQ0', name: 'TEL q0', stroke: PLOT_COLORS.telQuat[0] },
-                  { key: 'satQ1', name: 'TEL q1', stroke: PLOT_COLORS.telQuat[1] },
-                  { key: 'satQ2', name: 'TEL q2', stroke: PLOT_COLORS.telQuat[2] },
-                  { key: 'satQ3', name: 'TEL q3', stroke: PLOT_COLORS.telQuat[3] },
-                  { key: 'encQ0Raw', name: 'ENC q0 raw', stroke: PLOT_COLORS.encoderRaw[0], defaultEnabled: false },
-                  { key: 'encQ1Raw', name: 'ENC q1 raw', stroke: PLOT_COLORS.encoderRaw[1], defaultEnabled: false },
-                  { key: 'encQ2Raw', name: 'ENC q2 raw', stroke: PLOT_COLORS.encoderRaw[2], defaultEnabled: false },
-                  { key: 'encQ3Raw', name: 'ENC q3 raw', stroke: PLOT_COLORS.encoderRaw[3], defaultEnabled: false },
-                  { key: 'encQ0Aligned', name: 'ENC q0 aligned', stroke: PLOT_COLORS.encoderAligned[0] },
-                  { key: 'encQ1Aligned', name: 'ENC q1 aligned', stroke: PLOT_COLORS.encoderAligned[1] },
-                  { key: 'encQ2Aligned', name: 'ENC q2 aligned', stroke: PLOT_COLORS.encoderAligned[2] },
-                  { key: 'encQ3Aligned', name: 'ENC q3 aligned', stroke: PLOT_COLORS.encoderAligned[3] },
+                  { key: 'satQ0', name: 'TEL q0', stroke: PLOT_COLORS.q0Color, ...PLOT_LINE_STYLES.tel },
+                  { key: 'satQ1', name: 'TEL q1', stroke: PLOT_COLORS.q1Color, ...PLOT_LINE_STYLES.tel },
+                  { key: 'satQ2', name: 'TEL q2', stroke: PLOT_COLORS.q2Color, ...PLOT_LINE_STYLES.tel },
+                  { key: 'satQ3', name: 'TEL q3', stroke: PLOT_COLORS.q3Color, ...PLOT_LINE_STYLES.tel },
+                  { key: 'encQ0Raw', name: 'ENC q0 raw', stroke: PLOT_COLORS.q0Color, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encQ1Raw', name: 'ENC q1 raw', stroke: PLOT_COLORS.q1Color, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encQ2Raw', name: 'ENC q2 raw', stroke: PLOT_COLORS.q2Color, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encQ3Raw', name: 'ENC q3 raw', stroke: PLOT_COLORS.q3Color, defaultEnabled: false, ...PLOT_LINE_STYLES.raw },
+                  { key: 'encQ0Aligned', name: 'ENC q0 aligned', stroke: PLOT_COLORS.q0Color, ...PLOT_LINE_STYLES.aligned },
+                  { key: 'encQ1Aligned', name: 'ENC q1 aligned', stroke: PLOT_COLORS.q1Color, ...PLOT_LINE_STYLES.aligned },
+                  { key: 'encQ2Aligned', name: 'ENC q2 aligned', stroke: PLOT_COLORS.q2Color, ...PLOT_LINE_STYLES.aligned },
+                  { key: 'encQ3Aligned', name: 'ENC q3 aligned', stroke: PLOT_COLORS.q3Color, ...PLOT_LINE_STYLES.aligned },
                 ]}
               />
             </Col>
@@ -2046,11 +2117,11 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="deg, ms, dot"
                 lines={[
-                  { key: 'thetaErr', name: 'theta_err_deg', stroke: PLOT_COLORS.error },
-                  { key: 'dotRaw', name: 'dot_raw', stroke: PLOT_COLORS.dotRaw },
-                  { key: 'dotAbs', name: 'dot_abs', stroke: PLOT_COLORS.dotAbs },
-                  { key: 'encAgeMs', name: 'enc_age_ms', stroke: PLOT_COLORS.age },
-                  { key: 'encValid', name: 'enc_valid', stroke: PLOT_COLORS.valid },
+                  { key: 'thetaErr', name: 'theta_err_deg', stroke: PLOT_COLORS.errorColor, ...PLOT_LINE_STYLES.metric },
+                  { key: 'dotRaw', name: 'dot_raw', stroke: PLOT_COLORS.dotRaw, ...PLOT_LINE_STYLES.metric },
+                  { key: 'dotAbs', name: 'dot_abs', stroke: PLOT_COLORS.dotAbs, ...PLOT_LINE_STYLES.metric },
+                  { key: 'encAgeMs', name: 'enc_age_ms', stroke: PLOT_COLORS.ageColor, ...PLOT_LINE_STYLES.metric },
+                  { key: 'encValid', name: 'enc_valid', stroke: PLOT_COLORS.validColor, ...PLOT_LINE_STYLES.metric },
                 ]}
               />
             </Col>
@@ -2060,10 +2131,10 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="deg, rad/s"
                 lines={[
-                  { key: 'qerr', name: 'qerr', stroke: PLOT_COLORS.dotRaw },
-                  { key: 'wx', name: 'wx', stroke: PLOT_COLORS.rate[0] },
-                  { key: 'wy', name: 'wy', stroke: PLOT_COLORS.rate[1] },
-                  { key: 'wz', name: 'wz', stroke: PLOT_COLORS.rate[2] },
+                  { key: 'qerr', name: 'qerr', stroke: PLOT_COLORS.errorColor, ...PLOT_LINE_STYLES.metric },
+                  { key: 'wx', name: 'wx', stroke: PLOT_COLORS.rateXColor, ...PLOT_LINE_STYLES.metric },
+                  { key: 'wy', name: 'wy', stroke: PLOT_COLORS.rateYColor, ...PLOT_LINE_STYLES.metric },
+                  { key: 'wz', name: 'wz', stroke: PLOT_COLORS.rateZColor, ...PLOT_LINE_STYLES.metric },
                 ]}
               />
             </Col>
@@ -2073,12 +2144,12 @@ function MonitoringSection({
                 data={livePlotData}
                 yLabel="RPM"
                 lines={[
-                  { key: 'RPM1', name: 'RPM1', stroke: PLOT_COLORS.rpm[0] },
-                  { key: 'RPMcmd1', name: 'RPMcmd1', stroke: PLOT_COLORS.command[0] },
-                  { key: 'RPM2', name: 'RPM2', stroke: PLOT_COLORS.rpm[1] },
-                  { key: 'RPMcmd2', name: 'RPMcmd2', stroke: PLOT_COLORS.command[1] },
-                  { key: 'RPM3', name: 'RPM3', stroke: PLOT_COLORS.rpm[2] },
-                  { key: 'RPMcmd3', name: 'RPMcmd3', stroke: PLOT_COLORS.command[2] },
+                  { key: 'RPM1', name: 'RPM1', stroke: PLOT_COLORS.wheel1Color, ...PLOT_LINE_STYLES.measured },
+                  { key: 'RPMcmd1', name: 'RPMcmd1', stroke: PLOT_COLORS.wheel1Color, ...PLOT_LINE_STYLES.command },
+                  { key: 'RPM2', name: 'RPM2', stroke: PLOT_COLORS.wheel2Color, ...PLOT_LINE_STYLES.measured },
+                  { key: 'RPMcmd2', name: 'RPMcmd2', stroke: PLOT_COLORS.wheel2Color, ...PLOT_LINE_STYLES.command },
+                  { key: 'RPM3', name: 'RPM3', stroke: PLOT_COLORS.wheel3Color, ...PLOT_LINE_STYLES.measured },
+                  { key: 'RPMcmd3', name: 'RPMcmd3', stroke: PLOT_COLORS.wheel3Color, ...PLOT_LINE_STYLES.command },
                 ]}
               />
             </Col>
