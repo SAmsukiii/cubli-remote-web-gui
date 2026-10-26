@@ -1,0 +1,32 @@
+import React from 'react';
+import {render,screen,fireEvent,within} from '@testing-library/react';
+import '@testing-library/jest-dom';
+import MassPropertiesPanel from './MassPropertiesPanel';
+jest.mock('./massProperties/workerFactory',()=>({createAnalysisWorker:jest.fn()}));
+beforeEach(()=>localStorage.clear());
+test('offline CG entry computes, invalid edits cannot save a stale result',()=>{
+  render(<MassPropertiesPanel/>);
+  const fields=['P1 증가하중 R [g]','P2 증가하중 R [g]','P3 증가하중 R [g]'];
+  fields.forEach((label,i)=>fireEvent.change(screen.getByLabelText(label),{target:{value:[248,248,496][i]}}));
+  fireEvent.click(screen.getByRole('button',{name:'CG 계산'}));
+  expect(screen.getByTestId('cg-result')).toHaveTextContent('dx 0 mm · dy 0 mm');
+  fireEvent.click(screen.getByRole('button',{name:'CG 기록 저장'}));
+  expect(JSON.parse(localStorage.getItem('cubli.mass-properties.v3'))[0].resultSI.massKg).toBe(0.992);
+  fireEvent.change(screen.getByLabelText(fields[0]),{target:{value:''}});
+  expect(screen.getByRole('button',{name:'CG 기록 저장'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'CG 계산'}));
+  expect(screen.queryByTestId('cg-result')).not.toBeInTheDocument();
+});
+test('analysis UI is available without granting control or making network calls',()=>{
+  const fetchMock=jest.fn();global.fetch=fetchMock;
+  render(<MassPropertiesPanel/>);
+  fireEvent.click(screen.getByRole('button',{name:'관성·마찰 식별'}));
+  expect(screen.getByLabelText('낙하추 질량 [kg]')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'합성 검증 데이터 불러오기'}));
+  expect(screen.getByText(/합성_200Hz_검증.csv/)).toBeVisible();
+  expect(screen.getByRole('button',{name:'관성·마찰 동시 피팅'})).toBeDisabled();
+  expect(screen.getByRole('checkbox',{name:/선택 축의 실제 관절 원자료/})).not.toBeChecked();
+  expect(fetchMock).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'기록·비교'}));
+  expect(within(screen.getByRole('table')).queryAllByRole('row')).toHaveLength(1);
+});

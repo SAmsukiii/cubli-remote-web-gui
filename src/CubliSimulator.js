@@ -10,6 +10,7 @@ import useEsp32Ble from './useEsp32Ble';
 import SerialPanel from './SerialPanel';
 import BlePanel from './BlePanel';
 import ServerPanel from './ServerPanel';
+import MassPropertiesPanel from './MassPropertiesPanel';
 import useServerSync from './useServerSync';
 import TutorialModal from './TutorialModal';
 import {
@@ -2781,6 +2782,9 @@ export default function CubliSimulator() {
                     livePlotEnabled={serverLivePlotEnabled}
                     onLivePlotEnabledChange={setServerLivePlotEnabled}
                   />
+                </Tab>
+                <Tab eventKey="mass" title="질량특성" className="pt-2" mountOnEnter>
+                  <MassPropertiesPanel />
                 </Tab>
               </Tabs>
 
