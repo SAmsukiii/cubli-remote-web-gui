@@ -23,11 +23,43 @@ export function parseCsv(text) {
   if(new Set(headers).size!==headers.length)throw new Error('중복 CSV 열 이름을 확인하세요.');
   return {headers,rows:rows.map((r,i)=>{if(r.length!==headers.length)throw new Error(`CSV ${i+2}행 열 개수가 다릅니다.`);return Object.fromEntries(headers.map((h,j)=>[h,r[j]]));})};
 }
-export function suggestColumns(headers,axis='Yaw') {
-  const a={Roll:'x',Pitch:'y',Yaw:'z'}[axis];
-  return {timeColumn:[`enc_timer_${a}`,'remote_timestamp_us','remote_timestamp','time','t','plot_time_ms'].find(h=>headers.includes(h))||headers[0],
-    valueColumn:[`enc_${a}_deg`,'angle','theta','omega'].find(h=>headers.includes(h))||'',
+export function csvTimeUnit(column) {
+  return column.toLowerCase().match(/_(ms|us|s)$/)?.[1] ?? '';
+}
+
+export function csvValueFormat(column) {
+  const name = column.toLowerCase();
+  const isVelocity = /^(?:omega|angular_velocity|velocity)(?:_|$)/.test(name);
+  return {
+    valueKind: isVelocity ? 'velocity' : 'angle',
+    angleUnit: name.match(/_(deg|rad|count)(?:_s|_per_s)?$/)?.[1] ?? '',
   };
+}
+
+export function suggestColumns({ headers, rows }, axis) {
+  const letter = { Roll: 'x', Pitch: 'y', Yaw: 'z' }[axis];
+  const encoderRows = rows.filter(row => !row.sample_type || row.sample_type.toUpperCase() === 'ENC');
+  const findHeaders = pattern => headers.filter(header => pattern.test(header.toLowerCase()));
+  const hasNumericValue = (row, column) => row[column]?.trim() && Number.isFinite(Number(row[column]));
+  const values = [`enc_${letter}_deg`, ...findHeaders(/^(?:angle|theta|omega|angular_velocity|velocity)(?:_|$)/)];
+  const valueColumn = values.find(column => encoderRows.some(row => hasNumericValue(row, column))) ?? '';
+  const times = [
+    `enc_timer_${letter}`,
+    'remote_timestamp_us',
+    ...findHeaders(/^(?:time|t|timestamp)(?:_(?:s|ms|us))?$/),
+    'remote_timestamp', 'plot_time_ms', 'logged_at_ms',
+  ];
+  const relevantRows = valueColumn ? encoderRows.filter(row => hasNumericValue(row, valueColumn)) : encoderRows;
+  const timeColumn = times.find(column => {
+    let first;
+    return relevantRows.some(row => {
+      if (!hasNumericValue(row, column)) return false;
+      const value = Number(row[column]);
+      if (first === undefined) first = value;
+      return first !== value;
+    });
+  }) ?? '';
+  return { timeColumn, valueColumn, timeUnit: csvTimeUnit(timeColumn), ...csvValueFormat(valueColumn) };
 }
 function solve(matrix,rhs) {
   const n=rhs.length,a=matrix.map((r,i)=>[...r,rhs[i]]);
@@ -102,7 +134,7 @@ export function preprocess(rows,cfg) {
   if(diagnostics.hz<150)warnings.push(`실제 유효 취득률 ${diagnostics.hz.toFixed(1)}Hz. PPT 약 200Hz보다 낮아 분해능·시간상수·대역 검토 필요.`);
   if(diagnostics.gaps.length)warnings.push(`긴 결손 ${diagnostics.gaps.length}개. 해당 구간과 평활 창을 보간하지 않고 제외했습니다.`);
   if(diagnostics.missing||diagnostics.duplicates)warnings.push(`빈 표본 ${diagnostics.missing}, 중복 timestamp ${diagnostics.duplicates}개 제외. 원 CSV는 보존됩니다.`);
-  if(cfg.timeColumn==='plot_time_ms')warnings.push('브라우저 plot 시간축입니다. 장치 취득시각과 실제 취득률을 별도 검증하세요.');
+  if(['plot_time_ms','logged_at_ms'].includes(cfg.timeColumn))warnings.push('브라우저 기록 시간축입니다. 장치 취득시각과 실제 취득률을 별도 검증하세요.');
   if(!rows.some(r=>r.publisher_id||r.publisherId))warnings.push('CSV에 publisher ID가 없습니다. source 변화만 검사하며 같은 장치·publisher의 연속 실험인지 직접 확인해야 합니다.');
   return {points:processed,diagnostics,warnings,peakTime:peak.t};
 }

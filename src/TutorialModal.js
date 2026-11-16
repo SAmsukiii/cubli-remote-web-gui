@@ -1,129 +1,80 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button, ButtonGroup, Modal } from 'react-bootstrap';
-import {
-  GUIDE_MODES,
-  TUTORIAL_GUIDES,
-  TUTORIAL_VERSION,
-  normalizeTutorialGuideMode,
-} from './tutorialSteps';
+import { GUIDE_MODES, TUTORIAL_GUIDES, normalizeTutorialGuideMode } from './tutorialSteps';
 
-export default function TutorialModal({
-  show,
-  guideMode,
-  onGuideModeChange,
-  onHide,
-  onDontShowAgain,
-}) {
-  const activeGuideMode = normalizeTutorialGuideMode(guideMode);
-  const activeGuide = TUTORIAL_GUIDES[activeGuideMode] || TUTORIAL_GUIDES.viewer;
+export default function TutorialModal({ show, guideMode, onGuideModeChange, onHide, onDontShowAgain }) {
+  const mode = normalizeTutorialGuideMode(guideMode);
+  const sections = TUTORIAL_GUIDES[mode];
+  const steps = sections.flatMap(section => section.steps);
   const [stepIndex, setStepIndex] = useState(0);
+  const [captureIndex, setCaptureIndex] = useState(0);
   const [imageExpanded, setImageExpanded] = useState(false);
-  const steps = activeGuide.steps || [];
-  const currentStep = steps[Math.min(stepIndex, steps.length - 1)] || steps[0];
+  const step = steps[stepIndex] ?? steps[0];
+  const capture = step.captures[captureIndex] ?? step.captures[0];
 
   useEffect(() => {
-    if (!show) return;
-    setStepIndex(0);
-    setImageExpanded(false);
-  }, [activeGuideMode, show]);
+    if (show) {
+      setStepIndex(0);
+      setCaptureIndex(0);
+      setImageExpanded(false);
+    }
+  }, [mode, show]);
 
-  const stepCountText = useMemo(() => (
-    steps.length > 0 ? `${stepIndex + 1} / ${steps.length}` : '0 / 0'
-  ), [stepIndex, steps.length]);
-
-  const selectGuide = (mode) => {
-    const nextMode = normalizeTutorialGuideMode(mode);
-    onGuideModeChange?.(nextMode);
-    setStepIndex(0);
+  function selectStep(index) {
+    setStepIndex(index);
+    setCaptureIndex(0);
     setImageExpanded(false);
-  };
-
-  const goPrevious = () => {
-    setStepIndex((index) => Math.max(0, index - 1));
-    setImageExpanded(false);
-  };
-
-  const goNext = () => {
-    setStepIndex((index) => Math.min(steps.length - 1, index + 1));
-    setImageExpanded(false);
-  };
+  }
 
   return (
-    <Modal show={show} onHide={onHide} centered size="xl" contentClassName="tutorial-modal">
-      <Modal.Header closeButton className="tutorial-modal-header">
-        <div>
-          <Modal.Title className="h5 fw-bold">Cubli Web GUI Tutorial</Modal.Title>
-          <div className="tutorial-version">Version {TUTORIAL_VERSION}</div>
-        </div>
+    <Modal show={show} onHide={onHide} centered size="xl" scrollable contentClassName="tutorial-modal" aria-labelledby="cubli-tutorial-title">
+      <Modal.Header closeButton closeLabel="닫기" className="tutorial-modal-header">
+        <Modal.Title className="h5 fw-bold" id="cubli-tutorial-title">Cubli 사용법</Modal.Title>
       </Modal.Header>
       <Modal.Body className="tutorial-modal-body">
         <div className="tutorial-guide-switch">
-          <ButtonGroup size="sm" aria-label="Tutorial guide mode">
-            <Button
-              type="button"
-              variant={activeGuideMode === GUIDE_MODES.viewer ? 'info' : 'outline-info'}
-              onClick={() => selectGuide(GUIDE_MODES.viewer)}
-            >
-              Viewer Guide
-            </Button>
-            <Button
-              type="button"
-              variant={activeGuideMode === GUIDE_MODES.admin ? 'info' : 'outline-info'}
-              onClick={() => selectGuide(GUIDE_MODES.admin)}
-            >
-              Admin Guide
-            </Button>
+          <ButtonGroup size="sm" aria-label="사용자 유형">
+            <Button variant={mode === GUIDE_MODES.viewer ? 'info' : 'outline-info'} aria-pressed={mode === GUIDE_MODES.viewer}
+              onClick={() => onGuideModeChange?.(GUIDE_MODES.viewer)}>Viewer</Button>
+            <Button variant={mode === GUIDE_MODES.admin ? 'info' : 'outline-info'} aria-pressed={mode === GUIDE_MODES.admin}
+              onClick={() => onGuideModeChange?.(GUIDE_MODES.admin)}>관리자</Button>
           </ButtonGroup>
-          <div className="tutorial-guide-summary">{activeGuide.summary}</div>
         </div>
-
-        {currentStep ? (
-          <>
-            <div className="tutorial-progress-row">
-              <div>
-                <div className="tutorial-step-index">Step {stepIndex + 1}</div>
-                <div className="tutorial-step-title">{currentStep.title}</div>
-              </div>
-              <div className="tutorial-step-count">{stepCountText}</div>
-            </div>
-
-            <div className={`tutorial-current-step ${imageExpanded ? 'is-expanded' : ''}`}>
-              <button
-                type="button"
-                className="tutorial-image-shell"
-                onClick={() => setImageExpanded((expanded) => !expanded)}
-                aria-label="Toggle larger tutorial image preview"
-              >
-                <img src={currentStep.image} alt={`${currentStep.title} screenshot`} />
-              </button>
-              <div className="tutorial-copy">
-                <ul>
-                  {currentStep.body.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-                <div className="tutorial-note">
-                  이미지를 클릭하면 미리보기 크기가 바뀐다.
-                </div>
-              </div>
-            </div>
-          </>
-        ) : null}
+        <div className="tutorial-layout">
+          <nav className="tutorial-topics" aria-label="기능별 사용법">
+            {sections.map(section => <div key={section.title}>
+              <h2>{section.title}</h2>
+              {section.steps.map(item => {
+                const index = steps.indexOf(item);
+                return <button type="button" key={item.title} aria-current={step === item ? 'step' : undefined}
+                  onClick={() => selectStep(index)}>{item.title}</button>;
+              })}
+            </div>)}
+          </nav>
+          <section className="tutorial-lesson" aria-labelledby="cubli-tutorial-step">
+            <h2 id="cubli-tutorial-step" className="tutorial-step-title" aria-live="polite">{step.title}</h2>
+            <ul className="tutorial-copy">{step.body.map(line => <li key={line}>{line}</li>)}</ul>
+            {step.captures.length > 1 && <div className="tutorial-captures" role="group" aria-label="이 기능의 캡처">
+              {step.captures.map((item, index) => <Button type="button" key={item.image} size="sm" aria-pressed={capture === item}
+                variant={capture === item ? 'info' : 'outline-secondary'} onClick={() => {
+                  setCaptureIndex(index);
+                  setImageExpanded(false);
+                }}>{item.label}</Button>)}
+            </div>}
+            <button type="button" className={`tutorial-image-shell ${imageExpanded ? 'is-expanded' : ''}`}
+              aria-label={imageExpanded ? '캡처 축소' : '캡처 확대'} aria-pressed={imageExpanded}
+              onClick={() => setImageExpanded(expanded => !expanded)}>
+              <img src={capture.image} alt={`${capture.label} 화면`}/>
+            </button>
+          </section>
+        </div>
       </Modal.Body>
       <Modal.Footer className="tutorial-modal-footer">
-        <Button variant="outline-warning" size="sm" onClick={onDontShowAgain}>
-          다시 보지 않기
-        </Button>
+        <Button variant="outline-secondary" size="sm" onClick={onDontShowAgain}>자동으로 열지 않기</Button>
         <div className="tutorial-footer-spacer" />
-        <Button variant="outline-light" size="sm" onClick={goPrevious} disabled={stepIndex <= 0}>
-          Previous
-        </Button>
-        <Button variant="outline-light" size="sm" onClick={goNext} disabled={stepIndex >= steps.length - 1}>
-          Next
-        </Button>
-        <Button variant="info" size="sm" onClick={onHide}>
-          확인
-        </Button>
+        <Button variant="outline-light" size="sm" onClick={() => selectStep(stepIndex - 1)} disabled={stepIndex === 0}>이전</Button>
+        <Button variant="outline-light" size="sm" onClick={() => selectStep(stepIndex + 1)} disabled={stepIndex >= steps.length - 1}>다음</Button>
+        <Button variant="info" size="sm" onClick={onHide}>확인</Button>
       </Modal.Footer>
     </Modal>
   );

@@ -1,17 +1,31 @@
 .mass-panel { color:#dbe5f1; font-size:13px; text-transform:none; }
-.mass-panel .mass-subnav { display:flex; margin-bottom:16px; }
+.mass-panel .mass-subnav { display:flex; margin-bottom:12px; }
 .mass-panel .mass-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; }
 .mass-panel .mass-three { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .mass-panel .mass-field { display:flex; flex-direction:column; gap:5px; margin:5px 0 10px; min-width:0; font-weight:400; }
 .mass-panel .mass-field>span { font-size:11px; color:#cbd5e1; }
 .mass-panel .form-control,.mass-panel .form-select { background-color:#111827; color:#f1f5f9; border-color:#475569; min-width:0; }
 .mass-panel .form-control:focus,.mass-panel .form-select:focus { border-color:#38bdf8; }
-.mass-panel .mass-actions { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 16px; }
+.mass-panel .mass-actions { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
 .mass-panel details { border-top:1px solid #334155; padding:12px 0; }
 .mass-panel summary { cursor:pointer; font-weight:600; margin-bottom:10px; }
 .mass-panel .mass-muted { color:#a9bbcf; font-size:12px; line-height:1.65; }
 .mass-panel .mass-result { padding:12px; margin:12px 0; background:#102234; border:1px solid #28556f; border-radius:6px; line-height:1.7; overflow-wrap:anywhere; }
 .mass-panel .mass-result>strong { color:#7dd3fc; font-size:15px; }
+.mass-panel .mass-center { border-top:1px solid #334155; margin-top:6px; padding:12px 0; }
+.mass-panel .mass-center h3 { font-size:14px; font-weight:600; margin:0 0 4px; }
+.mass-panel .mass-scale-table { margin-bottom:8px; }
+.mass-panel .mass-scale-table td,.mass-panel .mass-scale-table th:not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
+.mass-panel .mass-scale-table tbody th { font-weight:500; }
+.mass-panel .mass-inputs { border:0; margin:0; padding:0; }
+.mass-panel .mass-unit-field { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px; }
+.mass-panel .mass-unit-field .mass-field:last-child>span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+.mass-panel .mass-unit-field select { margin-top:auto; padding-right:22px; background-position:right 5px center; background-size:11px; }
+.mass-panel .mass-file { display:flex; align-items:center; gap:8px; margin:6px 0 10px; min-width:0; cursor:pointer; }
+.mass-panel .mass-file .btn { flex:none; }
+.mass-panel .mass-file:focus-within .btn { outline:2px solid #38bdf8; outline-offset:2px; }
+.mass-panel details:not([open])>summary { margin-bottom:0; }
+.mass-panel .mass-advanced details { padding:8px 0; }
 .mass-panel p { margin-bottom:10px; line-height:1.65; }
 .mass-panel .mass-diagram { display:block; width:100%; max-width:340px; margin:8px auto; background:#0f172a; border-radius:6px; }
 .mass-panel .mass-diagram text { fill:#dbeafe; font-size:10px; }

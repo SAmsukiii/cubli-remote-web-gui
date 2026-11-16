@@ -1,8 +1,8 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {Alert,Button,ButtonGroup,Form,ProgressBar,Table} from 'react-bootstrap';
 import {LineChart,Line,XAxis,YAxis,Tooltip,CartesianGrid,ResponsiveContainer,ReferenceArea,ReferenceLine} from 'recharts';
-import {calculateCg,defaultCg,plateMassG,number} from './massProperties/cg';
-import {defaultIdentification,parseCsv,suggestColumns,syntheticCsv} from './massProperties/identification';
+import {calculateCg,defaultCg,expectedCenterReadings,plateMassG,number,unitFactor} from './massProperties/cg';
+import {defaultIdentification,parseCsv,suggestColumns,csvTimeUnit,csvValueFormat,syntheticCsv} from './massProperties/identification';
 import {makeRecord,previewImport,importRecords,compareRecords,stats} from './massProperties/records';
 import {createAnalysisWorker} from './massProperties/workerFactory';
 import './MassPropertiesPanel.css';
@@ -19,6 +19,38 @@ function Choice({label,value,onChange,options}) {
   return <label className="mass-field"><span>{label}</span><Form.Select size="sm" value={value} onChange={e=>onChange(e.target.value)}>{options.map(o=><option key={Array.isArray(o)?o[0]:o} value={Array.isArray(o)?o[0]:o}>{Array.isArray(o)?o[1]:o}</option>)}</Form.Select></label>;
 }
 function Warnings({items}) {return items?.length?<Alert variant="warning" className="mt-2 small"><ul className="mb-0">{items.map((w,i)=><li key={i}>{w}</li>)}</ul></Alert>:null;}
+function CenterReadings({config, masses, setMasses}) {
+  const { plate, reference } = masses;
+  let readings, error;
+  if (plate !== '' || reference !== '') {
+    try {
+      readings = expectedCenterReadings(config, plate, reference);
+    } catch (e) {
+      error = e.message;
+    }
+  }
+  return <section className="mass-center" aria-label="중심에 놓았을 때 예상값">
+    <h3>중심에 놓았을 때 예상값</h3>
+    <div className="mass-grid">
+      <Field label={`판 질량 [${config.unit}]`} value={plate} onChange={value => setMasses({...masses, plate: value})} placeholder="선택" min="0"/>
+      <Field label={`기준물체 질량 [${config.unit}]`} value={reference} onChange={value => setMasses({...masses, reference: value})} placeholder="선택" min="0"/>
+    </div>
+    {error && <p className="text-warning" role="alert">{error}</p>}
+    {readings && <Table size="sm" variant="dark" className="mass-scale-table" aria-label={`저울 예상값 [${config.unit}]`}>
+      <thead><tr><th scope="col">{config.unit}</th><th scope="col">P1</th><th scope="col">P2</th><th scope="col">P3</th></tr></thead>
+      <tbody>
+        {[
+          ['판만', readings.plate],
+          ['기준물체만 (판 영점 후)', readings.reference],
+          ['판 + 기준물체 (영점 전)', readings.total],
+        ].filter(([, values]) => values).map(([label, values]) => <tr key={label}>
+          <th scope="row">{label}</th>{values.map((value, i) => <td key={i}>{fmt(value, config.unit === 'kg' ? 6 : 3)}</td>)}
+        </tr>)}
+      </tbody>
+    </Table>}
+    <p className="mass-muted mb-0">판과 기준물체 각각의 질량중심이 판 중심에 있다고 가정합니다.</p>
+  </section>;
+}
 function Diagram({config,result}) {
   const W=Number(config.width),H=Number(config.height),s=240/Math.max(W,H,1),ox=35,oy=275;
   if(!(W>0&&H>0))return null;
@@ -39,41 +71,66 @@ function Diagram({config,result}) {
   </svg>;
 }
 function CgPanel({save}) {
-  const [config,setConfig]=useState(defaultCg),[result,setResult]=useState(null),[error,setError]=useState('');
+  const [config, setConfig] = useState(defaultCg);
+  const [centerMasses, setCenterMasses] = useState({ plate: '', reference: '' });
+  const [error, setError] = useState('');
   const [cal,setCal]=useState({scaleId:'',preloadG:'',referenceG:'',referenceUncertaintyG:'',repeats:'',loading:'상승/하강',zeroReturnG:'',driftG:'',elapsedMin:'',position:'중앙/편심',trueX:'',trueY:'',note:''});
-  const update=(key,value)=>{setConfig(c=>({...c,[key]:value}));setResult(null);setError('');};
+  const update=(key,value)=>{setConfig(c=>({...c,[key]:value}));setError('');};
   const support=(i,key,value)=>update('supports',config.supports.map((s,j)=>j===i?{...s,[key]:value}:s));
   let plate=null;try{plate=plateMassG(config);}catch{}
   const changeUnit=unit=>{
     const f=config.unit==='g'?0.001:1000;
+    const convert = value => value === '' ? '' : Number(value) * f;
     setConfig(c=>({...c,unit,supports:c.supports.map(s=>({
-      ...s,...Object.fromEntries(['net','baseline','gross'].map(k=>[k,s[k]===''?'':Number(s[k])*f])),
+      ...s,...Object.fromEntries(['net','baseline','gross'].map(k=>[k,convert(s[k])])),
     }))}));
-    setResult(null);
+    setCenterMasses(masses => ({ plate: convert(masses.plate), reference: convert(masses.reference) }));
+    setError('');
   };
-  const calculate=()=>{try{setResult(calculateCg(config));setError('');}catch(e){setResult(null);setError(e.message);}};
+  const inputKey = config.mode === 'tare' ? 'net' : 'gross';
+  let result, calculationError;
+  if (config.supports.every(s => s[inputKey] !== '' && (config.mode === 'tare' || s.baseline !== ''))) {
+    try {
+      result = calculateCg(config);
+    } catch (e) {
+      calculationError = e.message;
+    }
+  }
   const calibrationSave=()=>{try{
     if(!cal.scaleId.trim())throw new Error('저울 ID를 입력하세요.');
     const validation=result&&cal.trueX!==''&&cal.trueY!==''?{errorXmm:result.x-number(cal.trueX,'참값 x'),errorYmm:result.y-number(cal.trueY,'참값 y')}:null;
     save(makeRecord('cg_calibration',config,cal,{validation}, {calibration:cal}));
   }catch(e){setError(e.message);}};
   return <>
-    <p className="mass-muted">설치·수평 확인 → 상판+지지발 TARE → Cubli 배치 → 안정값 입력 → 계산·기록. 수동 저울 판독입니다.</p>
-    <div className="mass-grid"><Choice label="입력 모드" value={config.mode} onChange={v=>update('mode',v)} options={[["tare","A · 저울에서 이미 TARE한 증가하중"],["difference","B · gross − baseline"]]}/><Choice label="입력 질량 단위" value={config.unit} onChange={changeUnit} options={['g','kg']}/></div>
-    <div className="mass-grid mass-three">{config.supports.map((s,i)=><Field key={i} label={`P${i+1} ${config.mode==='tare'?'증가하중 R':'gross G'} [${config.unit}]`} value={s[config.mode==='tare'?'net':'gross']} onChange={v=>support(i,config.mode==='tare'?'net':'gross',v)}/>)}</div>
-    {config.mode==='difference'&&<div className="mass-grid mass-three">{config.supports.map((s,i)=><Field key={i} label={`P${i+1} baseline B [${config.unit}]`} value={s.baseline} onChange={v=>support(i,'baseline',v)}/>)}</div>}
-    <div className="mass-actions"><Button size="sm" onClick={calculate}>CG 계산</Button><Button size="sm" variant="outline-info" disabled={!result} onClick={()=>save(makeRecord('three_scale_cg',config,config.supports,result))}>CG 기록 저장</Button></div>
-    {error&&<Alert variant="danger" role="alert">{error}</Alert>}
-    {result&&<div className="mass-result" data-testid="cg-result"><strong>dx {fmt(result.dx)} mm · dy {fmt(result.dy)} mm</strong><p>시험체 {fmt(result.massG)} g ({fmt(result.massKg,6)} kg)<br/>판 원점 기준 x {fmt(result.x)} · y {fmt(result.y)} mm</p>
+    <p className="mass-muted mb-1">{config.mode === 'tare' ? '판과 지지발을 올려 영점을 맞춘 뒤, 물체를 올리고 저울값을 입력하세요.' : '물체를 올리기 전과 후의 저울값을 입력하세요.'}</p>
+    {config.mode==='difference'&&<div className="mass-grid mass-three">{config.supports.map((s,i)=><Field key={i} label={`P${i+1} 올리기 전 [${config.unit}]`} value={s.baseline} onChange={v=>support(i,'baseline',v)}/>)}</div>}
+    <div className="mass-grid mass-three">
+      {config.supports.map((s,i)=><Field key={i} label={`P${i+1}${inputKey === 'gross' ? ' 올린 후' : ''} [${config.unit}]`} value={s[inputKey]} onChange={v=>support(i,inputKey,v)}/>)}
+    </div>
+    {(error || calculationError) && <Alert variant="danger" role="alert">{error || calculationError}</Alert>}
+    {result&&<div className="mass-result" data-testid="cg-result">
+      <strong>dx {fmt(result.dx)} mm · dy {fmt(result.dy)} mm</strong>
+      <p>중심 기준 편차 · 총 질량 {fmt(config.unit === 'g' ? result.massG : result.massKg, 6)} {config.unit}</p>
+      <Warnings items={result.warnings}/>
+      <Button size="sm" variant="outline-info" onClick={()=>save(makeRecord('three_scale_cg',config,config.supports,result))}>CG 기록 저장</Button>
+    </div>}
+    <CenterReadings config={config} masses={centerMasses} setMasses={setCenterMasses}/>
+    {result && <details>
+      <summary>CG 도식·측정 상세</summary>
+      <Diagram config={config} result={result}/>
+      <p>판 원점 기준 x {fmt(result.x)} · y {fmt(result.y)} mm</p>
       <p>판 내부: {result.insidePlate?'예':'아니오'} · 시험체 CG의 지지 삼각형 내부: {result.insideTriangle?'예':'아니오'}</p>
       <p>전체 하중 지지 안정성: {result.stability}</p>
       <p>±1mm 목표: {result.uncertainty.target}<br/>{result.uncertainty.scope}</p>
       {result.uncertainty.linearX!=null&&<p>1차 bounded Ux/Uy: {fmt(result.uncertainty.linearX)} / {fmt(result.uncertainty.linearY)} mm<br/>8조합 정확 bounded: {fmt(result.uncertainty.exactX)} / {fmt(result.uncertainty.exactY)} mm</p>}
       {result.uncertainty.rssX!=null&&<p>독립 표준불확도 RSS ux/uy: {fmt(result.uncertainty.rssX)} / {fmt(result.uncertainty.rssY)} mm</p>}
       {result.loads.map((l,i)=><div key={i}>P{i+1} gross {fmt(l.grossG)} g · 용량 {l.capacityStatus}</div>)}
-      <Warnings items={result.warnings}/></div>}
-    <Diagram config={config} result={result}/>
-    <p className="mass-muted">판 좌측 하단 (0,0), +y는 위쪽. 노랑 CG, 흰색 O, 보라색은 설정한 Cubli 기준점과 외형입니다. 단일 수평 측정은 2D CG만 제공합니다.</p>
+    </details>}
+    <details className="mass-advanced"><summary>CG 상세 설정</summary>
+    <div className="mass-grid">
+      <Choice label="입력 모드" value={config.mode} onChange={v=>update('mode',v)} options={[["tare","판 영점 후"],["difference","올리기 전후 차이"]]}/>
+      <Choice label="입력 질량 단위" value={config.unit} onChange={changeUnit} options={['g','kg']}/>
+    </div>
     <details><summary>상판·지지점·Cubli 상세 설정</summary>
       <div className="mass-grid">{[['width','판 가로 [mm]'],['height','판 세로 [mm]'],['thickness','판 두께 [mm]'],['density','밀도 [kg/m³]']].map(([k,l])=><Field key={k} label={l} value={config[k]} onChange={v=>update(k,v)}/>)}</div>
       <p>은색 통알루미늄 판 · 이론 질량 {fmt(plate)} g. 지지발·테이프를 포함한 TARE는 별도 실측하세요.</p>
@@ -100,6 +157,7 @@ function CgPanel({save}) {
       {Object.entries({scaleId:'저울 ID',preloadG:'설치 preload [g]',referenceG:'기준추 [g]',referenceUncertaintyG:'기준추 불확도 [g]',repeats:'반복값 [g, 쉼표 구분]',loading:'상승/하강 하중 조건',zeroReturnG:'영점 복귀 [g]',driftG:'시간 드리프트 [g]',elapsedMin:'경과시간 [min]',position:'계량판 중앙/편심 위치',trueX:'기준물체 참 x [mm]',trueY:'기준물체 참 y [mm]',note:'교정 메모'}).map(([k,l])=><Field key={k} label={l} type={['scaleId','repeats','loading','position','note'].includes(k)?'text':'number'} value={cal[k]} onChange={v=>setCal(c=>({...c,[k]:v}))}/>)}</div><Button size="sm" onClick={calibrationSave}>현재 CG와 교정·참값 오차 저장</Button></details>
     <details><summary>대상·구성·메모와 계산식</summary><div className="mass-grid"><Field label="대상" type="text" value={config.target} onChange={v=>update('target',v)}/><Field label="설치 구성" type="text" value={config.configuration} onChange={v=>update('configuration',v)}/></div><Field label="메모" type="text" value={config.note} onChange={v=>update('note',v)}/>
       <p>M=ΣRᵢ, x=ΣRᵢxᵢ/M, y=ΣRᵢyᵢ/M, dx=x−W/2, dy=y−H/2. 중심 편차와 측정오차는 별개입니다. 108g 판 + 992g 중앙 물체 예시는 gross=(275,275,550)g, net=(248,248,496)g이며 지지발·테이프는 포함하지 않습니다.</p></details>
+    </details>
   </>;
 }
 function SignalChart({title,points,keys,split,shock,onSplit}) {
@@ -111,72 +169,256 @@ function SignalChart({title,points,keys,split,shock,onSplit}) {
   </LineChart></ResponsiveContainer>{stride>1&&<small>표시만 {stride}개 중 1개. 분석은 원 표본을 사용합니다.</small>}</div>;
 }
 function IdentificationPanel({save}) {
-  const [settings,setSettings]=useState(defaultIdentification),[csv,setCsv]=useState(null),[prepared,setPrepared]=useState(null),[result,setResult]=useState(null);
-  const [confirmed,setConfirmed]=useState(false),[error,setError]=useState(''),[progress,setProgress]=useState(null),[clickSplit,setClickSplit]=useState(false);
-  const worker=useRef(null),busy=progress!=null;
-  useEffect(()=>()=>worker.current?.terminate(),[]);
-  const update=(k,v)=>{
-    if(worker.current){worker.current.terminate();worker.current=null;setProgress(null);}
-    if(['timeColumn','valueColumn','timeUnit','valueKind','angleUnit','cpr','sign','wrapPeriod','window','degree','gapSeconds'].includes(k))setPrepared(null);
-    if(['timeColumn','valueColumn','timeUnit','valueKind','angleUnit','cpr','sign','wrapPeriod'].includes(k))setConfirmed(false);
-    setSettings(c=>({...c,[k]:v}));setResult(null);
-  };
-  const load=(text,name)=>{try{const parsed=parseCsv(text);setCsv({...parsed,text,name});setSettings(c=>({...c,...suggestColumns(parsed.headers,c.axis)}));setConfirmed(false);setPrepared(null);setResult(null);setError('');}catch(e){setError(e.message);}};
-  const run=preview=>{if(!csv||!confirmed){setError('CSV 열·단위·시간축 미리보기를 확인하고 확인란을 선택하세요.');return;}
-    setError('');setResult(null);setProgress(0);
-    try{worker.current?.terminate();const w=createAnalysisWorker();worker.current=w;
-      w.onmessage=({data})=>{if(data.type==='progress')setProgress(data.progress);else{setProgress(null);w.terminate();worker.current=null;
-        if(data.type==='error')setError(data.error);else {setPrepared(data.prepared);if(data.result)setResult(data.result);}}};
-      w.onerror=()=>{setError('분석 Worker를 실행하지 못했습니다. 새로고침 후 다시 시도하세요.');setProgress(null);w.terminate();worker.current=null;};
-      w.postMessage({rows:csv.rows,settings,preview});
-    }catch(e){setError(e.message);setProgress(null);}
-  };
-  const split=Number(settings.split===''?prepared?.peakTime:settings.split);
+  const [settings, setSettings] = useState(defaultIdentification);
+  const [csv, setCsv] = useState(null);
+  const [prepared, setPrepared] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [progress, setProgress] = useState(null);
+  const [clickSplit, setClickSplit] = useState(false);
+  const worker = useRef(null);
+  const fileRequest = useRef(0);
+  const busy = progress !== null;
+  useEffect(() => () => worker.current?.terminate(), []);
+
+  function changeSettings(patch, resetPreview = false) {
+    setSettings(current => ({ ...current, ...patch }));
+    setResult(null);
+    setError('');
+    if (resetPreview) setPrepared(null);
+  }
+
+  function loadCsv(text, name, example = false) {
+    setCsv(null);
+    setPrepared(null);
+    setResult(null);
+    setError('');
+    try {
+      const parsed = parseCsv(text);
+      setCsv({ ...parsed, text, name });
+      setSettings(previous => {
+        const defaults = defaultIdentification();
+        if (example) return {
+          ...defaults, ...suggestColumns(parsed, 'Yaw'), mass: 0.03, radius: 0.18, split: 1.5,
+          target: '합성 검증', configuration: 'I=0.035, c1=0.0017, c2=0.0006',
+        };
+        const current = previous.target === '합성 검증' ? defaults : previous;
+        const { split, accStart, accEnd, decStart, decEnd, wrapPeriod } = defaults;
+        return { ...current, split, accStart, accEnd, decStart, decEnd, wrapPeriod, ...suggestColumns(parsed, current.axis) };
+      });
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function selectFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setCsv(null);
+    setPrepared(null);
+    setResult(null);
+    const request = ++fileRequest.current;
+    try {
+      const contents = await file.text();
+      if (request === fileRequest.current) loadCsv(contents, file.name);
+    } catch {
+      if (request === fileRequest.current) {
+        setCsv(null);
+        setResult(null);
+        setPrepared(null);
+        setError('CSV 파일을 읽지 못했습니다.');
+      }
+    }
+  }
+
+  const inputsReady = csv && settings.timeColumn && settings.valueColumn && settings.timeUnit &&
+    settings.angleUnit && (settings.angleUnit !== 'count' || Number(settings.cpr) > 0);
+  const fitReady = inputsReady && Number(settings.mass) > 0 && Number(settings.radius) > 0;
+
+  function cancelAnalysis() {
+    worker.current?.terminate();
+    worker.current = null;
+    setProgress(null);
+  }
+
+  function run(preview) {
+    if (busy || !(preview ? inputsReady : fitReady)) return;
+    setError('');
+    setProgress(0);
+    if (!preview) setResult(null);
+    try {
+      const instance = createAnalysisWorker();
+      worker.current = instance;
+      instance.onmessage = ({ data }) => {
+        if (worker.current !== instance) return;
+        if (data.type === 'progress') {
+          setProgress(data.progress);
+          return;
+        }
+        cancelAnalysis();
+        if (data.type === 'error') setError(data.error);
+        else {
+          setPrepared(data.prepared);
+          if (data.result) setResult(data.result);
+        }
+      };
+      instance.onerror = () => {
+        if (worker.current !== instance) return;
+        cancelAnalysis();
+        setError('브라우저에서 분석을 시작하지 못했습니다. 새로고침 후 다시 시도하세요.');
+      };
+      instance.postMessage({ rows: csv.rows, settings, preview });
+    } catch (e) {
+      cancelAnalysis();
+      setError(e.message);
+    }
+  }
+
+  function changeAxis(axis) {
+    const fixedAxes = { Yaw: 'Roll/Pitch 고정', Roll: 'Pitch/Yaw 고정', Pitch: 'Roll/Yaw 고정' };
+    changeSettings({ axis, fixedAxes: fixedAxes[axis], ...(csv && suggestColumns(csv, axis)) }, true);
+  }
+
+  function changeUnit(key, unitKey, unit, kind) {
+    const factor = unitFactor(settings[unitKey], kind) / unitFactor(unit, kind);
+    changeSettings({ [key]: settings[key] === '' ? '' : Number(settings[key]) * factor, [unitKey]: unit });
+  }
+
+  const changeTimeColumn = timeColumn => changeSettings({ timeColumn, timeUnit: csvTimeUnit(timeColumn) }, true);
+  const changeValueColumn = valueColumn => changeSettings({ valueColumn, ...csvValueFormat(valueColumn) }, true);
+  const timeUnitChoice = <Choice label="CSV 시간 단위" value={settings.timeUnit} onChange={timeUnit => changeSettings({ timeUnit }, true)} options={['', 's', 'ms', 'us']}/>;
+  const angleUnitChoice = <Choice label={settings.valueKind === 'angle' ? 'CSV 각도 단위' : 'CSV 각속도 단위'} value={settings.angleUnit} onChange={angleUnit => changeSettings({ angleUnit }, true)}
+    options={settings.valueKind === 'angle' ? ['', 'deg', 'rad', 'count'] : ['', ['deg','deg/s'], ['rad','rad/s'], ['count','count/s']]}/>;
+  const cprField = <Field label="회전당 카운트" min="1" value={settings.cpr} onChange={cpr => changeSettings({ cpr }, true)}/>;
+  const timeColumnChoice = csv && <Choice label="시간 열" value={settings.timeColumn} onChange={changeTimeColumn} options={['', ...csv.headers]}/>;
+  const valueColumnChoice = csv && <Choice label="각도·각속도 열" value={settings.valueColumn} onChange={changeValueColumn} options={['', ...csv.headers]}/>;
+  const valueKindChoice = <Choice label="측정값 형식" value={settings.valueKind} onChange={valueKind => changeSettings({ valueKind }, true)} options={[[ 'angle', '각도' ], [ 'velocity', '각속도' ]]}/>;
+  const showTimeColumn = csv && !settings.timeColumn;
+  const showValueColumn = csv && !settings.valueColumn;
+  const showTimeUnit = csv && settings.timeColumn && !csvTimeUnit(settings.timeColumn);
+  const showAngleUnit = csv && settings.valueColumn && !csvValueFormat(settings.valueColumn).angleUnit;
+  const split = settings.split === '' ? prepared?.peakTime : Number(settings.split);
+
   return <>
-    <p className="mass-muted">Yaw 한 축 자유, 다른 축 고정 → 접선 줄의 낙하추로 가속 → 추 분리 → 자유감속. 이 화면은 분석 전용입니다.</p>
-    <div className="mass-grid"><Field label="대상 이름" type="text" value={settings.target} onChange={v=>update('target',v)}/><Field label="함께 회전한 전체 구성 / 원점" type="text" value={settings.configuration} onChange={v=>update('configuration',v)}/>
-      <Choice label="식별축" value={settings.axis} onChange={v=>{update('axis',v);update('fixedAxes',v==='Yaw'?'Roll/Pitch 고정':v==='Roll'?'Pitch/Yaw 고정':'Roll/Yaw 고정');}} options={['Yaw','Roll','Pitch']}/><Field label="고정한 축 및 고정 방법" type="text" value={settings.fixedAxes} onChange={v=>update('fixedAxes',v)}/>
-      <Field label={`낙하추 질량 [${settings.massUnit}]`} value={settings.mass} onChange={v=>update('mass',v)}/><Choice label="낙하추 질량 단위" value={settings.massUnit} onChange={v=>update('massUnit',v)} options={['kg','g']}/>
-      <Field label={`축 기준 유효 반경 R [${settings.radiusUnit}]`} value={settings.radius} onChange={v=>update('radius',v)}/><Choice label="유효 반경 단위" value={settings.radiusUnit} onChange={v=>update('radiusUnit',v)} options={['m','mm']}/>
-      <Field label="중력가속도 [m/s²]" value={settings.gravity} onChange={v=>update('gravity',v)}/><Choice label="입력 토크 방향 s" value={settings.direction} onChange={v=>update('direction',Number(v))} options={[[1,'+1'],[-1,'−1']]}/></div>
-    {settings.axis!=='Yaw'&&<Alert variant="warning">Roll/Pitch는 중력 복원토크·축 결합 때문에 모델이 부적합할 수 있습니다. 특히 Roll의 CoM–CoR 불일치를 확인하세요. 탐색 결과로만 저장합니다.</Alert>}
-    <label className="mass-field"><span>원 CSV 가져오기 (기존 Server/Web Serial의 Encoder CSV 사용 가능)</span><Form.Control size="sm" type="file" accept=".csv,text/csv" disabled={busy} onChange={async e=>{const f=e.target.files?.[0];if(f)load(await f.text(),f.name);e.target.value='';}}/></label>
-    <div className="mass-actions"><Button size="sm" variant="outline-secondary" disabled={busy} onClick={()=>{const text=syntheticCsv();load(text,'합성_200Hz_검증.csv');setSettings(c=>({...c,mass:0.03,radius:0.18,massUnit:'kg',radiusUnit:'m',target:'합성 검증',configuration:'I=0.035, c1=0.0017, c2=0.0006',timeUnit:'s',valueKind:'angle',angleUnit:'deg',timeColumn:'time',valueColumn:'angle',split:1.5,window:11,degree:2}));}}>합성 검증 데이터 불러오기</Button>{csv&&<Button size="sm" variant="outline-secondary" onClick={()=>download(csv.name,csv.text,'text/csv')}>원 CSV 내려받기</Button>}</div>
-    {csv&&<>
-      <p>{csv.name} · {csv.rows.length}행. TEL/IMU와 ENC는 독립 이벤트이며 분석은 ENC 행만 사용합니다.</p>
-      <div className="mass-grid"><Choice label="시간 열 (장치 timestamp 우선)" value={settings.timeColumn} onChange={v=>{update('timeColumn',v);setConfirmed(false);}} options={csv.headers}/><Choice label="시간 단위 (직접 확인)" value={settings.timeUnit} onChange={v=>{update('timeUnit',v);setConfirmed(false);}} options={['s','ms','us']}/>
-        <Choice label="원 관절 엔코더 각도 / 속도 열" value={settings.valueColumn} onChange={v=>{update('valueColumn',v);setConfirmed(false);}} options={['',...csv.headers]}/><Choice label="값 형식" value={settings.valueKind} onChange={v=>{update('valueKind',v);setConfirmed(false);}} options={[["angle","각도"],["velocity","각속도 (각도단위/s)"]]}/>
-        <Choice label="각도 단위 / 속도 분자 단위" value={settings.angleUnit} onChange={v=>{update('angleUnit',v);setConfirmed(false);}} options={['deg','rad','count']}/><Choice label="측정 부호" value={settings.sign} onChange={v=>update('sign',Number(v))} options={[[1,'+1'],[-1,'−1']]}/>
-        {settings.angleUnit==='count'&&<Field label="counts/revolution" value={settings.cpr} onChange={v=>update('cpr',v)}/>}
-        <Field label="timer wrap 주기 (시간 열 단위, 선택)" value={settings.wrapPeriod} onChange={v=>update('wrapPeriod',v)}/></div>
-      <div className="mass-table"><Table size="sm" variant="dark"><thead><tr><th>시간 원값</th><th>측정 원값</th><th>유형</th></tr></thead><tbody>{csv.rows.slice(0,5).map((r,i)=><tr key={i}><td>{r[settings.timeColumn]}</td><td>{r[settings.valueColumn]}</td><td>{r.sample_type||'각도/속도 CSV'}</td></tr>)}</tbody></Table></div>
-      <Form.Check id="mass-csv-confirmed" label="선택 축의 실제 관절 원자료, 시간 단위·timer 의미·각도 부호를 확인했습니다" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>
-      <p className="mass-muted">표시용 Euler·visual flip, IMU body ω를 관절 원자료로 대체하지 마세요. quaternion만 있다면 선택축 각도 CSV를 추가 기록하세요. 장치 재시작·publisher 변경은 파일의 연속 구간을 나누어 분석하세요.</p>
-    </>}
-    <details open><summary>전처리·가속/감속 구간 설정</summary><div className="mass-grid">
-      {Object.entries({window:'평활 창 [표본, 홀수 5~101]',degree:'국소 다항 차수 [2/3]',gapSeconds:'긴 결손 기준 [s]',split:'추 분리시각 [s, 빈칸=최대 |ω| 후보]',shock:'분리 양쪽 충격 제외 폭 [s]',lowSpeed:'저속 제외 |ω| [rad/s]',speedMin:'공통 |ω| 최소 [rad/s, 선택]',speedMax:'공통 |ω| 최대 [rad/s, 선택]',accStart:'가속 시작 [s, 선택]',accEnd:'가속 끝 [s, 선택]',decStart:'감속 시작 [s, 선택]',decEnd:'감속 끝 [s, 선택]'}).map(([k,l])=><Field key={k} label={l} value={settings[k]} disabled={busy} onChange={v=>update(k,v)}/>)}</div>
-      <p className="mass-muted">unwrap → 불규칙 시각의 국소 다항 평활·미분 → 구간 분리 → 충격 제외 → 공통 |ω| 선택. 평활 창이 충격을 포함하지 않게 제외 폭을 정하세요.</p></details>
-    <div className="mass-actions"><Button size="sm" disabled={busy||!csv||!confirmed} variant="outline-info" onClick={()=>run(true)}>전처리·구간 미리보기</Button><Button size="sm" disabled={busy||!csv||!confirmed} onClick={()=>run(false)}>관성·마찰 동시 피팅</Button>{busy&&<Button size="sm" variant="outline-warning" onClick={()=>{worker.current?.terminate();worker.current=null;setProgress(null);setError('분석을 취소했습니다.');}}>분석 취소</Button>}</div>
-    {busy&&<ProgressBar now={progress} label={`${progress}%`} animated className="mb-2"/>}{error&&<Alert variant="danger" role="alert">{error}</Alert>}
-    {prepared&&<>
-      <p>실제 유효 {fmt(prepared.diagnostics.hz,2)} Hz · median {fmt(prepared.diagnostics.medianHz,2)} Hz<br/>dt 최소/중앙/최대 {fmt(prepared.diagnostics.dt.min,6)} / {fmt(prepared.diagnostics.dt.median,6)} / {fmt(prepared.diagnostics.dt.max,6)} s<br/>최대 |ω| 후보 {fmt(prepared.peakTime)} s · 결손 {prepared.diagnostics.gaps.length}개</p>
-      <Warnings items={prepared.warnings}/>
-      <Form.Check id="mass-click-split" label="속도 그래프 클릭으로 분리시각 지정" checked={clickSplit} onChange={e=>setClickSplit(e.target.checked)}/>
-      {settings.valueKind==='angle'&&<SignalChart title="θ(t) [rad] · 원각도 unwrap / 평활" points={prepared.points} keys={[["theta","#94a3b8","unwrap θ"],["smooth","#38bdf8","평활 θ"]]} split={split} shock={Number(settings.shock)}/>}
-      <SignalChart title="전처리 ω(t) [rad/s] · 노랑: 분리 후보와 충격 제외" points={prepared.points} keys={[["omega","#38bdf8","실측 ω"]]} split={split} shock={Number(settings.shock)} onSplit={clickSplit?v=>update('split',v):null}/>
-    </>}
-    {result&&<><div className="mass-result" data-testid="identification-result"><strong>{result.status}</strong><p>전체 회전 구성의 I = {fmt(result.parameters.I,8)} kg·m²<br/>c₁ = {fmt(result.parameters.c1,8)} N·m<br/>c₂ = {fmt(result.parameters.c2,8)} N·m·s/rad<br/>Tf(1 rad/s) = {fmt(result.frictionAt1*1000,6)} mN·m</p>
-      <p>RMSE 가속/감속 {fmt(result.rmse.acc,7)} / {fmt(result.rmse.dec,7)} rad/s<br/>사용 표본 {result.counts.acc} / {result.counts.dec}<br/>공통 |ω| {result.speedRange.map(v=>fmt(v)).join(' ~ ')} rad/s<br/>최적화 수렴: 예 · 목적함수 ½(MSE가속+MSE감속)</p>
-      {result.cadDifference!=null&&<p>CAD 대비 {fmt(result.cadDifference,3)}% (동일 축·원점·회전 구성 확인 기준)</p>}<Warnings items={result.warnings}/></div>
-      <SignalChart title="선택된 가속·감속 실측 / 피팅 ω(t) [rad/s]" points={result.curve.map((p,i,a)=>({...p,fitAcc:p.phase==='acc'?p.fit:null,fitDec:p.phase==='dec'?p.fit:null,omegaAcc:p.phase==='acc'?p.omega:null,omegaDec:p.phase==='dec'?p.omega:null}))} keys={[["omegaAcc","#60a5fa","가속 실측"],["omegaDec","#c084fc","감속 실측"],["fitAcc","#34d399","가속 fit"],["fitDec","#fb923c","감속 fit"]]} split={result.segments.split} shock={result.segments.shock}/>
-      <SignalChart title="실측 − 피팅 잔차 [rad/s] · 울렁임·각도 의존성 검토" points={result.curve} keys={[["residual","#f472b6","잔차"]]} split={result.segments.split} shock={result.segments.shock}/>
-      <Button size="sm" variant="outline-info" onClick={()=>save(makeRecord('falling_mass',settings,{csv:csv.text,fileName:csv.name},result,{processing:settings}))}>원 CSV·설정·결과 함께 저장</Button>
-    </>}
-    <details><summary>CAD 비교·메모</summary><Field label="CAD 관성 [kg·m², 선택]" value={settings.cad} onChange={v=>update('cad',v)}/><Form.Check id="mass-cad-confirmed" label="CAD와 측정의 축·원점·함께 회전한 부품 구성이 일치함" checked={settings.cadConfirmed} onChange={e=>update('cadConfirmed',e.target.checked)}/><Field label="메모" type="text" value={settings.note} onChange={v=>update('note',v)}/><p className="mass-muted">측정 I는 전체 회전 구성의 관성입니다. 2D CG만으로 임의 축 평행축 보정을 할 수 없습니다.</p></details>
-    <details><summary>모델·수치해법·과거 참고자료</summary>
-      <p>τf=c₁sgn(ω)+c₂ω<br/>가속: (I+mR²)ω̇=s·mgR−c₁sgn(ω)−c₂ω<br/>자유감속: Iω̇=−c₁sgn(ω)−c₂ω</p>
-      <p>I&gt;0, c₁,c₂≥0. 부호가 일정한 구간에서 ODE 해석해를 직접 피팅합니다. 구간별 초기속도는 독립적으로 variable projection으로 추정합니다. I는 log scale, 마찰은 mgR로 스케일링한 5개 초기값의 bounded Nelder–Mead를 사용합니다. 최대 600회/초기값, simplex 상대폭 1e−7 및 목적함수 폭 1e−12에서 수렴을 판정합니다. 전역 최적해·최종 정확도는 보장하지 않습니다.</p>
-      <p className="mass-muted">과거 참고: 김형민 2026-06-08 PPT IYaw≈0.03547, Tf≈1.645mN·m. PPT 도표 CAD 0.02562와 본문 CAD 0.02899가 다릅니다. 논문 경진대회 발표는 IYaw=0.025652, CAD=0.02942입니다. 서로 다른 구성·출처이며 현재 정답으로 고정하지 않습니다. PPT 원시 시계열 재현 검증은 수행하지 않았습니다.</p>
+    <fieldset disabled={busy} className="mass-inputs">
+      <div className="mass-grid mass-three">
+        <Choice label="측정 축" value={settings.axis} onChange={changeAxis} options={['Yaw', 'Roll', 'Pitch']}/>
+        <div className="mass-unit-field">
+          <Field label="낙하추 질량" aria-label={`낙하추 질량 [${settings.massUnit}]`} value={settings.mass} min="0" onChange={mass => changeSettings({ mass })}/>
+          <Choice label="질량 단위" value={settings.massUnit} onChange={unit => changeUnit('mass', 'massUnit', unit, 'mass')} options={['kg', 'g']}/>
+        </div>
+        <div className="mass-unit-field">
+          <Field label="유효 반경" aria-label={`유효 반경 [${settings.radiusUnit}]`} value={settings.radius} min="0" onChange={radius => changeSettings({ radius })}/>
+          <Choice label="반경 단위" value={settings.radiusUnit} onChange={unit => changeUnit('radius', 'radiusUnit', unit, 'length')} options={['m', 'mm']}/>
+        </div>
+      </div>
+      {settings.axis !== 'Yaw' && <p className="text-warning small">Roll·Pitch 결과는 중력 복원토크의 영향을 받을 수 있습니다.</p>}
+      <label className="mass-file">
+        <Form.Control className="visually-hidden" aria-label="엔코더 CSV" type="file" accept=".csv,text/csv" onChange={selectFile}/>
+        <span className="btn btn-sm btn-outline-light">{csv ? 'CSV 바꾸기' : '엔코더 CSV 선택'}</span>
+        <span className="mass-muted text-truncate">{csv ? csv.name : '시간·각도 또는 각속도'}</span>
+      </label>
+      {csv && <>
+        <p className="mass-muted mb-1">
+          {csv.rows.length.toLocaleString('ko-KR')}행 ·{' '}
+          {settings.timeColumn && `${settings.timeColumn}${settings.timeUnit && ` (${settings.timeUnit})`}`}
+          {settings.timeColumn && settings.valueColumn && ' · '}
+          {settings.valueColumn && `${settings.valueColumn}${settings.angleUnit && ` (${settings.angleUnit}${settings.valueKind === 'velocity' ? '/s' : ''})`}`}
+        </p>
+        {(showTimeColumn || showValueColumn || showTimeUnit || showAngleUnit || settings.angleUnit === 'count') &&
+          <div className="mass-grid">
+            {showTimeColumn && timeColumnChoice}{showValueColumn && valueColumnChoice}
+            {showTimeUnit && timeUnitChoice}{showAngleUnit && valueKindChoice}{showAngleUnit && angleUnitChoice}
+            {settings.angleUnit === 'count' && cprField}
+          </div>}
+      </>}
+    </fieldset>
+    <div className="mass-actions">
+      <Button size="sm" disabled={busy || !fitReady} onClick={() => run(false)}>관성·마찰 계산</Button>
+      {!csv && <Button size="sm" variant="link" disabled={busy} onClick={() => {
+        ++fileRequest.current;
+        const example = syntheticCsv().replace(/^time,angle,omega/, 'time_s,angle_deg,omega_rad_s');
+        loadCsv(example, '합성_200Hz_검증.csv', true);
+      }}>예제 불러오기</Button>}
+      {busy && <Button size="sm" variant="outline-light" onClick={cancelAnalysis}>취소</Button>}
+    </div>
+    {busy && <ProgressBar now={progress} label={`${progress}%`} animated className="mb-2"/>}
+    {error && <Alert variant="danger" role="alert">{error}</Alert>}
+    {result && <div className="mass-result" data-testid="identification-result">
+      <strong>관성모멘트 {fmt(result.parameters.I, 8)} kg·m²</strong>
+      <p>c₁ {fmt(result.parameters.c1, 8)} N·m · c₂ {fmt(result.parameters.c2, 8)} N·m·s/rad<br/>
+        1 rad/s 마찰토크 {fmt(result.frictionAt1 * 1000, 6)} mN·m<br/>{result.status}</p>
+      {result.cadDifference != null && <p>CAD 대비 {fmt(result.cadDifference, 3)}%</p>}
+      <Button size="sm" variant="outline-info" onClick={() => save(makeRecord(
+        'falling_mass', settings, { csv: csv.text, fileName: csv.name }, result, { processing: settings },
+      ))}>분석 기록 저장</Button>
+    </div>}
+    {prepared && <details key={result ? 'fit-diagnostics' : 'preview-diagnostics'} open={!result}>
+      <summary>그래프·진단{result?.warnings.length ? ` (${result.warnings.length}건)` : ''}</summary>
+      <p>{fmt(prepared.diagnostics.hz, 2)} Hz · 최대 |ω| 시각 {fmt(prepared.peakTime)} s · 결손 {prepared.diagnostics.gaps.length}개</p>
+      <p className="mass-muted">dt 최소 / 중앙 / 최대 {fmt(prepared.diagnostics.dt.min, 6)} / {fmt(prepared.diagnostics.dt.median, 6)} / {fmt(prepared.diagnostics.dt.max, 6)} s</p>
+      {result && <p>
+        RMSE 가속/감속 {fmt(result.rmse.acc, 7)} / {fmt(result.rmse.dec, 7)} rad/s<br/>
+        표본 {result.counts.acc} / {result.counts.dec} · 공통 |ω| {result.speedRange.map(value => fmt(value)).join(' ~ ')} rad/s
+      </p>}
+      <Warnings items={result?.warnings ?? prepared.warnings}/>
+      <Form.Check id="mass-click-split" label="속도 그래프에서 분리 시각 선택" checked={clickSplit} onChange={e => setClickSplit(e.target.checked)}/>
+      <SignalChart title="속도 [rad/s] · 노랑: 추 분리와 제외 구간" points={prepared.points} keys={[[ 'omega', '#38bdf8', '실측 ω' ]]}
+        split={split} shock={Number(settings.shock)} onSplit={clickSplit && !busy ? value => changeSettings({ split: value }) : null}/>
+      {settings.valueKind === 'angle' && <SignalChart title="각도 [rad]" points={prepared.points}
+        keys={[[ 'theta', '#94a3b8', '원각도' ], [ 'smooth', '#38bdf8', '평활 각도' ]]} split={split} shock={Number(settings.shock)}/>}
+      {result && <>
+        <SignalChart title="가속·감속 실측과 피팅 [rad/s]" points={result.curve.map(point => ({
+          ...point,
+          fitAcc: point.phase === 'acc' ? point.fit : null,
+          fitDec: point.phase === 'dec' ? point.fit : null,
+        }))} keys={[[ 'omega', '#60a5fa', '실측' ], [ 'fitAcc', '#34d399', '가속 fit' ], [ 'fitDec', '#fb923c', '감속 fit' ]]}
+        split={result.segments.split} shock={result.segments.shock}/>
+        <SignalChart title="실측과 피팅의 차이 [rad/s]" points={result.curve} keys={[[ 'residual', '#f472b6', '잔차' ]]}
+          split={result.segments.split} shock={result.segments.shock}/>
+      </>}
+    </details>}
+    <details className="mass-advanced"><summary>관성 상세 설정</summary>
+      <fieldset disabled={busy} className="mass-inputs">
+        {csv && <details><summary>CSV 열·단위</summary>
+          <div className="mass-grid">
+            {!showTimeColumn && timeColumnChoice}{!showTimeUnit && timeUnitChoice}
+            {!showValueColumn && valueColumnChoice}{!showAngleUnit && <>{valueKindChoice}{angleUnitChoice}</>}
+            <Choice label="측정 부호" value={settings.sign} onChange={value => changeSettings({ sign: Number(value) }, true)} options={[[1, '+1'], [-1, '−1']]}/>
+            <Field label="타이머 반복 주기 (시간 열 단위)" value={settings.wrapPeriod} onChange={wrapPeriod => changeSettings({ wrapPeriod }, true)}/>
+          </div>
+          <div className="mass-table"><Table size="sm" variant="dark"><thead><tr><th>시간 원값</th><th>측정 원값</th></tr></thead>
+            <tbody>{csv.rows.filter(row => row[settings.timeColumn] && row[settings.valueColumn] && (!row.sample_type || row.sample_type.toUpperCase() === 'ENC')).slice(0, 5)
+              .map((row, i) => <tr key={i}><td>{row[settings.timeColumn]}</td><td>{row[settings.valueColumn]}</td></tr>)}</tbody>
+          </Table></div>
+          <Button size="sm" variant="outline-secondary" onClick={() => download(csv.name, csv.text, 'text/csv')}>원 CSV 내려받기</Button>
+        </details>}
+        <details><summary>추 분리·분석 구간</summary>
+          <div className="mass-grid">
+            {Object.entries({
+              split: '추 분리 시각 [s, 빈칸이면 자동]', shock: '충격 제외 폭 [s]', lowSpeed: '저속 제외 [rad/s]',
+              accStart: '가속 시작 [s]', accEnd: '가속 끝 [s]', decStart: '감속 시작 [s]', decEnd: '감속 끝 [s]',
+              speedMin: '공통 최소 속도 [rad/s]', speedMax: '공통 최대 속도 [rad/s]',
+              window: '평활 창 [표본]', degree: '국소 다항 차수', gapSeconds: '결손 기준 [s]',
+            }).map(([key, label]) => <Field key={key} label={label} value={settings[key]}
+              onChange={value => changeSettings({ [key]: value }, ['window', 'degree', 'gapSeconds'].includes(key))}/>)}
+          </div>
+          <Button size="sm" variant="outline-info" disabled={!inputsReady} onClick={() => run(true)}>전처리·구간 미리보기</Button>
+        </details>
+        <details><summary>실험 조건·CAD·메모</summary>
+          <div className="mass-grid">
+            <Field label="중력가속도 [m/s²]" value={settings.gravity} onChange={gravity => changeSettings({ gravity })}/>
+            <Choice label="입력 토크 방향" value={settings.direction} onChange={value => changeSettings({ direction: Number(value) })} options={[[1, '+1'], [-1, '−1']]}/>
+            <Field label="대상" type="text" value={settings.target} onChange={target => changeSettings({ target })}/>
+            <Field label="회전 구성과 원점" type="text" value={settings.configuration} onChange={configuration => changeSettings({ configuration })}/>
+            <Field label="고정한 축과 고정 방법" type="text" value={settings.fixedAxes} onChange={fixedAxes => changeSettings({ fixedAxes })}/>
+            <Field label="CAD 관성 [kg·m²]" value={settings.cad} onChange={cad => changeSettings({ cad })}/>
+          </div>
+          <Form.Check id="mass-cad-confirmed" label="CAD와 측정의 축·원점·회전 구성이 같음" checked={settings.cadConfirmed} onChange={e => changeSettings({ cadConfirmed: e.target.checked })}/>
+          <Field label="메모" type="text" value={settings.note} onChange={note => changeSettings({ note })}/>
+        </details>
+      </fieldset>
     </details>
   </>;
 }

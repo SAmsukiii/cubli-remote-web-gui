@@ -155,149 +155,145 @@
 }
 
 .tutorial-modal {
-  background: #111418 !important;
-  color: #eef2f6 !important;
-  border: 1px solid #2a3138 !important;
-  max-width: min(1040px, calc(100vw - 1rem));
+  background: #111418;
+  color: #eef2f6;
+  border: 1px solid #2a3138;
 }
 
 .tutorial-modal-header,
 .tutorial-modal-footer {
-  background: #111418;
-  border-color: #2a3138 !important;
+  border-color: #2a3138;
 }
 
-.tutorial-modal-body {
-  max-height: min(78vh, 820px);
-  overflow-y: auto;
-}
-
-.tutorial-version,
-.tutorial-guide-summary,
-.tutorial-note {
-  color: #aeb7c2;
-  font-size: 0.82rem;
-  line-height: 1.45;
+.tutorial-modal-header .btn-close {
+  filter: invert(1);
 }
 
 .tutorial-guide-switch {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.9rem;
+  margin-bottom: 1rem;
 }
 
-.tutorial-progress-row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.65rem;
+.tutorial-layout {
+  display: grid;
+  grid-template-columns: minmax(172px, 215px) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
 }
 
-.tutorial-step-index {
-  color: #6ee7ff;
-  font-size: 0.72rem;
-  font-weight: 850;
-  letter-spacing: 0;
-  text-transform: uppercase;
+.tutorial-topics {
+  border-right: 1px solid #303946;
+  padding-right: 0.9rem;
+}
+
+.tutorial-topics > div + div {
+  margin-top: 0.9rem;
+}
+
+.tutorial-topics h2 {
+  color: #aebdcc;
+  font-size: 0.76rem;
+  margin: 0 0 0.25rem;
+}
+
+.tutorial-topics button {
+  display: block;
+  width: 100%;
+  padding: 0.38rem 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #d4dbe4;
+  border-radius: 0.35rem;
+  font-size: 0.84rem;
+  text-align: left;
+}
+
+.tutorial-topics button:hover,
+.tutorial-topics button[aria-current] {
+  background-color: #152d3a;
+  color: #92e6f8;
+  border-color: #274858;
 }
 
 .tutorial-step-title {
   color: #f8fafc;
-  font-size: 1.05rem;
-  font-weight: 850;
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 0.55rem;
+}
+
+.tutorial-copy {
+  color: #d4dbe4;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  padding-left: 1.15rem;
+  margin-bottom: 0.85rem;
+}
+
+.tutorial-copy li + li {
   margin-top: 0.25rem;
 }
 
-.tutorial-step-count {
-  color: #f8fafc;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.88rem;
-  font-variant-numeric: tabular-nums;
-  min-width: 5.5ch;
-  text-align: right;
+.tutorial-captures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
 }
 
-.tutorial-current-step {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.7fr);
-  gap: 1rem;
-  align-items: start;
-}
-
-.tutorial-current-step.is-expanded {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.tutorial-current-step.is-expanded .tutorial-copy {
-  max-width: 760px;
+.tutorial-captures .btn-outline-secondary {
+  color: #bdc9d6;
 }
 
 .tutorial-image-shell {
   display: block;
   width: 100%;
   padding: 0;
-  background: #05070a;
+  background: #080b10;
   border: 1px solid #303946;
   border-radius: 0.45rem;
   overflow: hidden;
   cursor: zoom-in;
 }
 
-.tutorial-current-step.is-expanded .tutorial-image-shell {
-  cursor: zoom-out;
-}
-
 .tutorial-image-shell img {
   display: block;
   width: 100%;
-  max-height: 52vh;
+  max-height: 56vh;
   object-fit: contain;
-  background: #05070a;
 }
 
-.tutorial-current-step.is-expanded .tutorial-image-shell img {
+.tutorial-image-shell.is-expanded {
+  overflow: auto;
   max-height: 68vh;
+  cursor: zoom-out;
 }
 
-.tutorial-copy {
-  background: #151a20;
-  border: 1px solid #2a333d;
-  border-radius: 0.45rem;
-  padding: 0.9rem 1rem;
-}
-
-.tutorial-copy ul {
-  margin: 0;
-  padding-left: 1.1rem;
-}
-
-.tutorial-copy li {
-  color: #d4dbe4;
-  font-size: 0.9rem;
-  line-height: 1.52;
-  margin-bottom: 0.45rem;
+.tutorial-image-shell.is-expanded img {
+  min-width: 100%;
+  width: auto;
+  max-width: none;
+  max-height: none;
 }
 
 .tutorial-footer-spacer {
   flex: 1 1 auto;
 }
 
-@media (max-width: 768px) {
-  .tutorial-guide-switch,
-  .tutorial-modal-footer {
-    align-items: stretch;
-    flex-wrap: wrap;
-  }
-
-  .tutorial-current-step {
+@media (max-width: 660px) {
+  .tutorial-layout {
     grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
   }
 
-  .tutorial-image-shell img {
-    max-height: 42vh;
+  .tutorial-topics {
+    border-right: 0;
+    border-bottom: 1px solid #303946;
+    padding: 0 0 0.65rem;
+  }
+
+  .tutorial-topics button {
+    display: inline-block;
+    width: auto;
   }
 }
 

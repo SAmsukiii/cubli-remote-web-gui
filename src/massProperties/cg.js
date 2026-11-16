@@ -24,17 +24,42 @@ export function insideTriangle(p, points) {
   const v=points.map((a,i)=>cross(a,points[(i+1)%3],p));
   return v.every(x=>x>=-1e-8)||v.every(x=>x<=1e-8);
 }
-export function calculateCg(config) {
-  const width=positive(config.width,'판 가로'),height=positive(config.height,'판 세로');
-  if(!['tare','difference'].includes(config.mode)) throw new Error('입력 모드를 확인하세요.');
+function readSupportGeometry(config) {
+  const width = positive(config.width, '판 가로');
+  const height = positive(config.height, '판 세로');
   if(config.supports?.length!==3) throw new Error('지지점은 3개여야 합니다.');
-  const f=unitFactor(config.unit,'mass')*1000;
   const points=config.supports.map((s,i)=>{
     const x=number(s.x,`P${i+1} x`),y=number(s.y,`P${i+1} y`);
     if(x<0||x>width||y<0||y>height) throw new Error(`P${i+1}: 지지점이 판 밖입니다.`);
     return {x,y};
   });
-  if(!Number.isFinite(cross(...points))||Math.abs(cross(...points))<1e-7) throw new Error('지지점 형상이 유효하지 않거나 일직선입니다.');
+  const area = cross(...points);
+  if(!Number.isFinite(area)||Math.abs(area)<1e-7) throw new Error('지지점 형상이 유효하지 않거나 일직선입니다.');
+  return { width, height, points, area };
+}
+
+export function expectedCenterReadings(config, plateMass, referenceMass) {
+  const { width, height, points, area } = readSupportGeometry(config);
+  const center = { x: width / 2, y: height / 2 };
+  // Moment balance about each edge gives the load fraction on the opposite support.
+  const fractions = points.map((_, i) => cross(points[(i + 1) % 3], points[(i + 2) % 3], center) / area);
+  if (fractions.some(fraction => fraction < -1e-10)) {
+    throw new Error('판 중심이 지지 삼각형 밖에 있어 중심 하중을 세 저울로 지지할 수 없습니다.');
+  }
+  const loads = mass => fractions.map(fraction => mass * Math.max(0, fraction));
+  const plate = plateMass === '' ? null : positive(plateMass, '판 질량');
+  const reference = referenceMass === '' ? null : positive(referenceMass, '기준 질량');
+  return {
+    plate: plate === null ? null : loads(plate),
+    reference: reference === null ? null : loads(reference),
+    total: plate === null || reference === null ? null : loads(plate + reference),
+  };
+}
+
+export function calculateCg(config) {
+  const { width, height, points } = readSupportGeometry(config);
+  if(!['tare','difference'].includes(config.mode)) throw new Error('입력 모드를 확인하세요.');
+  const f=unitFactor(config.unit,'mass')*1000;
   const warnings=[];
   const loads=config.supports.map((s,i)=>{
     const a=positive(s.gain??1,`P${i+1} 보정 gain`),b=number(s.offsetG??0,`P${i+1} offset`);

@@ -1,4 +1,4 @@
-export const TUTORIAL_VERSION = 'tutorial-v2';
+export const TUTORIAL_VERSION = 'tutorial-v3';
 
 export const TUTORIAL_STORAGE_KEYS = Object.freeze({
   dontShowAgain: 'cubliTutorialDontShowAgain',
@@ -6,12 +6,7 @@ export const TUTORIAL_STORAGE_KEYS = Object.freeze({
   version: 'cubliTutorialVersion',
 });
 
-export const GUIDE_MODES = Object.freeze({
-  viewer: 'viewer',
-  admin: 'admin',
-});
-
-const image = (filename) => `/tutorial/${filename}`;
+export const GUIDE_MODES = Object.freeze({ viewer: 'viewer', admin: 'admin' });
 
 export function normalizeTutorialGuideMode(mode) {
   return mode === GUIDE_MODES.admin ? GUIDE_MODES.admin : GUIDE_MODES.viewer;
@@ -21,179 +16,79 @@ export function getTutorialGuideModeForRole(role) {
   return String(role || '').toLowerCase() === 'admin' ? GUIDE_MODES.admin : GUIDE_MODES.viewer;
 }
 
-export const TUTORIAL_GUIDES = Object.freeze({
-  viewer: Object.freeze({
-    label: 'Viewer Guide',
-    summary: 'Monitoring flow for users who watch shared telemetry.',
-    steps: Object.freeze([
-      Object.freeze({
-        title: 'Start Screen / Login',
-        image: image('login.png'),
-        body: Object.freeze([
-          '처음 접속하면 Viewer 상태로 들어온다.',
-          'Admin Login은 관리자만 사용한다.',
-          'Viewer는 데이터 모니터링 중심이다.',
-        ]),
-      }),
-      Object.freeze({
-        title: '3D Cubli View',
-        image: image('cubli-zoom.png'),
-        body: Object.freeze([
-          '왼쪽 3D Cubli는 IMU/TEL quaternion 기준으로 표시된다.',
-          'Zoom In / Zoom Out으로 모델 크기를 조정할 수 있다.',
-          'Encoder quaternion은 reference용이며 3D attitude를 덮어쓰지 않는다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Layout Resize',
-        image: image('layout-resize.png'),
-        body: Object.freeze([
-          '화면 오른쪽 패널 폭을 조정할 수 있다.',
-          '3D 화면과 데이터 UI를 보기 좋게 나눠서 사용한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Data View',
-        image: image('data-view-selector.png'),
-        body: Object.freeze([
-          'Data View에서 원하는 데이터만 숫자로 관측할 수 있다.',
-          '기본 preset은 Quaternion Aligned Comparison이다.',
-          'IMU/TEL attitude와 Gimbal Encoder Reference를 좌우로 비교한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Live Plot',
-        image: image('live-plot.png'),
-        body: Object.freeze([
-          'Live Plot은 필요할 때 켜서 실시간 그래프를 보여준다.',
-          '필요하지 않을 때는 Show 토글을 꺼서 화면 부담을 줄인다.',
-          '화면 느림이나 멈춤이 있으면 Live Plot을 먼저 꺼본다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'CSV Logging',
-        image: image('csv-logging.png'),
-        body: Object.freeze([
-          'Start CSV Logging으로 저장을 시작한다.',
-          'Stop & Download CSV로 저장된 데이터를 다운로드한다.',
-          'CSV는 telemetry timestamp 기준으로 정렬된다.',
-          'ENC-only row는 encoder reference update로 저장된다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Command Access',
-        image: image('command-panel.png'),
-        body: Object.freeze([
-          'Viewer는 기본적으로 Command를 사용할 수 없다.',
-          'Admin이 Controller 권한을 부여하면 일부 command를 사용할 수 있다.',
-          'Command는 서버 queue를 통해 Admin Web Serial Bridge로 전달된다.',
-        ]),
-      }),
-    ]),
-  }),
-  admin: Object.freeze({
-    label: 'Admin Guide',
-    summary: 'Bridge flow for Web Serial, sharing, and command relay.',
-    steps: Object.freeze([
-      Object.freeze({
-        title: 'Admin Login',
-        image: image('login.png'),
-        body: Object.freeze([
-          'Admin Login 후 Web Serial, Server Sharing, Command 기능을 사용할 수 있다.',
-          'Admin credentials 안내 문구는 tutorial에 직접 노출하지 않는다.',
-          '실제 계정 정보는 UI에 표시하지 않는다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Open Web Serial Tab',
-        image: image('web-serial-tab.png'),
-        body: Object.freeze([
-          'Web Serial 탭으로 이동한다.',
-          'ESP32 Remote MCU를 USB로 연결한 PC에서 사용한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Connect Receiver',
-        image: image('connect-receiver.png'),
-        body: Object.freeze([
-          'Connect Receiver를 눌러 ESP32 Remote MCU의 serial port를 연결한다.',
-          '연결되면 Web Serial connected 상태가 된다.',
-          '3D Cubli는 연결 전에도 fallback identity로 표시되어야 한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Use as Admin Direct Bridge Source',
-        image: image('connect-receiver.png'),
-        body: Object.freeze([
-          'Admin이 Receiver와 연결한 뒤 Admin Direct Bridge source를 사용할 수 있다.',
-          '이 상태에서 Web Serial data를 서버로 공유할 준비가 된다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Auto Server Sharing',
-        image: image('server-sharing.png'),
-        body: Object.freeze([
-          'Web Serial이 연결되면 Server Sharing이 자동으로 켜지고 Admin Web Serial data가 서버로 publish된다.',
-          'Viewer와 Controller는 서버를 통해 같은 telemetry를 본다.',
-          'Command 창은 Server Sharing / Active Publisher 상태가 정상일 때 안정적으로 사용된다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Active Publisher and Force Take Over',
-        image: image('force-takeover.png'),
-        body: Object.freeze([
-          'Active Publisher는 현재 서버에 telemetry를 publish하는 Admin이다.',
-          '다른 Admin이 잘못 잡고 있거나 stale 상태이면 Force Take Over Publisher를 사용한다.',
-          'Force Take Over는 이전 publisher data와 새 session data가 섞이지 않게 하는 기능이다.',
-          '일반 상황에서는 남용하지 않는다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Receiver Info / Bridge Status',
-        image: image('server-sharing.png'),
-        body: Object.freeze([
-          'Active publisher, heartbeat, bridge 상태를 확인한다.',
-          'heartbeat 숫자 변화로 UI가 흔들리지 않도록 고정폭 text UI를 사용한다.',
-          'Receiver Info를 열면 publisher/bridge/drop counter 정보를 확인할 수 있다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Command Panel',
-        image: image('command-panel.png'),
-        body: Object.freeze([
-          'Command는 Control, Local Web Serial Command, Target Attitude, Wheel RPM Command, PID Gain, EBIMU Stream 등으로 나뉜다.',
-          'Server Command Queue는 Controller 권한 사용자를 통해서도 요청될 수 있다.',
-          'Local Web Serial Command는 Admin-only이며 서버 상태와 무관하게 직접 serial write를 수행한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Data View',
-        image: image('data-view-selector.png'),
-        body: Object.freeze([
-          'IMU quaternion/RPY와 Encoder reference를 비교한다.',
-          'Encoder는 motor encoder가 아니라 3-axis gimbal rotary encoder reference이다.',
-          'Encoder quaternion/RPY는 monitoring용이며 IMU attitude를 덮어쓰지 않는다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'Live Plot',
-        image: image('live-plot.png'),
-        body: Object.freeze([
-          '그래프는 실시간 확인용이다.',
-          '성능이 느려지면 Show 토글을 끈다.',
-          '중요한 실험 데이터는 CSV Logging으로 저장한다.',
-        ]),
-      }),
-      Object.freeze({
-        title: 'CSV Logging',
-        image: image('csv-logging.png'),
-        body: Object.freeze([
-          'CSV 저장은 Start CSV Logging 이후부터 수행된다.',
-          'Stop & Download CSV로 다운로드한다.',
-          'CSV 저장은 UI 렌더링 주기와 분리해서 수신된 valid Serial sample을 가능한 전부 저장한다.',
-          '실제로 수신되지 않은 가짜 row를 만들지 않는다.',
-        ]),
-      }),
-    ]),
-  }),
+const part = (title, captures, ...body) => ({
+  title,
+  body,
+  captures: (typeof captures === 'string' ? [[captures, title]] : captures)
+    .map(([file, label]) => ({ image: `/tutorial/v3/${file}.jpg`, label })),
 });
+
+const screens = [
+  part('첫 화면과 3D 보기', 'overview',
+    '처음 열면 Viewer로 들어옵니다. 이름은 Change Name에서 바꿉니다.',
+    '3D 화면은 드래그로 돌리고 Zoom In과 Zoom Out으로 크기를 바꿉니다. 오른쪽 슬라이더로 패널 폭을 조절합니다.'),
+  part('서버 연결', [['server', '서버 주소'], ['receiver', '수신 상태']],
+    'Server URL을 확인하고 Test Connection을 누릅니다.',
+    'Connected가 뜨면 Receiver Info에서 송신자와 수신 상태를 봅니다. 3D 화면은 IMU 자세를 표시합니다.'),
+  part('데이터 선택과 실시간 그래프', [['data', '데이터 선택'], ['plot', '실시간 그래프']],
+    'Data View에서 Preset을 고르고 Data Selector에서 보고 싶은 항목을 선택합니다.',
+    'Live Plot은 실시간 추이를, Wheel Speed Graph는 휠 속도와 명령값을 보여 줍니다.'),
+  part('CSV 기록', 'csv',
+    'Start CSV Logging을 눌러 기록을 시작합니다.',
+    'Stop & Download Telemetry CSV는 IMU/TEL을, Stop & Download Encoder CSV는 엔코더 값을 저장합니다.'),
+];
+
+const connections = [
+  part('관리자 로그인과 USB 연결', [['login', '로그인'], ['serial', 'USB 연결']],
+    'Server에서 Admin Login을 열어 로그인합니다.',
+    'Remote MCU를 USB로 연결합니다. Web Serial 탭에서 Connect Receiver를 눌러 해당 포트를 선택합니다.'),
+  part('BLE 연결', 'ble',
+    '관리자 화면에서 BLE 탭을 열고 Connect BLE IMU를 눌러 장치를 선택합니다.',
+    '자세 표시 소스로 쓰려면 BLE 입력 사용을 켭니다.'),
+  part('휴대폰 센서', 'phone',
+    'Phone 탭에서 휴대폰 센서를 켭니다. 브라우저가 물으면 센서 접근을 허용합니다.',
+    '휴대폰을 기준 자세에 둔 뒤 영점을 맞춥니다.'),
+];
+
+const admin = [
+  part('공유와 송신자', 'sharing',
+    'USB 연결 뒤 Server Sharing에서 Auto Sharing과 Active Publisher 상태를 확인합니다.',
+    '다른 관리자가 송신 중이면 먼저 연결 상태를 확인합니다. 송신 PC를 교체할 때 Force Take Over Publisher를 사용합니다.'),
+  part('제어권 부여', 'clients',
+    'Client List / Viewer List를 엽니다. 해당 사용자에게 제어권을 주거나 Revoke Control로 회수합니다.'),
+  part('자세와 휠 제어', [['control', '영점·정지'], ['commands', '목표 자세'], ['rpm', '휠 속도'], ['pid', 'PID 이득']],
+    'Control에서 자세 초기화, 엔코더 영점, 정지를 합니다.',
+    'Target Attitude에서 축별 각도를 지정합니다. Wheel RPM Command에서 휠 속도를, Attitude PID Gain에서 이득을 설정합니다.'),
+  part('IMU 설정과 직접 전송', [
+    ['imu', '스트림'], ['magnetometer', '자기계'], ['gyro', '자이로'], ['accelerometer', '가속도계'],
+    ['direct-command', '직접 전송'], ['source', '데이터 소스'],
+  ],
+    'EBIMU Stream에서 수신을 시작하거나 멈춥니다. Magnetometer, Gyro Range, Accelerometer에서 센서를 설정합니다.',
+    'USB 연결 PC에서 직접 보낼 때는 Local Web Serial Command를 엽니다.'),
+  part('3D 표시 설정', [['visual', '3D 표시'], ['rpy', 'RPY 순서']],
+    '3D Visual Settings에서 기준축, 거울 반전, 휠 표시를 조정합니다. 자세 각도 순서는 Server의 RPY Display Convention에서 고릅니다.'),
+];
+
+const mass = [
+  part('질량중심 측정', [['cg', '측정·예상값'], ['cg-diagram', 'CG 도식']],
+    '판과 지지발을 올린 상태로 저울 영점을 맞춥니다. 물체를 올리고 P1·P2·P3 값을 넣으면 중심 편차와 총 질량이 나옵니다.',
+    '판 질량과 기준물체 질량을 넣으면 각각의 예상값과 영점 전 합계가 나옵니다.'),
+  part('관성·마찰 측정', [['inertia', '입력·결과'], ['inertia-graph', '속도 그래프']],
+    '측정 축, 낙하추 질량, 유효 반경을 입력하고 엔코더 CSV를 넣습니다.',
+    '시간 열과 각도 단위를 확인한 뒤 관성·마찰 계산을 누릅니다.'),
+  part('질량특성 기록과 비교', 'records',
+    '측정 화면에서 기록을 저장합니다. 기록·비교에서 이전 측정과 비교하거나 JSON으로 내보냅니다.'),
+];
+
+export const TUTORIAL_GUIDES = {
+  viewer: [
+    { title: '화면·데이터', steps: screens },
+    { title: '질량특성', steps: mass },
+  ],
+  admin: [
+    { title: '장치 연결', steps: connections },
+    { title: '공유·제어', steps: admin },
+    { title: '화면·데이터', steps: screens },
+    { title: '질량특성', steps: mass },
+  ],
+};

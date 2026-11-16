@@ -1,5 +1,5 @@
-import {calculateCg,defaultCg,plateMassG} from './cg';
-import {defaultIdentification,parseCsv,preprocess,physics,odeVelocity,fitIdentification,selectSegments,syntheticCsv} from './identification';
+import {calculateCg,defaultCg,expectedCenterReadings,plateMassG} from './cg';
+import {defaultIdentification,parseCsv,preprocess,physics,odeVelocity,fitIdentification,selectSegments,suggestColumns,syntheticCsv} from './identification';
 import {previewImport,importRecords,stats,compareRecords} from './records';
 const cg=(values=[248,248,496],extra={})=>{const c={...defaultCg(),...extra};c.supports=c.supports.map((s,i)=>({...s,net:values[i]}));return c;};
 const settings=()=>({...defaultIdentification(),mass:0.03,radius:0.18,timeColumn:'time',valueColumn:'omega',timeUnit:'s',angleUnit:'rad',valueKind:'velocity',split:1.5,window:5,degree:2});
@@ -18,6 +18,16 @@ function sample(p={I:0.035,c1:0.0017,c2:0.0006},opts={}) {
 describe('3점 CG',()=>{
   test('200×200×1 mm aluminium is 108g theoretical',()=>expect(plateMassG(defaultCg())).toBe(108));
   test('centered 992g object',()=>{const r=calculateCg(cg());expect(r.massG).toBe(992);expect([r.x,r.y,r.dx,r.dy]).toEqual([100,100,0,0]);});
+  test('center readings follow the actual support geometry and CG round-trip', () => {
+    const config = defaultCg();
+    config.supports[2].x = 120;
+    const predicted = expectedCenterReadings(config, '', 1000);
+    expect(predicted.reference).toEqual([312.5, 187.5, 500]);
+    const result = calculateCg(cg(predicted.reference, { supports: config.supports }));
+    expect([result.dx, result.dy]).toEqual([0, 0]);
+    config.supports[2].y = 60;
+    expect(() => expectedCenterReadings(config, 108, '')).toThrow(/지지 삼각형 밖/);
+  });
   test('offset 10,-5 is valid, not a measurement failure',()=>{const r=calculateCg(cg([201.5,325.5,465]));expect([r.x,r.y,r.dx,r.dy]).toEqual([110,95,10,-5]);expect(r.insideTriangle).toBe(true);});
   test('kg equivalence',()=>{const r=calculateCg(cg([0.2015,0.3255,0.465],{unit:'kg'}));expect(r.x).toBeCloseTo(110,10);expect(r.y).toBeCloseTo(95,10);});
   test('TARE and difference are equivalent, offset cancels, no plate subtraction',()=>{const c=cg();c.mode='difference';c.supports=c.supports.map((s,i)=>({...s,baseline:[27,27,54][i],gross:[275,275,550][i],offsetG:80}));expect(calculateCg(c).massG).toBe(992);expect(calculateCg(c).dx).toBe(0);c.mode='tare';expect(calculateCg(c).massG).toBe(992);});
@@ -39,6 +49,14 @@ describe('record compatibility',()=>{
   test('comparison never merges different axis/configuration',()=>{const base={method:'falling_mass',target:'A',configuration:'B',axis:'Yaw',result:{parameters:{I:1,c1:2,c2:3}}};expect(compareRecords([base,{...base,axis:'Roll'},{...base,configuration:'C'}])).toHaveLength(3);});
 });
 describe('preprocessing and physics',()=>{
+  test('CSV suggestions ignore empty encoder columns and retain unknown timer units', () => {
+    const input = parseCsv('sample_type,enc_timer_z,enc_z_deg,remote_timestamp_us,plot_time_ms\nTEL,1,,1000,1\nENC,,1,0,10\nENC,,2,0,15');
+    expect(suggestColumns(input, 'Yaw')).toMatchObject({timeColumn:'plot_time_ms',timeUnit:'ms',valueColumn:'enc_z_deg',angleUnit:'deg'});
+    input.rows[1].enc_timer_z = '200';
+    input.rows[2].enc_timer_z = '205';
+    expect(suggestColumns(input, 'Yaw')).toMatchObject({timeColumn:'enc_timer_z',timeUnit:''});
+    expect(suggestColumns(input, 'Roll').valueColumn).toBe('');
+  });
   test('CSV quoting and independent ENC rows',()=>{const p=parseCsv('time,angle,sample_type,note\n0,0,ENC,"a,b"\n0,,TEL,x\n');expect(p.rows[0].note).toBe('a,b');});
   test('SI conversion mR² exists only during acceleration',()=>{const c={...settings(),mass:30,massUnit:'g',radius:180,radiusUnit:'mm'};const ph=physics(c);expect(ph.m).toBeCloseTo(0.03);expect(ph.R).toBeCloseTo(0.18);const p={I:0.035,c1:0.0017,c2:0};expect(odeVelocity(0.1,1,p,ph,true)).toBeCloseTo(1+(ph.torque-p.c1)/(p.I+ph.addedInertia)*0.1,12);expect(odeVelocity(0.1,1,p,ph,false)).toBeCloseTo(1-p.c1/p.I*0.1,12);});
   test('timestamp units s/ms and angular deg/rad',()=>{const {rows,c}=sample();const a=preprocess(rows,c);const b=preprocess(rows.map(r=>({...r,time:r.time*1000,omega:r.omega*180/Math.PI})),{...c,timeUnit:'ms',angleUnit:'deg'});expect(a.points[150].omega).toBeCloseTo(b.points[150].omega,9);expect(b.diagnostics.hz).toBeCloseTo(a.diagnostics.hz);});
